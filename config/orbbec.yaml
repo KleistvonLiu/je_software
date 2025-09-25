@@ -1,0 +1,18 @@
+orbbec_publisher:
+  ros__parameters:
+    # —— 发布话题（节点代码里通过参数读取） ——
+    color_topic: "/camera/color/image_raw"
+    depth_topic: "/camera/depth/image_raw"
+
+    publish_depth: true
+    frame_id_color: "orbbec_color_optical_frame"
+    frame_id_depth: "orbbec_depth_optical_frame"
+
+    # —— 相机与运行参数 ——
+    width: 640
+    height: 480
+    fps: 30
+    use_depth: true
+    index_or_path: "CP02653000R4"         # 相机SN或设备路径；留空走默认
+    warmup_s: 1
+    color_mode: "rgb"         # "rgb" 或 "bgr"
