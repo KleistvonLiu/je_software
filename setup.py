@@ -11,6 +11,7 @@ setup(
         (f'share/{package_name}', ['package.xml']),
         (f'share/{package_name}/launch', ['launch/orbbec.launch.py']),
         (f'share/{package_name}/config', ['config/orbbec.yaml']),
+        (f'share/{package_name}/launch', ['launch/agilex_robot.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +27,7 @@ setup(
     entry_points={
         'console_scripts': [
             'camera_node = je_software.camera_node:main',
+            'agilex_robot = je_software.robot_node:main',
         ],
     },
 )

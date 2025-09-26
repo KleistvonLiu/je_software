@@ -28,7 +28,7 @@ def generate_launch_description():
         Node(
             package='je_software',          # 改成你的包名
             executable='camera_node',       # 对应 setup.py 里 console_scripts 的可执行名
-            name='orbbec_publisher',
+            name='orbbec_publisher',        # 对应节点名称
             namespace=namespace,
             parameters=[params_file],
             output='screen',
