@@ -13,8 +13,8 @@ def generate_launch_description():
         DeclareLaunchArgument('header_hex', default_value='FF 84'),
 
         Node(
-            package='your_pkg_name',              # ← 改成你的包名
-            executable='tactile_sensor_node',     # ← setup.py 里 console_scripts 的可执行名
+            package='je_software',              # ← 改成你的包名
+            executable='tactile_sensor',     # ← setup.py 里 console_scripts 的可执行名
             name='tactile_sensor',
             parameters=[{
                 'port':       LaunchConfiguration('port'),

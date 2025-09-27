@@ -22,27 +22,32 @@ class TactileSensorNode(Node):
         super().__init__('tactile_sensor_node')
 
         # --- 用字符串默认值声明参数（避免类型不匹配），再在代码里做类型转换 ---
-        self.declare_parameter('port', '/dev/ttyUSB0')       # 串口
-        self.declare_parameter('topic', '/tactile_data')     # 发布话题
-        self.declare_parameter('baudrate', '115200')         # 波特率
-        self.declare_parameter('timeout', '0.5')             # 读超时(s)
-        self.declare_parameter('frame_size', '70')           # 帧总长度
-        self.declare_parameter('header_hex', 'FF 84')        # 帧头，空格分隔的HEX
+        self.declare_parameter('baudrate', 115200)  # int
+        self.declare_parameter('timeout', 0.5)  # float/double
+        self.declare_parameter('frame_size', 70)  # int
 
-        port       = self.get_parameter('port').get_parameter_value().string_value
-        topic      = self.get_parameter('topic').get_parameter_value().string_value
-        baudrate   = _as_int(self.get_parameter('baudrate').get_parameter_value().string_value, 115200)
-        timeout_s  = _as_float(self.get_parameter('timeout').get_parameter_value().string_value, 0.5)
-        frame_size = _as_int(self.get_parameter('frame_size').get_parameter_value().string_value, 70)
-        header_str = self.get_parameter('header_hex').get_parameter_value().string_value
+        # 这些保持字符串
+        self.declare_parameter('port', '/dev/ttyUSB0')  # str
+        self.declare_parameter('topic', '/tactile_data')  # str
+        self.declare_parameter('header_hex', 'FF 84')  # str
+
+        # 读取时按类型取值
+        p = self.get_parameter
+        port = p('port').get_parameter_value().string_value
+        topic = p('topic').get_parameter_value().string_value
+        header_hex = p('header_hex').get_parameter_value().string_value
+
+        baudrate = int(p('baudrate').get_parameter_value().integer_value)
+        timeout_s = float(p('timeout').get_parameter_value().double_value)
+        frame_size = int(p('frame_size').get_parameter_value().integer_value)
 
         # 解析帧头
         try:
-            self.header_bytes = bytes.fromhex(header_str)
+            self.header_bytes = bytes.fromhex(header_hex)
             if len(self.header_bytes) < 1:
                 raise ValueError("header_hex must contain at least 1 byte")
         except Exception as e:
-            self.get_logger().warn(f'Invalid header_hex "{header_str}", fallback to FF 84: {e}')
+            self.get_logger().warn(f'Invalid header_hex "{header_hex}", fallback to FF 84: {e}')
             self.header_bytes = b'\xFF\x84'
 
         self.frame_size = frame_size
