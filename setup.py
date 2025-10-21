@@ -13,6 +13,7 @@ setup(
         (f'share/{package_name}/config', ['config/orbbec.yaml']),
         (f'share/{package_name}/launch', ['launch/agilex_robot.launch.py']),
         (f'share/{package_name}/launch', ['launch/tactile_sensor.launch.py']),
+        (f'share/{package_name}/launch', ['launch/manager.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -30,6 +31,7 @@ setup(
             'camera_node = je_software.camera_node:main',
             'agilex_robot = je_software.robot_node:main',
             'tactile_sensor = je_software.tactile_sensor_node:main',
+            'manager_node = je_software.manager_node:main',
         ],
     },
 )

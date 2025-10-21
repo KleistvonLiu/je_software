@@ -24,9 +24,9 @@ class AgilexRobotNode(Node):
         super().__init__('agilex_robot_node')
 
         # -------- 声明参数（全部以字符串/通用类型声明，避免类型不匹配）--------
-        self.declare_parameter('joint_sub_topic', '/joint_states')
+        self.declare_parameter('joint_sub_topic', '/joint_cmd')
         self.declare_parameter('end_pose_topic', '/end_pose')
-        self.declare_parameter('joint_pub_topic', '/joint_state')
+        self.declare_parameter('joint_pub_topic', '/joint_states')
         self.declare_parameter('fps', 50)                # 支持字符串/数字
         self.declare_parameter('can_port', 'can_right')
 
