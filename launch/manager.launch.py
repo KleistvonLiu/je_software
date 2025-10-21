@@ -99,10 +99,10 @@ def generate_launch_description():
     tact_arg = DeclareLaunchArgument('tactile_topic', default_value='/tactile_data')
 
     # --- 频率/容差/窗口 ---
-    rate_arg = DeclareLaunchArgument('rate_hz', default_value='30.0')
-    img_tol = DeclareLaunchArgument('image_tolerance_ms', default_value='18.0')  # 33.3/2
+    rate_arg = DeclareLaunchArgument('rate_hz', default_value='60.0')
+    img_tol = DeclareLaunchArgument('image_tolerance_ms', default_value='22.0')  # 33.3/2
     jnt_tol = DeclareLaunchArgument('joint_tolerance_ms', default_value='10.0')  #
-    tac_tol = DeclareLaunchArgument('tactile_tolerance_ms', default_value='30.0')  # 50/2
+    tac_tol = DeclareLaunchArgument('tactile_tolerance_ms', default_value='50.0')  # 50/2
     win_sec = DeclareLaunchArgument('queue_seconds', default_value='2.0')
 
     # --- 目录/控制 ---

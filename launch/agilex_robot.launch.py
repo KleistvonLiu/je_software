@@ -6,9 +6,9 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     # 可配置参数（可在命令行覆盖）
-    joint_sub_topic_arg = DeclareLaunchArgument('joint_sub_topic', default_value='/joint_states')
+    joint_sub_topic_arg = DeclareLaunchArgument('joint_sub_topic', default_value='/joint_cmd')
     end_pose_topic_arg  = DeclareLaunchArgument('end_pose_topic',  default_value='/end_pose')
-    joint_pub_topic_arg = DeclareLaunchArgument('joint_pub_topic', default_value='/joint_state')
+    joint_pub_topic_arg = DeclareLaunchArgument('joint_pub_topic', default_value='/joint_states')
     fps_arg             = DeclareLaunchArgument('fps',             default_value='50')          # 字符串即可
     can_port_arg        = DeclareLaunchArgument('can_port',        default_value='can_right')
 

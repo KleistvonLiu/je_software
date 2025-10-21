@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os, json, threading, time, re
-from typing import List, Tuple, Optional, Any
+from collections import deque
+from typing import List, Tuple, Optional, Any, Dict
 from datetime import datetime
 from queue import SimpleQueue, Empty
+import pynput
 
 import rclpy
 from rclpy.node import Node
@@ -33,7 +35,6 @@ def stamp_to_ns(stamp) -> int:
 
 
 # ====================== 高效多流对齐器 ======================
-
 class MultiStreamAligner:
     """
     无锁摄取 → 工作线程独占本地窗口：
@@ -44,6 +45,10 @@ class MultiStreamAligner:
         3) 对每路推进“只前进”游标到 <= target 的最大位置，并在它与后一位择近；误差<=tol_i
         4) 成功返回 (t_ref, picks)，并剪枝到选中位置
       - 支持 max_window_ns 以限制窗口大小
+    日志增强：
+      - 统计入队/乱序丢弃/窗口裁剪/对齐成功率
+      - 记录失败原因（空流/超容差）及细节
+      - 限频打印（避免刷屏）
     """
 
     def __init__(
@@ -52,6 +57,14 @@ class MultiStreamAligner:
             tolerances_ns: List[int],
             offsets_ns: Optional[List[int]] = None,
             max_window_ns: Optional[int] = None,
+            *,
+            logger: Optional[Any] = None,
+            name: str = "aligner",
+            debug: bool = False,
+            log_every: int = 200,  # 每尝试 N 次打印一条汇总
+            log_period_s: float = 5.0,  # 或每隔 T 秒打印一条汇总（两者取其一满足）
+            ref_indices: Optional[List[int]] = None,  # <-- 新增
+            non_consuming_indices: Optional[List[int]] = None,  # <-- 新增
     ):
         assert num_streams == len(tolerances_ns), "tolerances_ns length must match num_streams"
         self.N = int(num_streams)
@@ -59,33 +72,145 @@ class MultiStreamAligner:
         self.offsets_ns = list(map(int, offsets_ns)) if offsets_ns else [0] * self.N
         self.max_window_ns = int(max_window_ns) if max_window_ns else None
 
+        # 参考流（用于计算 t_ref），默认用所有流；否则只用传入的索引
+        if ref_indices is None:
+            self.ref_indices = list(range(self.N))
+        else:
+            # 过滤非法索引并去重、排序
+            self.ref_indices = sorted({int(i) for i in ref_indices if 0 <= int(i) < self.N})
+            assert self.ref_indices, "ref_indices cannot be empty"
+
+        # 非消耗流：对齐成功后不删除所选帧（让低频流可复用上次样本）
+        non_consuming_set = set()
+        if non_consuming_indices:
+            non_consuming_set = {int(i) for i in non_consuming_indices if 0 <= int(i) < self.N}
+        self.consume_mask = [False if i in non_consuming_set else True for i in range(self.N)]
+
         self.ingest: List[SimpleQueue] = [SimpleQueue() for _ in range(self.N)]
         self.times: List[List[int]] = [[] for _ in range(self.N)]
         self.msgs: List[List[Any]] = [[] for _ in range(self.N)]
         self.cursor: List[int] = [-1] * self.N
 
+        # ---- 日志 & 统计 ----
+        self.debug = bool(debug)
+        self.log_every = int(max(1, log_every))
+        self.log_period_s = float(max(0.5, log_period_s))
+        self._last_log_t = time.monotonic()
+        self.log = logger if logger is not None else logging.getLogger(f"{__name__}.{name}")
+
+        # 统计计数
+        self.stats: Dict[str, Any] = {
+            "enq": [0] * self.N,  # 入队计数
+            "drain": [0] * self.N,  # drain 总取出计数
+            "append": [0] * self.N,  # 追加到窗口的计数（乱序会被丢）
+            "drop_ooo": [0] * self.N,  # 乱序丢弃计数
+            "prune": [0] * self.N,  # 窗口裁剪丢弃计数
+            "consumed": [0] * self.N,  # <-- 新增：对齐成功后剪枝删除的数量
+            "step_attempt": 0,  # 尝试对齐次数
+            "step_success": 0,  # 成功对齐次数
+            "last_fail": "",  # 最近失败原因
+            "last_fail_detail": None,  # 最近失败细节
+        }
+
+        self._dbg("initialized: N=%d, max_window_ns=%s, tolerances=%s, offsets=%s",
+                  self.N, str(self.max_window_ns), self.tolerances_ns, self.offsets_ns)
+
+    # ---------- 日志工具 ----------
+    def _dbg(self, msg: str, *args):
+        if self.debug and hasattr(self.log, "debug"):
+            try:
+                self.log.debug(msg % args if args else msg)
+            except Exception:
+                pass
+
+    def _info(self, msg: str, *args):
+        if hasattr(self.log, "info"):
+            try:
+                self.log.info(msg % args if args else msg)
+            except Exception:
+                pass
+
+    def _warn(self, msg: str, *args):
+        if hasattr(self.log, "warn"):
+            try:
+                self.log.warn(msg % args if args else msg)
+            except Exception:
+                if hasattr(self.log, "warning"):
+                    try:
+                        self.log.warning(msg % args if args else msg)
+                    except Exception:
+                        pass
+
+    def _err(self, msg: str, *args):
+        if hasattr(self.log, "error"):
+            try:
+                self.log.error(msg % args if args else msg)
+            except Exception:
+                pass
+
+    def _maybe_log_summary(self):
+        """限频打印汇总统计。"""
+        t = time.monotonic()
+        need = (self.stats["step_attempt"] % self.log_every == 0) or ((t - self._last_log_t) >= self.log_period_s)
+        if not need:
+            return
+        self._last_log_t = t
+        hit = (self.stats["step_success"] / self.stats["step_attempt"]) if self.stats["step_attempt"] else 0.0
+        # 每路窗口长度
+        lens = [len(ti) for ti in self.times]
+        self._info(
+            "[align] attempts=%d, success=%d, hit=%.1f%%, window_len=%s, "
+            "drop_ooo=%s, prune=%s, consumed=%s, last_fail=%s %s",
+            self.stats["step_attempt"], self.stats["step_success"], 100.0 * hit,
+            lens, self.stats["drop_ooo"], self.stats["prune"], self.stats["consumed"],
+            self.stats["last_fail"],
+            f"detail={self.stats['last_fail_detail']}" if self.stats["last_fail_detail"] else "",
+        )
+
+    # ---------- 接口 ----------
     def put_nowait(self, i: int, t_ns: int, msg: Any):
+        """无阻塞入队。极端异常直接丢帧。"""
         try:
             self.ingest[i].put_nowait((t_ns, msg))
-        except Exception:
-            # 极端情况下直接丢帧
-            pass
+            self.stats["enq"][i] += 1
+            # 低成本调试：偶尔打点
+            if self.debug and (self.stats["enq"][i] % (self.log_every // 2 or 1) == 0):
+                self._dbg("enqueued stream[%d] total=%d last_ts=%d", i, self.stats["enq"][i], t_ns)
+        except Exception as e:
+            self._warn("enqueue failed stream[%d]: %s", i, e)
 
     def _drain_one(self, i: int):
         qi = self.ingest[i]
         ti = self.times[i]
         mi = self.msgs[i]
         last = ti[-1] if ti else -1
+
+        drained = 0
+        appended = 0
+        drop_ooo = 0
+
         while True:
             try:
                 t_ns, msg = qi.get_nowait()
+                drained += 1
             except Empty:
                 break
             if t_ns >= last:
                 ti.append(t_ns)
                 mi.append(msg)
                 last = t_ns
-            # 否则：偶发乱序，直接丢弃
+                appended += 1
+            else:
+                # 乱序：丢弃
+                drop_ooo += 1
+
+        self.stats["drain"][i] += drained
+        self.stats["append"][i] += appended
+        self.stats["drop_ooo"][i] += drop_ooo
+
+        if self.debug and drained:
+            self._dbg("drain stream[%d]: drained=%d, appended=%d, drop_ooo=%d, window_len=%d, last_ts=%d",
+                      i, drained, appended, drop_ooo, len(ti), last)
 
         # 限定窗口长度以控内存
         if self.max_window_ns and len(ti) >= 2:
@@ -99,6 +224,9 @@ class MultiStreamAligner:
                 self.cursor[i] -= drop_k
                 if self.cursor[i] < -1:
                     self.cursor[i] = -1
+                self.stats["prune"][i] += drop_k
+                self._dbg("prune stream[%d]: pruned=%d, new_window_len=%d, cursor=%d",
+                          i, drop_k, len(ti), self.cursor[i])
 
     def _drain(self):
         for i in range(self.N):
@@ -119,36 +247,110 @@ class MultiStreamAligner:
         return pick, cur
 
     def step(self) -> Optional[Tuple[int, List[Tuple[int, Any]]]]:
+        """尝试做一次对齐；成功返回 (t_ref, picks)，否则返回 None。"""
         self._drain()
+        self.stats["step_attempt"] += 1
 
-        latest = []
+        # 若某路还没数据
+        # latest = []
         for i in range(self.N):
             if not self.times[i]:
+                self.stats["last_fail"] = f"waiting_stream_{i}"
+                self.stats["last_fail_detail"] = {"stream": i, "reason": "empty"}
+                self._maybe_log_summary()
                 return None
-            latest.append(self.times[i][-1])
+            # latest.append(self.times[i][-1])
 
-        t_ref = min(latest)
+        # 2) 计算 t_ref：只考虑“参考流”（相机流）中的 latest
+        latest_refs = [self.times[i][-1] for i in self.ref_indices]
+        t_ref = min(latest_refs)
 
         picks_idx: List[int] = [-1] * self.N
         picks: List[Tuple[int, Any]] = [None] * self.N  # type: ignore
+
+        # 对各路与 target 的误差
+        deltas = [None] * self.N  # type: ignore
+
         for i in range(self.N):
             target = t_ref + self.offsets_ns[i]
             pick_i, cur_after = self._advance_and_pick(self.times[i], self.cursor[i], target)
-            if abs(self.times[i][pick_i] - target) > self.tolerances_ns[i]:
+            err = abs(self.times[i][pick_i] - target)
+            deltas[i] = int(err)
+            if err > self.tolerances_ns[i]:
+                # 容差失败
+                self.stats["last_fail"] = "tolerance_exceeded"
+                self.stats["last_fail_detail"] = {
+                    "stream": i,
+                    "target_ns": int(target),
+                    "picked_ts_ns": int(self.times[i][pick_i]),
+                    "error_ns": int(err),
+                    "tolerance_ns": int(self.tolerances_ns[i]),
+                }
+                self._dbg("align fail: stream[%d] err_ns=%d > tol_ns=%d (target=%d, pick_ts=%d)",
+                          i, err, self.tolerances_ns[i], target, self.times[i][pick_i])
+                self._maybe_log_summary()
                 return None
             picks_idx[i] = pick_i
             picks[i] = (self.times[i][pick_i], self.msgs[i][pick_i])
             self.cursor[i] = cur_after
 
+        # 成功：剪枝到选择点之后
         for i in range(self.N):
             k = picks_idx[i]
-            del self.times[i][:k + 1]
-            del self.msgs[i][:k + 1]
-            self.cursor[i] -= (k + 1)
-            if self.cursor[i] < -1:
-                self.cursor[i] = -1
+            if k < 0:
+                continue
+            if self.consume_mask[i]:
+                # 消耗：删除到选中位置（包含）
+                del self.times[i][:k + 1]
+                del self.msgs[i][:k + 1]
+                self.cursor[i] -= (k + 1)
+                if self.cursor[i] < -1:
+                    self.cursor[i] = -1
+                self.stats["consumed"][i] += (k + 1)
+            else:
+                # 非消耗：不删，允许后续重用同一帧
+                # 仅依靠 _drain_one 的时间窗口裁剪来控内存
+                pass
 
+        self.stats["step_success"] += 1
+        self.stats["last_fail"] = ""
+        self.stats["last_fail_detail"] = None
+
+        if self.debug:
+            self._dbg("align OK: t_ref=%d, deltas_ns=%s, windows=%s",
+                      t_ref, deltas, [len(ti) for ti in self.times])
+
+        self._maybe_log_summary()
         return t_ref, picks
+
+    # ---------- 公共统计接口 ----------
+    def metrics(self) -> Dict[str, Any]:
+        """返回一个可读的统计快照（不会清零）。"""
+        hit = (self.stats["step_success"] / self.stats["step_attempt"]) if self.stats["step_attempt"] else 0.0
+        return {
+            "streams": self.N,
+            "window_len": [len(ti) for ti in self.times],
+            "enqueued": list(self.stats["enq"]),
+            "drained": list(self.stats["drain"]),
+            "appended": list(self.stats["append"]),
+            "dropped_out_of_order": list(self.stats["drop_ooo"]),
+            "pruned_by_window": list(self.stats["prune"]),
+            "consumed": list(self.stats["consumed"]),
+            "attempts": int(self.stats["step_attempt"]),
+            "success": int(self.stats["step_success"]),
+            "hit_ratio": hit,
+            "last_fail": self.stats["last_fail"],
+            "last_fail_detail": self.stats["last_fail_detail"],
+        }
+
+    def reset_metrics(self):
+        """清空统计计数（窗口内容不变）。"""
+        for k in ("enq", "drain", "append", "drop_ooo", "prune"):
+            self.stats[k] = [0] * self.N
+        self.stats["step_attempt"] = 0
+        self.stats["step_success"] = 0
+        self.stats["last_fail"] = ""
+        self.stats["last_fail_detail"] = None
 
 
 # ====================== ROS2 节点 ======================
@@ -190,6 +392,8 @@ class Manager(Node):
         self.declare_parameter('use_ros_time', True)
         self.declare_parameter('color_jpeg_quality', 95)
         self.declare_parameter('do_calculate_hz', True)
+        self.declare_parameter('stats_window_s', 5.0)  # 统计窗口长度(秒)
+        self.declare_parameter('stats_log_period_s', 2.0)  # 日志输出周期(秒)
 
         # 偏置（ms）
         self.declare_parameter('color_offsets_ms', [])
@@ -241,9 +445,13 @@ class Manager(Node):
         tactile_offset_ms = float(p('tactile_offset_ms').value or 0.0)
 
         # 统计频率
+        self.stats_window_s: float = float(p('stats_window_s').value)
+        self.stats_log_period_s: float = float(p('stats_log_period_s').value)
         self.do_calculate_hz: bool = bool(p('do_calculate_hz').value)
         self._attempt_win = 0
         self._success_win = 0
+        self._save_times = deque()  # 保存成功的时间戳(秒, perf_counter)
+        self._last_rate_log_t = time.perf_counter()  # 上次打印统计的时间
 
         if not session_name:
             session_name = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -301,11 +509,16 @@ class Manager(Node):
 
         max_window_ns = int(self.queue_seconds * 1e9)
 
+        camera_refs = self._idx_color + self._idx_depth  # 只用相机做 t_ref
+        non_consuming = [self._idx_tact]
         self.aligner = MultiStreamAligner(
             num_streams=num_streams,
             tolerances_ns=tolerances_ns,
             offsets_ns=offsets_ns,
             max_window_ns=max_window_ns,
+            logger=self.get_logger(),
+            ref_indices=camera_refs,
+            non_consuming_indices=non_consuming,
         )
 
         # ---------- 订阅（区分 QoS） ----------
@@ -323,12 +536,12 @@ class Manager(Node):
         )
 
         for i, topic in enumerate(self.color_topics):
-            self.create_subscription(Image, topic, self._mk_color_cb(i), sensor_qos)
+            self.create_subscription(Image, topic, self._mk_color_cb(i), reliable_qos)
 
         for j in range(D):
             topic = self.depth_topics[j]
             if topic and self.save_depth:
-                self.create_subscription(Image, topic, self._mk_depth_cb(j), sensor_qos)
+                self.create_subscription(Image, topic, self._mk_depth_cb(j), reliable_qos)
 
         # 关节/触觉用 RELIABLE（若上游是 BEST_EFFORT，可改成 sensor_qos）
         self.create_subscription(JointState, self.joint_topic, self._joint_cb, reliable_qos)
@@ -337,11 +550,57 @@ class Manager(Node):
         # 工具
         self.bridge = CvBridge()
 
+        # === 录制开关与键盘监听 ===
+        self._record_enabled = False  # 是否允许调用 _save_once（默认暂停，按 Ctrl 开始）
+        self._kb_listener = None
+        self._last_pause_log = 0.0  # 限流输出“暂停中”的日志
+
+        # 可选：提示
+        self.get_logger().info("Keyboard control: right Alt = start/resume, right Ctrl = stop")
+
+        # 优先尝试 pynput 全局键盘监听（无需焦点；在无 X/Wayland 的纯控制台可能不可用）
+        try:
+            from pynput import keyboard as _kb
+            self._pynput_kb = _kb
+            self._kb_listener = _kb.Listener(on_press=self._on_key_press)
+            self._kb_listener.daemon = True
+            self._kb_listener.start()
+        except Exception as e:
+            # 不能监听就仅提示（录制永远保持默认 False，或你可手动在代码里改为 True）
+            self.get_logger().warn(
+                f"Keyboard control unavailable (install pynput or ensure GUI session). "
+                f"Recording remains paused until Ctrl event can be captured. detail={e}"
+            )
+
         # 保存线程
         self.sample_idx = 0
         self._stop_evt = threading.Event()
         self.worker = threading.Thread(target=self._save_loop, name='logger-aligner', daemon=False)
         self.worker.start()
+
+    def _on_key_press(self, key):
+        """全局键盘：Ctrl = start/resume，Right Arrow = stop"""
+        try:
+            kb = getattr(self, "_pynput_kb", None)
+            if kb is None:
+                return
+
+            # Ctrl：开始/继续
+            if key == kb.Key.alt_r:
+                if not self._record_enabled:
+                    self._record_enabled = True
+                    self.get_logger().info("Recording ENABLED by right Alt")
+                else:
+                    # 已经在录就保持不变（幂等）
+                    pass
+
+            # 右方向键：停止
+            elif key == kb.Key.ctrl_r:
+                if self._record_enabled:
+                    self._record_enabled = False
+                    self.get_logger().info("Recording DISABLED by right Ctrl")
+        except Exception as e:
+            self.get_logger().warn(f"Keyboard handler error: {e}")
 
     # ---------- 时间戳回退：0/无时间戳 → 本地时钟 ----------
     def _ns_from_header_or_clock(self, header) -> int:
@@ -390,13 +649,23 @@ class Manager(Node):
     def _save_loop(self):
         period = 1.0 / max(1e-6, self.rate_hz)
         next_t = time.perf_counter()
+        print(rclpy.ok())
         while rclpy.ok() and not self._stop_evt.is_set():
             now = time.perf_counter()
             if now < next_t:
-                time.sleep(next_t - now)
+                time.sleep(max(0.0, next_t - now))
             next_t += period
             try:
-                # === 新增：记录一次尝试 ===
+                # 若暂停录制：做一次对齐推进以“排水”，但不保存，避免堆积
+                if not self._record_enabled:
+                    _ = self.aligner.step()
+                    # 限流打印（每 2 秒一次）
+                    if (now - self._last_pause_log) > 2.0:
+                        self.get_logger().debug("Paused: press Ctrl to start/resume, Right Arrow to stop.")
+                        self._last_pause_log = now
+                    continue
+
+                # === 新增：记录一次尝试（可选） ===
                 if self.do_calculate_hz:
                     self._attempt_win += 1
 
@@ -404,14 +673,14 @@ class Manager(Node):
                 if out is None:
                     continue
 
-                # === 新增：记录一次成功 ===
+                # === 新增：记录一次成功（可选） ===
                 if self.do_calculate_hz:
                     self._success_win += 1
 
                 t_ref, picks = out
                 self._save_once(t_ref, picks)
 
-                # === 新增：保存成功后更新统计 ===
+                # === 新增：保存成功后更新统计（可选） ===
                 if self.do_calculate_hz:
                     self._on_saved_stats()
             except Exception as e:
@@ -452,6 +721,8 @@ class Manager(Node):
             self._last_rate_log_t = now
 
     def _save_once(self, t_ref: int, picks: List[Tuple[int, Any]]):
+        # self.get_logger().info(f"save once at {time.perf_counter()}")
+        return
         idx = self.sample_idx
         self.sample_idx += 1
 
@@ -543,6 +814,13 @@ class Manager(Node):
 
     # ---------- 关闭 ----------
     def destroy_node(self):
+        # 停止键盘监听
+        try:
+            if self._kb_listener is not None:
+                self._kb_listener.stop()
+        except Exception:
+            pass
+
         self._stop_evt.set()
         try:
             if self.worker.is_alive():
