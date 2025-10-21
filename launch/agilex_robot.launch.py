@@ -9,7 +9,7 @@ def generate_launch_description():
     joint_sub_topic_arg = DeclareLaunchArgument('joint_sub_topic', default_value='/joint_states')
     end_pose_topic_arg  = DeclareLaunchArgument('end_pose_topic',  default_value='/end_pose')
     joint_pub_topic_arg = DeclareLaunchArgument('joint_pub_topic', default_value='/joint_state')
-    fps_arg             = DeclareLaunchArgument('fps',             default_value='30')          # 字符串即可
+    fps_arg             = DeclareLaunchArgument('fps',             default_value='50')          # 字符串即可
     can_port_arg        = DeclareLaunchArgument('can_port',        default_value='can_right')
 
     node = Node(

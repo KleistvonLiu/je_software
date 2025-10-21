@@ -22,8 +22,10 @@ import numpy as np
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
+
 def sanitize(name: str) -> str:
     return re.sub(r'[^A-Za-z0-9_.-]+', '_', name.strip('/'))
+
 
 def stamp_to_ns(stamp) -> int:
     # 假设 stamp 有 sec / nanosec，且可能为 0
@@ -43,12 +45,13 @@ class MultiStreamAligner:
         4) 成功返回 (t_ref, picks)，并剪枝到选中位置
       - 支持 max_window_ns 以限制窗口大小
     """
+
     def __init__(
-        self,
-        num_streams: int,
-        tolerances_ns: List[int],
-        offsets_ns: Optional[List[int]] = None,
-        max_window_ns: Optional[int] = None,
+            self,
+            num_streams: int,
+            tolerances_ns: List[int],
+            offsets_ns: Optional[List[int]] = None,
+            max_window_ns: Optional[int] = None,
     ):
         assert num_streams == len(tolerances_ns), "tolerances_ns length must match num_streams"
         self.N = int(num_streams)
@@ -58,7 +61,7 @@ class MultiStreamAligner:
 
         self.ingest: List[SimpleQueue] = [SimpleQueue() for _ in range(self.N)]
         self.times: List[List[int]] = [[] for _ in range(self.N)]
-        self.msgs:  List[List[Any]] = [[] for _ in range(self.N)]
+        self.msgs: List[List[Any]] = [[] for _ in range(self.N)]
         self.cursor: List[int] = [-1] * self.N
 
     def put_nowait(self, i: int, t_ns: int, msg: Any):
@@ -158,6 +161,7 @@ class Manager(Node):
       - 过滤空话题
       - 图像/深度 BEST_EFFORT；关节/触觉 RELIABLE
     """
+
     def __init__(self):
         super().__init__('manager')
 
@@ -172,7 +176,7 @@ class Manager(Node):
 
         # 频率与容差（ms）
         self.declare_parameter('rate_hz', 30.0)
-        self.declare_parameter('image_tolerance_ms', 15.0)    # ≤ 半帧
+        self.declare_parameter('image_tolerance_ms', 15.0)  # ≤ 半帧
         self.declare_parameter('joint_tolerance_ms', 15.0)
         self.declare_parameter('tactile_tolerance_ms', 60.0)
 
@@ -185,6 +189,7 @@ class Manager(Node):
         # 其他
         self.declare_parameter('use_ros_time', True)
         self.declare_parameter('color_jpeg_quality', 95)
+        self.declare_parameter('do_calculate_hz', True)
 
         # 偏置（ms）
         self.declare_parameter('color_offsets_ms', [])
@@ -235,6 +240,11 @@ class Manager(Node):
         joint_offset_ms = float(p('joint_offset_ms').value or 0.0)
         tactile_offset_ms = float(p('tactile_offset_ms').value or 0.0)
 
+        # 统计频率
+        self.do_calculate_hz: bool = bool(p('do_calculate_hz').value)
+        self._attempt_win = 0
+        self._success_win = 0
+
         if not session_name:
             session_name = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.session_dir = os.path.join(self.save_dir, sanitize(session_name))
@@ -260,7 +270,7 @@ class Manager(Node):
         self.get_logger().info(f"Depth  topics: {self.depth_topics}")
         self.get_logger().info(f"Joint: {self.joint_topic}, Tactile: {self.tactile_topic}")
         self.get_logger().info(
-            f"rate={self.rate_hz}Hz, tol(img/joint/tactile)=[{image_tol_ns/1e6:.1f},{joint_tol_ns/1e6:.1f},{tactile_tol_ns/1e6:.1f}]ms"
+            f"rate={self.rate_hz}Hz, tol(img/joint/tactile)=[{image_tol_ns / 1e6:.1f},{joint_tol_ns / 1e6:.1f},{tactile_tol_ns / 1e6:.1f}]ms"
         )
 
         # ---------- 对齐器 ----------
@@ -268,8 +278,8 @@ class Manager(Node):
         D = len(self.depth_topics) if self.save_depth else 0
         self._idx_color = list(range(C))
         self._idx_depth = list(range(C, C + D))
-        self._idx_joint  = C + D
-        self._idx_tact   = C + D + 1
+        self._idx_joint = C + D
+        self._idx_tact = C + D + 1
         num_streams = C + D + 2
 
         tolerances_ns: List[int] = []
@@ -352,6 +362,8 @@ class Manager(Node):
             else:
                 t_ns = self.get_clock().now().nanoseconds
             self.aligner.put_nowait(self._idx_color[i], t_ns, msg)
+            # self.get_logger().info(f"receive image:{i} at {time.perf_counter()}")
+
         return _cb
 
     def _mk_depth_cb(self, j: int):
@@ -361,6 +373,8 @@ class Manager(Node):
             else:
                 t_ns = self.get_clock().now().nanoseconds
             self.aligner.put_nowait(self._idx_depth[j], t_ns, msg)
+            # self.get_logger().info(f"receive depth:{j} at {time.perf_counter()}")
+
         return _cb
 
     def _joint_cb(self, msg: JointState):
@@ -373,7 +387,6 @@ class Manager(Node):
         t_ns = self.get_clock().now().nanoseconds
         self.aligner.put_nowait(self._idx_tact, t_ns, msg)
 
-    # ---------- 保存线程 ----------
     def _save_loop(self):
         period = 1.0 / max(1e-6, self.rate_hz)
         next_t = time.perf_counter()
@@ -383,13 +396,60 @@ class Manager(Node):
                 time.sleep(next_t - now)
             next_t += period
             try:
+                # === 新增：记录一次尝试 ===
+                if self.do_calculate_hz:
+                    self._attempt_win += 1
+
                 out = self.aligner.step()
                 if out is None:
                     continue
+
+                # === 新增：记录一次成功 ===
+                if self.do_calculate_hz:
+                    self._success_win += 1
+
                 t_ref, picks = out
                 self._save_once(t_ref, picks)
+
+                # === 新增：保存成功后更新统计 ===
+                if self.do_calculate_hz:
+                    self._on_saved_stats()
             except Exception as e:
                 self.get_logger().error(f"save loop error: {e}")
+
+    # === 新增：统计函数 ===
+    def _on_saved_stats(self):
+        now = time.perf_counter()
+        self._save_times.append(now)
+
+        # 滑动窗口：只保留最近 stats_window_s 秒的时间戳
+        cutoff = now - self.stats_window_s
+        while self._save_times and self._save_times[0] < cutoff:
+            self._save_times.popleft()
+
+        # 计算窗口 FPS 和瞬时 FPS
+        win_fps = 0.0
+        inst_fps = 0.0
+        if len(self._save_times) >= 2:
+            dt_win = self._save_times[-1] - self._save_times[0]
+            if dt_win > 0:
+                win_fps = (len(self._save_times) - 1) / dt_win
+            dt_inst = self._save_times[-1] - self._save_times[-2]
+            if dt_inst > 0:
+                inst_fps = 1.0 / dt_inst
+
+        # 到时间就打印一次统计，并清空尝试/成功的窗口计数
+        if (now - self._last_rate_log_t) >= self.stats_log_period_s:
+            hit_ratio = (self._success_win / self._attempt_win) if self._attempt_win > 0 else 0.0
+            self.get_logger().info(
+                f"[save stats] inst_fps={inst_fps:.2f}, "
+                f"win({self.stats_window_s:.1f}s)_fps={win_fps:.2f}, "
+                f"align_hit_ratio={hit_ratio:.1%} "
+                f"(attempts={self._attempt_win}, success={self._success_win})"
+            )
+            self._attempt_win = 0
+            self._success_win = 0
+            self._last_rate_log_t = now
 
     def _save_once(self, t_ref: int, picks: List[Tuple[int, Any]]):
         idx = self.sample_idx
@@ -443,7 +503,8 @@ class Manager(Node):
                 else:
                     out = cv_img.astype(np.uint16)
 
-                cam_dir = self.cam_dirs[dep_i] if dep_i < len(self.cam_dirs) else os.path.join(self.session_dir, f'cam_dep_{dep_i:02d}')
+                cam_dir = self.cam_dirs[dep_i] if dep_i < len(self.cam_dirs) else os.path.join(self.session_dir,
+                                                                                               f'cam_dep_{dep_i:02d}')
                 ensure_dir(os.path.join(cam_dir, 'depth'))
                 fn = f'depth_{idx:06d}.png'
                 fp = os.path.join(cam_dir, 'depth', fn)
@@ -462,7 +523,7 @@ class Manager(Node):
             'name': list(js.name),
             'position': [float(x) for x in js.position],
             'velocity': [float(x) for x in js.velocity],
-            'effort':   [float(x) for x in js.effort],
+            'effort': [float(x) for x in js.effort],
         })
 
         # --- 触觉 ---
