@@ -18,6 +18,8 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
+from utils.image_writer import AsyncImageWriter
+
 
 # ====================== 小工具 ======================
 
@@ -369,8 +371,8 @@ class Manager(Node):
 
         # ---------- 参数 ----------
         # 话题
-        self.declare_parameter('color_topics', [])
-        self.declare_parameter('depth_topics', [])
+        self.declare_parameter('color_topics', [''])
+        self.declare_parameter('depth_topics', [''])
         self.declare_parameter('color_topics_csv', '')
         self.declare_parameter('depth_topics_csv', '')
         self.declare_parameter('joint_state_topic', '/robot/joint_states')
@@ -406,8 +408,8 @@ class Manager(Node):
         p = self.get_parameter
 
         # 读取话题参数
-        color_topics = list(p('color_topics').value or [])
-        depth_topics = list(p('depth_topics').value or [])
+        color_topics = list(p('color_topics').value or [''])
+        depth_topics = list(p('depth_topics').value or [''])
         if not color_topics:
             csv = p('color_topics_csv').value or ''
             if csv.strip():
@@ -457,6 +459,7 @@ class Manager(Node):
 
         self.episode_idx: int = int(p('episode_idx').value)
         self.mode: int = int(p('mode').value)
+        self.frame_idx = 0  # 新增：帧编号
 
         if not session_name:
             session_name = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -555,6 +558,16 @@ class Manager(Node):
         # 工具
         self.bridge = CvBridge()
 
+        # 图像保存器
+        self.image_writer = AsyncImageWriter(
+            num_processes=0,
+            num_threads=12,
+        )
+
+        # 元数据缓冲
+        self.meta_buffer = []
+        self.meta_jsonl_path = os.path.join(self.session_dir, 'meta.jsonl')
+
         # === 录制开关与键盘监听 ===
         self._record_enabled = False  # 是否允许调用 _save_once（默认暂停，按 Ctrl 开始）
         self._kb_listener = None
@@ -608,9 +621,22 @@ class Manager(Node):
             # 右方向键：停止
             elif key == kb.Key.ctrl_r:
                 if self._record_enabled:
+                    # 先保存当前episode_idx
+                    prev_episode_idx = self.episode_idx
+                    # 先flush meta_buffer到当前episode
+                    try:
+                        episode_dir = os.path.join(self.save_dir, f"episode_{prev_episode_idx:06d}")
+                        self._flush_meta_buffer(episode_dir)
+                    except Exception as e:
+                        self.get_logger().warn(f"Flush meta_buffer on stop failed: {e}")
+                    # 再切换episode编号
                     self._record_enabled = False
                     self.episode_idx += 1
+                    self.frame_idx = 0  # 新增：切换episode时清零帧编号
                     self.get_logger().info("Recording DISABLED by right Ctrl")
+                    # 新增：标记需要输出安全日志
+                    self._pending_safe_log = True
+
         except Exception as e:
             self.get_logger().warn(f"Keyboard handler error: {e}")
 
@@ -675,23 +701,23 @@ class Manager(Node):
                     if (now - self._last_pause_log) > 2.0:
                         self.get_logger().debug("Paused: press Ctrl to start/resume, Right Arrow to stop.")
                         self._last_pause_log = now
+                    # 新增：检测是否所有图片写入已完成，若完成则输出安全日志
+                    if hasattr(self, '_pending_safe_log') and self._pending_safe_log:
+                        if self.image_writer.is_idle():
+                            self.get_logger().info("[SAFE] 所有数据已安全保存，可以安全退出程序！")
+                            self._pending_safe_log = False
                     continue
-
                 # === 新增：记录一次尝试（可选） ===
                 if self.do_calculate_hz:
                     self._attempt_win += 1
-
                 out = self.aligner.step()
                 if out is None:
                     continue
-
                 # === 新增：记录一次成功（可选） ===
                 if self.do_calculate_hz:
                     self._success_win += 1
-
                 t_ref, picks = out
                 self._save_once(t_ref, picks)
-
                 # === 新增：保存成功后更新统计（可选） ===
                 if self.do_calculate_hz:
                     self._on_saved_stats()
@@ -733,7 +759,75 @@ class Manager(Node):
             self._last_rate_log_t = now
 
     def _save_once(self, t_ref: int, picks: List[Tuple[int, Any]]):
-        # self.get_logger().info(f"save once at {time.perf_counter()}")
+        idx = self.frame_idx  # 用自定义帧编号
+        self.frame_idx += 1
+
+        # 新增 episode_idx，默认为 0
+        episode_idx = getattr(self, 'episode_idx', 0)
+        episode_dir = os.path.join(self.save_dir, f"episode_{episode_idx:06d}")
+        ensure_dir(episode_dir)
+
+        C = len(self._idx_color)
+        D = len(self._idx_depth)
+        color_picks = picks[0:C]
+        depth_picks = picks[C:C + D] if D > 0 else []
+        joint_ts, js_msg = picks[C + D]
+        tact_ts, tact_msg = picks[C + D + 1]
+
+        # === 1. 图片异步写 ===
+        image_fields = {}
+        # 彩色
+        for cam_i, (t_ns, msg) in enumerate(color_picks):
+            cam_name = sanitize(self.color_topics[cam_i])
+            img_dir = os.path.join(episode_dir, "images", cam_name)
+            ensure_dir(img_dir)
+            fn = f"frame_{idx:06d}.png"
+            fp = os.path.join(img_dir, fn)
+            if getattr(msg, "encoding", "") != 'bgr8':
+                img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            else:
+                img = self.bridge.imgmsg_to_cv2(msg)
+            self.image_writer.save_image(img, fp)
+            image_fields[cam_name] = os.path.relpath(fp, episode_dir)
+        # 深度（同彩色处理）
+        if self.save_depth and depth_picks:
+            for dep_i, (t_ns, msg) in enumerate(depth_picks):
+                cam_name = sanitize(self.depth_topics[dep_i])
+                img_dir = os.path.join(episode_dir, "images", cam_name)
+                ensure_dir(img_dir)
+                fn = f"frame_{idx:06d}.png"
+                fp = os.path.join(img_dir, fn)
+                if getattr(msg, "encoding", "") != 'bgr8':
+                    img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+                else:
+                    img = self.bridge.imgmsg_to_cv2(msg)
+                self.image_writer.save_image(img, fp)
+                image_fields[cam_name] = os.path.relpath(fp, episode_dir)
+
+        # === 2. 组装元数据 ===
+        meta = dict(
+            episode_idx=episode_idx,  # 新增
+            frame_index=idx,
+            timestamp=time.time(),
+            **image_fields,
+            joint={
+                "stamp_ns": int(joint_ts),
+                "name": list(js_msg.name),
+                "position": [float(x) for x in js_msg.position],
+                "velocity": [float(x) for x in js_msg.velocity],
+                "effort": [float(x) for x in js_msg.effort],
+            },
+            tactile={
+                "stamp_ns": int(tact_ts),
+                "data": [float(x) for x in tact_msg.data]
+            }
+        )
+
+        # === 优化：只缓存在 meta_buffer，定期flush ===
+        self.meta_buffer.append(meta)
+        if len(self.meta_buffer) >= 100:
+            self._flush_meta_buffer(episode_dir)
+
         return
         idx = self.sample_idx
         self.sample_idx += 1
@@ -823,8 +917,39 @@ class Manager(Node):
         # 周期日志
         if idx % int(max(1, self.rate_hz)) == 0:
             self.get_logger().info(f"saved idx={idx} @t_ref={t_ref} ns")
+    
+    def _flush_meta_buffer(self, episode_dir=None):
+        # episode_dir: 当前episode的目录
+        if not self.meta_buffer:
+            return
+        if episode_dir is None:
+            # 默认用当前episode
+            episode_idx = getattr(self, 'episode_idx', 0)
+            episode_dir = os.path.join(self.save_dir, f"episode_{episode_idx:06d}")
+        meta_jsonl_path = os.path.join(episode_dir, 'meta.jsonl')
+        # 读出所有旧行
+        old_lines = []
+        old_keys = set()
+        if os.path.exists(meta_jsonl_path):
+            with open(meta_jsonl_path, 'r') as f:
+                for line in f:
+                    try:
+                        old = json.loads(line)
+                        key = (old.get('episode_idx'), old.get('frame_index'))
+                        old_keys.add(key)
+                        old_lines.append((key, line.rstrip('\n')))
+                    except Exception:
+                        old_lines.append((None, line.rstrip('\n')))
+        # 用dict去重，优先用buffer里的新meta
+        buffer_dict = {(m['episode_idx'], m['frame_index']): json.dumps(m, ensure_ascii=False) for m in self.meta_buffer}
+        # 先保留旧行中未被新meta覆盖的
+        lines = [l for k, l in old_lines if k not in buffer_dict]
+        # 再追加新meta
+        lines.extend(buffer_dict.values())
+        with open(meta_jsonl_path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        self.meta_buffer.clear()
 
-    # ---------- 关闭 ----------
     def destroy_node(self):
         # 停止键盘监听
         try:
@@ -837,6 +962,11 @@ class Manager(Node):
         try:
             if self.worker.is_alive():
                 self.worker.join(timeout=3.0)
+        except Exception:
+            pass
+        # 停止前flush剩余meta
+        try:
+            self._flush_meta_buffer()
         except Exception:
             pass
         return super().destroy_node()
