@@ -119,11 +119,14 @@ def generate_launch_description():
     jnt_off = DeclareLaunchArgument('joint_offset_ms', default_value='0.0')
     tac_off = DeclareLaunchArgument('tactile_offset_ms', default_value='0.0')
 
+    episode_idx = DeclareLaunchArgument('episode_idx', default_value='0')
+    mode = DeclareLaunchArgument('mode', default_value='0', description='必须指定mode, 1为录制，2为推理')
+
     return LaunchDescription([
         pkg_arg, exec_arg, ns_arg, name_arg,
         color_csv, depth_csv, joint_arg, tact_arg,
         rate_arg, img_tol, jnt_tol, tac_tol, win_sec,
         dir_arg, sess_arg, save_dep, use_rtime, do_cal_hz, jpg_q,
-        color_off, depth_off, jnt_off, tac_off,
+        color_off, depth_off, jnt_off, tac_off, episode_idx, mode,
         OpaqueFunction(function=_launch_setup),
     ])

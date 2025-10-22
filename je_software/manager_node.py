@@ -394,6 +394,8 @@ class Manager(Node):
         self.declare_parameter('do_calculate_hz', True)
         self.declare_parameter('stats_window_s', 5.0)  # 统计窗口长度(秒)
         self.declare_parameter('stats_log_period_s', 2.0)  # 日志输出周期(秒)
+        self.declare_parameter('episode_idx', 0)
+        self.declare_parameter('mode', 0)
 
         # 偏置（ms）
         self.declare_parameter('color_offsets_ms', [])
@@ -452,6 +454,9 @@ class Manager(Node):
         self._success_win = 0
         self._save_times = deque()  # 保存成功的时间戳(秒, perf_counter)
         self._last_rate_log_t = time.perf_counter()  # 上次打印统计的时间
+
+        self.episode_idx: int = int(p('episode_idx').value)
+        self.mode: int = int(p('mode').value)
 
         if not session_name:
             session_name = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -575,8 +580,14 @@ class Manager(Node):
         # 保存线程
         self.sample_idx = 0
         self._stop_evt = threading.Event()
-        self.worker = threading.Thread(target=self._save_loop, name='logger-aligner', daemon=False)
-        self.worker.start()
+        if self.mode == 0:
+            self.get_logger().error("Select a mode!!!")
+        elif self.mode == 1:
+            self.worker = threading.Thread(target=self._save_loop, name='logger-aligner', daemon=False)
+            self.worker.start()
+        elif self.mode == 2:
+            self.worker = threading.Thread(target=self._inference_loop, name='logger-aligner', daemon=False)
+            self.worker.start()
 
     def _on_key_press(self, key):
         """全局键盘：Ctrl = start/resume，Right Arrow = stop"""
@@ -598,6 +609,7 @@ class Manager(Node):
             elif key == kb.Key.ctrl_r:
                 if self._record_enabled:
                     self._record_enabled = False
+                    self.episode_idx += 1
                     self.get_logger().info("Recording DISABLED by right Ctrl")
         except Exception as e:
             self.get_logger().warn(f"Keyboard handler error: {e}")
