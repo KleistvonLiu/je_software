@@ -35,6 +35,27 @@ def stamp_to_ns(stamp) -> int:
     # 假设 stamp 有 sec / nanosec，且可能为 0
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
+def _pack_depth_u16_to_rgb8(depth_u16: np.ndarray, order: str = "HI_LO", b_fill: int = 0) -> np.ndarray:
+    """
+    depth_u16: (H, W) uint16
+    返回: (H, W, 3) uint8
+      - order="HI_LO": R=高8位, G=低8位
+      - order="LO_HI": R=低8位, G=高8位
+      - B 通道用 b_fill 填充（0/255/或其他标记）
+    """
+    if depth_u16.dtype != np.uint16:
+        raise ValueError("depth_u16 must be uint16")
+    hi = ((depth_u16 >> 8) & 0xFF).astype(np.uint8)
+    lo = (depth_u16 & 0xFF).astype(np.uint8)
+    if order.upper() == "HI_LO":
+        r, g = hi, lo
+    elif order.upper() == "LO_HI":
+        r, g = lo, hi
+    else:
+        raise ValueError("order must be 'HI_LO' or 'LO_HI'")
+    b = np.full_like(r, np.uint8(b_fill))
+    rgb = np.stack([r, g, b], axis=-1)  # (H,W,3)
+    return rgb
 
 # ====================== 高效多流对齐器 ======================
 class MultiStreamAligner:
@@ -386,7 +407,7 @@ class Manager(Node):
 
         # 窗口与目录
         self.declare_parameter('queue_seconds', 2.0)
-        self.declare_parameter('save_dir', os.path.expanduser('/home/kleist/Documents/temp/'))
+        self.declare_parameter('save_dir', os.path.expanduser('/home/kleist/Documents/manager_node_temp/'))
         self.declare_parameter('session_name', '')
         self.declare_parameter('save_depth', True)
 
@@ -783,8 +804,8 @@ class Manager(Node):
             ensure_dir(img_dir)
             fn = f"frame_{idx:06d}.png"
             fp = os.path.join(img_dir, fn)
-            if getattr(msg, "encoding", "") != 'bgr8':
-                img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            if getattr(msg, "encoding", "") != 'rgb8':
+                img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
             else:
                 img = self.bridge.imgmsg_to_cv2(msg)
             self.image_writer.save_image(img, fp)
@@ -797,11 +818,23 @@ class Manager(Node):
                 ensure_dir(img_dir)
                 fn = f"frame_{idx:06d}.png"
                 fp = os.path.join(img_dir, fn)
-                if getattr(msg, "encoding", "") != 'bgr8':
-                    img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16uc1')
-                else:
-                    img = self.bridge.imgmsg_to_cv2(msg)
-                self.image_writer.save_image(img, fp)
+
+                # 统一先解为 16UC1（uint16），再打包成 rgb8
+                try:
+                    depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')  # (H,W) uint16
+                except Exception:
+                    # 有的驱动给的是 mono16，兼容一下
+                    depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='mono16')
+
+                depth_rgb8 = _pack_depth_u16_to_rgb8(depth_u16, order="HI_LO", b_fill=0)  # (H,W,3) uint8，无损打包
+
+                # 如果你的 image_writer 期望 BGR 顺序（OpenCV 常见），可在此转换：
+                # import cv2
+                # depth_bgr8 = cv2.cvtColor(depth_rgb8, cv2.COLOR_RGB2BGR)
+                # self.image_writer.save_image(depth_bgr8, fp)
+                # 否则直接按 rgb8 保存：
+                self.image_writer.save_image(depth_rgb8, fp)
+
                 image_fields[cam_name] = os.path.relpath(fp, episode_dir)
 
         # === 2. 组装元数据 ===

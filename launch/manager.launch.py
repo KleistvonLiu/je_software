@@ -106,9 +106,9 @@ def generate_launch_description():
     win_sec = DeclareLaunchArgument('queue_seconds', default_value='2.0')
 
     # --- 目录/控制 ---
-    dir_arg = DeclareLaunchArgument('save_dir', default_value='/home/kleist/Documents/temp/')
+    dir_arg = DeclareLaunchArgument('save_dir', default_value='/home/kleist/Documents/manager_node_temp/')
     sess_arg = DeclareLaunchArgument('session_name', default_value='')
-    save_dep = DeclareLaunchArgument('save_depth', default_value='false')
+    save_dep = DeclareLaunchArgument('save_depth', default_value='true')
     use_rtime = DeclareLaunchArgument('use_ros_time', default_value='true')
     do_cal_hz = DeclareLaunchArgument('do_calculate_hz', default_value='true')
     jpg_q = DeclareLaunchArgument('color_jpeg_quality', default_value='95')
