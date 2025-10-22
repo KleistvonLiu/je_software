@@ -371,10 +371,10 @@ class Manager(Node):
 
         # ---------- 参数 ----------
         # 话题
-        self.declare_parameter('color_topics', [''])
-        self.declare_parameter('depth_topics', [''])
-        self.declare_parameter('color_topics_csv', '')
-        self.declare_parameter('depth_topics_csv', '')
+        self.declare_parameter('color_topics', [])
+        self.declare_parameter('depth_topics', [])
+        self.declare_parameter('color_topics_csv', '/camera_01/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw')
+        self.declare_parameter('depth_topics_csv', '/camera_01/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw')
         self.declare_parameter('joint_state_topic', '/robot/joint_states')
         self.declare_parameter('tactile_topic', '/tactile_data')
 
@@ -386,7 +386,7 @@ class Manager(Node):
 
         # 窗口与目录
         self.declare_parameter('queue_seconds', 2.0)
-        self.declare_parameter('save_dir', os.path.expanduser('~/ros2_logs/sensor_logger'))
+        self.declare_parameter('save_dir', os.path.expanduser('/home/kleist/Documents/temp/'))
         self.declare_parameter('session_name', '')
         self.declare_parameter('save_depth', True)
 
@@ -397,7 +397,7 @@ class Manager(Node):
         self.declare_parameter('stats_window_s', 5.0)  # 统计窗口长度(秒)
         self.declare_parameter('stats_log_period_s', 2.0)  # 日志输出周期(秒)
         self.declare_parameter('episode_idx', 0)
-        self.declare_parameter('mode', 0)
+        self.declare_parameter('mode', 1)
 
         # 偏置（ms）
         self.declare_parameter('color_offsets_ms', [])
@@ -408,8 +408,8 @@ class Manager(Node):
         p = self.get_parameter
 
         # 读取话题参数
-        color_topics = list(p('color_topics').value or [''])
-        depth_topics = list(p('depth_topics').value or [''])
+        color_topics = list(p('color_topics').value or [])
+        depth_topics = list(p('depth_topics').value or [])
         if not color_topics:
             csv = p('color_topics_csv').value or ''
             if csv.strip():
@@ -798,7 +798,7 @@ class Manager(Node):
                 fn = f"frame_{idx:06d}.png"
                 fp = os.path.join(img_dir, fn)
                 if getattr(msg, "encoding", "") != 'bgr8':
-                    img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+                    img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16uc1')
                 else:
                     img = self.bridge.imgmsg_to_cv2(msg)
                 self.image_writer.save_image(img, fp)

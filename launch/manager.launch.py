@@ -106,9 +106,9 @@ def generate_launch_description():
     win_sec = DeclareLaunchArgument('queue_seconds', default_value='2.0')
 
     # --- 目录/控制 ---
-    dir_arg = DeclareLaunchArgument('save_dir', default_value='~/ros2_logs/sensor_logger')
+    dir_arg = DeclareLaunchArgument('save_dir', default_value='/home/kleist/Documents/temp/')
     sess_arg = DeclareLaunchArgument('session_name', default_value='')
-    save_dep = DeclareLaunchArgument('save_depth', default_value='true')
+    save_dep = DeclareLaunchArgument('save_depth', default_value='false')
     use_rtime = DeclareLaunchArgument('use_ros_time', default_value='true')
     do_cal_hz = DeclareLaunchArgument('do_calculate_hz', default_value='true')
     jpg_q = DeclareLaunchArgument('color_jpeg_quality', default_value='95')
@@ -120,7 +120,7 @@ def generate_launch_description():
     tac_off = DeclareLaunchArgument('tactile_offset_ms', default_value='0.0')
 
     episode_idx = DeclareLaunchArgument('episode_idx', default_value='0')
-    mode = DeclareLaunchArgument('mode', default_value='0', description='必须指定mode, 1为录制，2为推理')
+    mode = DeclareLaunchArgument('mode', default_value='1', description='必须指定mode, 1为录制，2为推理')
 
     return LaunchDescription([
         pkg_arg, exec_arg, ns_arg, name_arg,
