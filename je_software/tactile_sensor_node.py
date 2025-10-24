@@ -30,43 +30,65 @@ class TactileSensorNode(Node):
     串口读取（70 字节）：
       header(2B: 0xFF 0x84) + cnt(2B BE) + 32*ADC(64B: BE u16) + CRC(2B BE)
     后台线程持续抓帧 -> 校验 -> 解析 -> 发布 Float32MultiArray（32通道）
+    关键改动：
+      - 默认波特率改为 460800，端口默认为 by-id
+      - 打开串口后：独占、清缓冲、DTR/RTS 拨动、可选发送启动指令
+      - 开读前执行 warmup：等待首个完整有效帧
+      - inter_byte_timeout 防止粘连/久等
     """
 
     def __init__(self):
         super().__init__('tactile_sensor_node')
 
         # ---------------- 参数 ----------------
-        # 基本串口配置
-        self.declare_parameter('port', '/dev/ttyUSB0')       # 串口设备
-        self.declare_parameter('baudrate', 115200)           # 波特率
-        self.declare_parameter('timeout', 0.5)               # 读超时（秒）
-        self.declare_parameter('frame_size', 70)             # 帧长度
-        self.declare_parameter('header_hex', 'FF 84')        # 帧头（十六进制字符串）
+        # 串口设备与串口行为
+        self.declare_parameter('port', '/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0')
+        self.declare_parameter('baudrate', 460800)
+        self.declare_parameter('timeout', 0.5)                 # read 超时（秒）
+        self.declare_parameter('inter_byte_timeout', 0.02)     # 字节间超时（秒，抗粘连）
+        self.declare_parameter('frame_size', 70)
+        self.declare_parameter('header_hex', 'FF 84')
+
+        # 启动/预热
+        self.declare_parameter('exclusive', True)              # 串口独占，避免多进程抢读
+        self.declare_parameter('toggle_dtr_rts', True)         # 是否拨动 DTR/RTS 唤醒
+        self.declare_parameter('start_cmd_hex', '')            # 可选：十六进制启动指令（空则不发）
+        self.declare_parameter('warmup', True)                 # 是否等待首帧
+        self.declare_parameter('warmup_attempts', 3)
+        self.declare_parameter('warmup_wait_s', 1.0)
 
         # ROS 话题
         self.declare_parameter('topic', '/tactile_data')
 
         # 日志/调试
-        self.declare_parameter('log_level', 'info')          # debug/info/warn/error
-        self.declare_parameter('dump_bad_frames', False)     # CRC 错时是否转储十六进制
-        self.declare_parameter('dump_bad_limit', 3)          # 最多转储多少次
-        self.declare_parameter('stats_period_s', 5.0)        # 多久打印一次统计
+        self.declare_parameter('log_level', 'info')
+        self.declare_parameter('dump_bad_frames', False)
+        self.declare_parameter('dump_bad_limit', 3)
+        self.declare_parameter('stats_period_s', 5.0)
 
-        # 获取参数（rclpy 会做类型转换）
+        # 获取参数
         p = self.get_parameter
-        self.port: str = p('port').value
+        self.port: str = str(p('port').value)
         self.baudrate: int = int(p('baudrate').value)
         self.timeout_s: float = float(p('timeout').value)
+        self.ib_timeout_s: float = float(p('inter_byte_timeout').value)
         self.frame_size: int = int(p('frame_size').value)
         header_hex: str = str(p('header_hex').value)
-        self.topic: str = p('topic').value
+
+        self.exclusive: bool = bool(p('exclusive').value)
+        self.toggle_dtr_rts: bool = bool(p('toggle_dtr_rts').value)
+        self.start_cmd_hex: str = str(p('start_cmd_hex').value).strip()
+        self.warmup: bool = bool(p('warmup').value)
+        self.warmup_attempts: int = int(p('warmup_attempts').value)
+        self.warmup_wait_s: float = float(p('warmup_wait_s').value)
+
+        self.topic: str = str(p('topic').value)
 
         log_level_str: str = str(p('log_level').value).lower().strip()
         self.dump_bad_frames: bool = bool(p('dump_bad_frames').value)
         self.dump_bad_limit: int = int(p('dump_bad_limit').value)
         self.stats_period_s: float = float(p('stats_period_s').value)
 
-        # 设置日志等级（若可用）
         lvl = {
             'debug': LoggingSeverity.DEBUG,
             'info': LoggingSeverity.INFO,
@@ -77,10 +99,9 @@ class TactileSensorNode(Node):
         try:
             self.get_logger().set_level(lvl)
         except Exception:
-            # 某些发行版不支持 set_level，忽略即可
             pass
 
-        # 解析帧头
+        # 帧头解析
         try:
             self.header_bytes = bytes.fromhex(header_hex)
             if len(self.header_bytes) < 1:
@@ -89,42 +110,142 @@ class TactileSensorNode(Node):
             self.get_logger().warn(f'Invalid header_hex "{header_hex}", fallback to FF 84: {e}')
             self.header_bytes = b'\xFF\x84'
 
-        # ---------------- 发布器 ----------------
+        # 发布器
         self.publisher = self.create_publisher(Float32MultiArray, self.topic, 10)
 
-        # ---------------- 统计量 ----------------
-        self._frames_ok = 0          # 成功帧
-        self._frames_crc_bad = 0     # CRC 错
-        self._frames_short = 0       # 未读满
-        self._resync_cnt = 0         # 头部重同步次数
-        self._bytes_read = 0         # 读到的总字节
+        # 统计
+        self._frames_ok = 0
+        self._frames_crc_bad = 0
+        self._frames_short = 0
+        self._resync_cnt = 0
+        self._bytes_read = 0
         self._last_stats_t = time.monotonic()
-        self._ok_times = deque(maxlen=2048)  # 用于估计平均 FPS（成功帧时间戳）
+        self._ok_times = deque(maxlen=2048)
 
-        # ---------------- 启动串口 ----------------
+        # ---------------- 打开串口 + 唤醒 + 预热 ----------------
         try:
-            self.ser = serial.Serial(self.port, baudrate=self.baudrate, timeout=self.timeout_s)
+            self.ser = serial.Serial(
+                self.port,
+                baudrate=self.baudrate,
+                timeout=self.timeout_s,
+                inter_byte_timeout=self.ib_timeout_s,
+            )
+            # 独占（Linux 支持）
+            if self.exclusive:
+                try:
+                    self.ser.exclusive = True
+                except Exception:
+                    pass
+
+            # 清空缓冲
+            try:
+                self.ser.reset_input_buffer()
+                self.ser.reset_output_buffer()
+            except Exception:
+                pass
+
+            # DTR/RTS 拨动（很多板子靠这个启动/复位）
+            if self.toggle_dtr_rts:
+                try:
+                    self.ser.dtr = False
+                    self.ser.rts = False
+                    time.sleep(0.05)
+                    self.ser.dtr = True
+                    self.ser.rts = True
+                except Exception:
+                    pass
+
+            # 可选：发送启动指令
+            if self.start_cmd_hex:
+                try:
+                    cmd = bytes.fromhex(self.start_cmd_hex)
+                    self.ser.write(cmd)
+                    self.ser.flush()
+                except Exception as e:
+                    self.get_logger().warn(f"start_cmd_hex send failed: {e!r}")
+
+            # 预热：等待首帧
+            warmed = True
+            if self.warmup:
+                warmed = self._warmup_until_first_frame(
+                    tries=self.warmup_attempts, wait_s=self.warmup_wait_s
+                )
+
             self.get_logger().info(
                 f"Serial opened: port={self.port}, baud={self.baudrate}, timeout={self.timeout_s:.3f}s, "
-                f"frame_size={self.frame_size}, header={self.header_bytes.hex(' ')}, topic={self.topic}, "
-                f"stats_period={self.stats_period_s:.1f}s, dump_bad_frames={self.dump_bad_frames}"
+                f"ibt={self.ib_timeout_s:.3f}s, frame_size={self.frame_size}, header={self.header_bytes.hex(' ')}, "
+                f"topic={self.topic}, warmup={self.warmup}({warmed}), dump_bad_frames={self.dump_bad_frames}"
             )
+
         except Exception as e:
-            self.get_logger().error(f"Open serial failed: {e!r}")
+            self.get_logger().error(f"Open/Warmup serial failed: {e!r}")
             raise
 
-        # ---------------- 后台线程 ----------------
+        # 后台线程
         self._stop_event = threading.Event()
-        self._bad_dumped = 0  # 已转储坏帧次数
+        self._bad_dumped = 0
         self._thread = threading.Thread(target=self._read_loop, name="tactile-read", daemon=True)
         self._thread.start()
 
         # 周期统计
         self._stats_timer = self.create_timer(self.stats_period_s, self._emit_stats)
 
-    # ---------------- 内部：CRC 校验 ----------------
+    # ---------------- 首帧 warmup ----------------
+    def _warmup_until_first_frame(self, tries: int = 3, wait_s: float = 1.0) -> bool:
+        """等待第一帧完整有效数据；失败会重试并拨动 DTR/RTS。"""
+        header = self.header_bytes
+        hlen = len(header)
+        for t in range(tries):
+            t0 = time.monotonic()
+            buf = bytearray()
+            # 先清空缓冲，避免历史噪声
+            try:
+                self.ser.reset_input_buffer()
+            except Exception:
+                pass
+
+            while time.monotonic() - t0 < wait_s:
+                chunk = self.ser.read(max(1, self.frame_size))
+                if not chunk:
+                    continue
+                buf += chunk
+                self._bytes_read += len(chunk)
+
+                i = buf.find(header)
+                if i == -1:
+                    # 防止无限增大
+                    if len(buf) > 4 * self.frame_size:
+                        del buf[:len(buf) - 2 * self.frame_size]
+                    continue
+
+                need = i + self.frame_size
+                if len(buf) < need:
+                    # 继续等后续字节
+                    continue
+
+                frame = bytes(buf[i:need])
+                if self._verify_frame_checksum(frame):
+                    self.get_logger().debug("Warmup: first valid frame captured.")
+                    return True
+                else:
+                    # 从下一个字节继续搜索
+                    del buf[:i + 1]
+
+            # 本轮等待失败：再拨动一次 DTR/RTS
+            if self.toggle_dtr_rts:
+                try:
+                    self.ser.dtr = False
+                    self.ser.rts = False
+                    time.sleep(0.05)
+                    self.ser.dtr = True
+                    self.ser.rts = True
+                except Exception:
+                    pass
+
+        return False
+
+    # ---------------- CRC 校验 ----------------
     def _verify_frame_checksum(self, frame: bytes) -> bool:
-        """对 frame[2:frame_size-2] 求和取低 16 位，与末尾两字节（BE）比对"""
         if len(frame) != self.frame_size:
             return False
         calc = sum(frame[2:self.frame_size - 2]) & 0xFFFF
@@ -156,7 +277,6 @@ class TactileSensorNode(Node):
                     self._bytes_read += len(rest)
 
                     if len(rest) < remain:
-                        # 未读满，重置同步
                         self._frames_short += 1
                         self.get_logger().debug(
                             f"short frame: got {len(rest)} need {remain} (port={self.port})"
@@ -175,7 +295,6 @@ class TactileSensorNode(Node):
                                 f"CRC failed, dump[{self._bad_dumped}/{self.dump_bad_limit}]: "
                                 f"{_hexdump(frame, 80)}"
                             )
-                        # 失败也重置同步
                         self._resync_cnt += 1
                         saw_first = False
                         continue
@@ -194,7 +313,6 @@ class TactileSensorNode(Node):
                         self.get_logger().warn(f"parse ADC failed: {e!r}")
                         self._resync_cnt += 1
 
-                    # 重置以寻找下一帧
                     saw_first = False
                 else:
                     # 第二字节不匹配，若它又是 header0，视为新的起点（允许连续 0xFF）
@@ -216,7 +334,6 @@ class TactileSensorNode(Node):
         if dt <= 0.0:
             return
 
-        # 平均 FPS：用成功帧的时间戳窗口计算
         fps = 0.0
         if len(self._ok_times) >= 2:
             dt_win = self._ok_times[-1] - self._ok_times[0]
@@ -228,7 +345,6 @@ class TactileSensorNode(Node):
             f"crc_bad={self._frames_crc_bad}, short={self._frames_short}, "
             f"resync={self._resync_cnt}, bytes={self._bytes_read}"
         )
-        # 归零计数器只在本周期内累计（如需全局累计，去掉这几行）
         self._frames_ok = 0
         self._frames_crc_bad = 0
         self._frames_short = 0
@@ -243,7 +359,6 @@ class TactileSensorNode(Node):
         try:
             if self.ser:
                 try:
-                    # 打断阻塞读（部分平台支持）
                     self.ser.cancel_read()
                 except Exception:
                     pass

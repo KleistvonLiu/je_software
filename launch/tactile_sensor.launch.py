@@ -7,7 +7,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('port',       default_value='/dev/ttyUSB0'),
         DeclareLaunchArgument('topic',      default_value='/tactile_data'),
-        DeclareLaunchArgument('baudrate',   default_value='115200'),
+        DeclareLaunchArgument('baudrate',   default_value='460800'),
         DeclareLaunchArgument('timeout',    default_value='0.5'),
         DeclareLaunchArgument('frame_size', default_value='70'),
         DeclareLaunchArgument('header_hex', default_value='FF 84'),
