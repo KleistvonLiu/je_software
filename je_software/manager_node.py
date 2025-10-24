@@ -514,7 +514,7 @@ class Manager(Node):
         # ---------- 对齐器 ----------
         C = len(self.color_topics)
         D = len(self.depth_topics) if self.save_depth else 0
-        D = 0
+
         self._idx_color = list(range(C))
         self._idx_depth = list(range(C, C + D))
         self._idx_joint = C + D
