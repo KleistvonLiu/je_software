@@ -8,6 +8,7 @@ from queue import SimpleQueue, Empty
 import pynput
 
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
@@ -513,6 +514,7 @@ class Manager(Node):
         # ---------- 对齐器 ----------
         C = len(self.color_topics)
         D = len(self.depth_topics) if self.save_depth else 0
+        D = 0
         self._idx_color = list(range(C))
         self._idx_depth = list(range(C, C + D))
         self._idx_joint = C + D
@@ -564,13 +566,19 @@ class Manager(Node):
             depth=10,
         )
 
+        self.cg_color = [MutuallyExclusiveCallbackGroup() for _ in range(4)]
+        self.cg_depth = [MutuallyExclusiveCallbackGroup() for _ in range(4)]
+
+        cg_color = ReentrantCallbackGroup()
+        cg_depth = ReentrantCallbackGroup()
+
         for i, topic in enumerate(self.color_topics):
-            self.create_subscription(Image, topic, self._mk_color_cb(i), reliable_qos)
+            self.create_subscription(Image, topic, self._mk_color_cb(i), reliable_qos,callback_group=cg_color)
 
         for j in range(D):
             topic = self.depth_topics[j]
             if topic and self.save_depth:
-                self.create_subscription(Image, topic, self._mk_depth_cb(j), reliable_qos)
+                self.create_subscription(Image, topic, self._mk_depth_cb(j), reliable_qos,callback_group=cg_depth)
 
         # 关节/触觉用 RELIABLE（若上游是 BEST_EFFORT，可改成 sensor_qos）
         self.create_subscription(JointState, self.joint_topic, self._joint_cb, reliable_qos)
