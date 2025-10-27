@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os, json, threading, time, re
+import os, json, threading, time, re, logging
 from collections import deque
 from typing import List, Tuple, Optional, Any, Dict
 from datetime import datetime
@@ -65,14 +65,13 @@ class MultiStreamAligner:
       - 回调 put_nowait 到 ingest 队列
       - step():
         1) drain 各 ingest → 本地 times / msgs（保持单调；乱序帧丢弃）
-        2) t_ref = min(latest_i)
+        2) t_ref = min(latest_i)（仅参考 ref_indices）
         3) 对每路推进“只前进”游标到 <= target 的最大位置，并在它与后一位择近；误差<=tol_i
         4) 成功返回 (t_ref, picks)，并剪枝到选中位置
       - 支持 max_window_ns 以限制窗口大小
-    日志增强：
-      - 统计入队/乱序丢弃/窗口裁剪/对齐成功率
-      - 记录失败原因（空流/超容差）及细节
-      - 限频打印（避免刷屏）
+    新增：
+      - optional_indices：这些流若空，不阻塞对齐，也不做容差检查；picks 中对应位置为 None
+      - non_consuming_indices：成功后不剪枝（低频可复用）
     """
 
     def __init__(
@@ -85,10 +84,11 @@ class MultiStreamAligner:
             logger: Optional[Any] = None,
             name: str = "aligner",
             debug: bool = False,
-            log_every: int = 200,  # 每尝试 N 次打印一条汇总
-            log_period_s: float = 5.0,  # 或每隔 T 秒打印一条汇总（两者取其一满足）
-            ref_indices: Optional[List[int]] = None,  # <-- 新增
-            non_consuming_indices: Optional[List[int]] = None,  # <-- 新增
+            log_every: int = 200,
+            log_period_s: float = 5.0,
+            ref_indices: Optional[List[int]] = None,
+            non_consuming_indices: Optional[List[int]] = None,
+            optional_indices: Optional[List[int]] = None,   # <-- 新增
     ):
         assert num_streams == len(tolerances_ns), "tolerances_ns length must match num_streams"
         self.N = int(num_streams)
@@ -96,18 +96,16 @@ class MultiStreamAligner:
         self.offsets_ns = list(map(int, offsets_ns)) if offsets_ns else [0] * self.N
         self.max_window_ns = int(max_window_ns) if max_window_ns else None
 
-        # 参考流（用于计算 t_ref），默认用所有流；否则只用传入的索引
+        # 参考流
         if ref_indices is None:
             self.ref_indices = list(range(self.N))
         else:
-            # 过滤非法索引并去重、排序
             self.ref_indices = sorted({int(i) for i in ref_indices if 0 <= int(i) < self.N})
             assert self.ref_indices, "ref_indices cannot be empty"
 
-        # 非消耗流：对齐成功后不删除所选帧（让低频流可复用上次样本）
-        non_consuming_set = set()
-        if non_consuming_indices:
-            non_consuming_set = {int(i) for i in non_consuming_indices if 0 <= int(i) < self.N}
+        # 可选/非消耗流
+        self.optional_set = set(int(i) for i in (optional_indices or []) if 0 <= int(i) < self.N)
+        non_consuming_set = set(int(i) for i in (non_consuming_indices or []) if 0 <= int(i) < self.N)
         self.consume_mask = [False if i in non_consuming_set else True for i in range(self.N)]
 
         self.ingest: List[SimpleQueue] = [SimpleQueue() for _ in range(self.N)]
@@ -122,22 +120,21 @@ class MultiStreamAligner:
         self._last_log_t = time.monotonic()
         self.log = logger if logger is not None else logging.getLogger(f"{__name__}.{name}")
 
-        # 统计计数
         self.stats: Dict[str, Any] = {
-            "enq": [0] * self.N,  # 入队计数
-            "drain": [0] * self.N,  # drain 总取出计数
-            "append": [0] * self.N,  # 追加到窗口的计数（乱序会被丢）
-            "drop_ooo": [0] * self.N,  # 乱序丢弃计数
-            "prune": [0] * self.N,  # 窗口裁剪丢弃计数
-            "consumed": [0] * self.N,  # <-- 新增：对齐成功后剪枝删除的数量
-            "step_attempt": 0,  # 尝试对齐次数
-            "step_success": 0,  # 成功对齐次数
-            "last_fail": "",  # 最近失败原因
-            "last_fail_detail": None,  # 最近失败细节
+            "enq": [0] * self.N,
+            "drain": [0] * self.N,
+            "append": [0] * self.N,
+            "drop_ooo": [0] * self.N,
+            "prune": [0] * self.N,
+            "consumed": [0] * self.N,
+            "step_attempt": 0,
+            "step_success": 0,
+            "last_fail": "",
+            "last_fail_detail": None,
         }
 
-        self._dbg("initialized: N=%d, max_window_ns=%s, tolerances=%s, offsets=%s",
-                  self.N, str(self.max_window_ns), self.tolerances_ns, self.offsets_ns)
+        self._dbg("initialized: N=%d, max_window_ns=%s, tolerances=%s, offsets=%s, optional=%s",
+                  self.N, str(self.max_window_ns), self.tolerances_ns, self.offsets_ns, sorted(self.optional_set))
 
     # ---------- 日志工具 ----------
     def _dbg(self, msg: str, *args):
@@ -173,14 +170,12 @@ class MultiStreamAligner:
                 pass
 
     def _maybe_log_summary(self):
-        """限频打印汇总统计。"""
         t = time.monotonic()
         need = (self.stats["step_attempt"] % self.log_every == 0) or ((t - self._last_log_t) >= self.log_period_s)
         if not need:
             return
         self._last_log_t = t
         hit = (self.stats["step_success"] / self.stats["step_attempt"]) if self.stats["step_attempt"] else 0.0
-        # 每路窗口长度
         lens = [len(ti) for ti in self.times]
         self._info(
             "[align] attempts=%d, success=%d, hit=%.1f%%, window_len=%s, "
@@ -193,11 +188,9 @@ class MultiStreamAligner:
 
     # ---------- 接口 ----------
     def put_nowait(self, i: int, t_ns: int, msg: Any):
-        """无阻塞入队。极端异常直接丢帧。"""
         try:
             self.ingest[i].put_nowait((t_ns, msg))
             self.stats["enq"][i] += 1
-            # 低成本调试：偶尔打点
             if self.debug and (self.stats["enq"][i] % (self.log_every // 2 or 1) == 0):
                 self._dbg("enqueued stream[%d] total=%d last_ts=%d", i, self.stats["enq"][i], t_ns)
         except Exception as e:
@@ -225,7 +218,6 @@ class MultiStreamAligner:
                 last = t_ns
                 appended += 1
             else:
-                # 乱序：丢弃
                 drop_ooo += 1
 
         self.stats["drain"][i] += drained
@@ -236,7 +228,6 @@ class MultiStreamAligner:
             self._dbg("drain stream[%d]: drained=%d, appended=%d, drop_ooo=%d, window_len=%d, last_ts=%d",
                       i, drained, appended, drop_ooo, len(ti), last)
 
-        # 限定窗口长度以控内存
         if self.max_window_ns and len(ti) >= 2:
             cutoff = last - self.max_window_ns
             drop_k, n = 0, len(ti)
@@ -259,10 +250,8 @@ class MultiStreamAligner:
     @staticmethod
     def _advance_and_pick(times: List[int], cur: int, target: int) -> Tuple[int, int]:
         n = len(times)
-        # 推进到最后一个 <= target
         while cur + 1 < n and times[cur + 1] <= target:
             cur += 1
-        # 在 cur 与 cur+1 中择近
         pick = 0 if cur < 0 else cur
         if cur + 1 < n:
             left_ts, right_ts = times[pick], times[cur + 1]
@@ -270,38 +259,43 @@ class MultiStreamAligner:
                 pick = cur + 1
         return pick, cur
 
-    def step(self) -> Optional[Tuple[int, List[Tuple[int, Any]]]]:
-        """尝试做一次对齐；成功返回 (t_ref, picks)，否则返回 None。"""
+    def step(self) -> Optional[Tuple[int, List[Optional[Tuple[int, Any]]]]]:
+        """尝试对齐；成功返回 (t_ref, picks)。optional 流在无数据时对应 picks 元素为 None。"""
         self._drain()
         self.stats["step_attempt"] += 1
 
-        # 若某路还没数据
-        # latest = []
+        # 1) 准备参考流的 latest，若参考流为空则直接失败
+        ref_latest = []
+        for i in self.ref_indices:
+            if not self.times[i]:
+                self.stats["last_fail"] = f"waiting_ref_stream_{i}"
+                self.stats["last_fail_detail"] = {"stream": i, "reason": "empty_ref"}
+                self._maybe_log_summary()
+                return None
+            ref_latest.append(self.times[i][-1])
+        t_ref = min(ref_latest)
+
+        picks_idx: List[int] = [-1] * self.N
+        picks: List[Optional[Tuple[int, Any]]] = [None] * self.N
+
         for i in range(self.N):
+            # 可选流且当前无数据：跳过，不做容差检查
+            if (i in self.optional_set) and (not self.times[i]):
+                continue
+
+            # 必需流没有数据：失败
             if not self.times[i]:
                 self.stats["last_fail"] = f"waiting_stream_{i}"
                 self.stats["last_fail_detail"] = {"stream": i, "reason": "empty"}
                 self._maybe_log_summary()
                 return None
-            # latest.append(self.times[i][-1])
 
-        # 2) 计算 t_ref：只考虑“参考流”（相机流）中的 latest
-        latest_refs = [self.times[i][-1] for i in self.ref_indices]
-        t_ref = min(latest_refs)
-
-        picks_idx: List[int] = [-1] * self.N
-        picks: List[Tuple[int, Any]] = [None] * self.N  # type: ignore
-
-        # 对各路与 target 的误差
-        deltas = [None] * self.N  # type: ignore
-
-        for i in range(self.N):
             target = t_ref + self.offsets_ns[i]
             pick_i, cur_after = self._advance_and_pick(self.times[i], self.cursor[i], target)
             err = abs(self.times[i][pick_i] - target)
-            deltas[i] = int(err)
+
+            # 非可选流做容差检查；可选流有数据时也做容差检查（以保持质量）
             if err > self.tolerances_ns[i]:
-                # 容差失败
                 self.stats["last_fail"] = "tolerance_exceeded"
                 self.stats["last_fail_detail"] = {
                     "stream": i,
@@ -310,46 +304,35 @@ class MultiStreamAligner:
                     "error_ns": int(err),
                     "tolerance_ns": int(self.tolerances_ns[i]),
                 }
-                self._dbg("align fail: stream[%d] err_ns=%d > tol_ns=%d (target=%d, pick_ts=%d)",
-                          i, err, self.tolerances_ns[i], target, self.times[i][pick_i])
                 self._maybe_log_summary()
                 return None
+
             picks_idx[i] = pick_i
             picks[i] = (self.times[i][pick_i], self.msgs[i][pick_i])
             self.cursor[i] = cur_after
 
-        # 成功：剪枝到选择点之后
+        # 成功：剪枝（仅剪枝有 pick 且 consume_mask=True 的流）
         for i in range(self.N):
             k = picks_idx[i]
             if k < 0:
                 continue
             if self.consume_mask[i]:
-                # 消耗：删除到选中位置（包含）
                 del self.times[i][:k + 1]
                 del self.msgs[i][:k + 1]
                 self.cursor[i] -= (k + 1)
                 if self.cursor[i] < -1:
                     self.cursor[i] = -1
                 self.stats["consumed"][i] += (k + 1)
-            else:
-                # 非消耗：不删，允许后续重用同一帧
-                # 仅依靠 _drain_one 的时间窗口裁剪来控内存
-                pass
 
         self.stats["step_success"] += 1
         self.stats["last_fail"] = ""
         self.stats["last_fail_detail"] = None
-
-        if self.debug:
-            self._dbg("align OK: t_ref=%d, deltas_ns=%s, windows=%s",
-                      t_ref, deltas, [len(ti) for ti in self.times])
 
         self._maybe_log_summary()
         return t_ref, picks
 
     # ---------- 公共统计接口 ----------
     def metrics(self) -> Dict[str, Any]:
-        """返回一个可读的统计快照（不会清零）。"""
         hit = (self.stats["step_success"] / self.stats["step_attempt"]) if self.stats["step_attempt"] else 0.0
         return {
             "streams": self.N,
@@ -368,7 +351,6 @@ class MultiStreamAligner:
         }
 
     def reset_metrics(self):
-        """清空统计计数（窗口内容不变）。"""
         for k in ("enq", "drain", "append", "drop_ooo", "prune"):
             self.stats[k] = [0] * self.N
         self.stats["step_attempt"] = 0
@@ -382,10 +364,7 @@ class MultiStreamAligner:
 class Manager(Node):
     """
     订阅多路彩色/深度/关节/触觉；保存线程使用 min-latest + 单调游标 对齐；锁外转换/写盘。
-    修复点：
-      - 0 时间戳/无时间戳 → 回退本地时钟
-      - 过滤空话题
-      - 图像/深度 BEST_EFFORT；关节/触觉 RELIABLE
+    触觉(tactile)改为可选：无触觉消息时不会阻塞同步。
     """
 
     def __init__(self):
@@ -397,8 +376,14 @@ class Manager(Node):
         self.declare_parameter('depth_topics', [])
         self.declare_parameter('color_topics_csv', '/camera_01/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw')
         self.declare_parameter('depth_topics_csv', '/camera_01/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw')
-        self.declare_parameter('joint_state_topic', '/robot/joint_states')
-        self.declare_parameter('tactile_topic', '/tactile_data')
+
+        # joint/tactile：多路 + 兼容单路
+        self.declare_parameter('joint_state_topics', [])
+        self.declare_parameter('joint_state_topics_csv', '')
+        self.declare_parameter('tactile_topics', [])
+        self.declare_parameter('tactile_topics_csv', '')
+        self.declare_parameter('joint_state_topic', '/robot/joint_states')  # legacy
+        self.declare_parameter('tactile_topic', '/tactile_data')            # legacy
 
         # 频率与容差（ms）
         self.declare_parameter('rate_hz', 30.0)
@@ -416,8 +401,8 @@ class Manager(Node):
         self.declare_parameter('use_ros_time', True)
         self.declare_parameter('color_jpeg_quality', 95)
         self.declare_parameter('do_calculate_hz', True)
-        self.declare_parameter('stats_window_s', 5.0)  # 统计窗口长度(秒)
-        self.declare_parameter('stats_log_period_s', 2.0)  # 日志输出周期(秒)
+        self.declare_parameter('stats_window_s', 5.0)
+        self.declare_parameter('stats_log_period_s', 2.0)
         self.declare_parameter('episode_idx', 0)
         self.declare_parameter('mode', 1)
 
@@ -447,14 +432,46 @@ class Manager(Node):
 
         self.color_topics: List[str] = color_topics
         self.depth_topics: List[str] = depth_topics
-        self.joint_topic: str = p('joint_state_topic').value
-        self.tactile_topic: str = p('tactile_topic').value
+
+        # 读取 joint/tactile 多路参数（向后兼容）
+        joint_topics = list(p('joint_state_topics').value or [])
+        if not joint_topics:
+            csv = p('joint_state_topics_csv').value or ''
+            if csv.strip():
+                joint_topics = [s.strip() for s in csv.split(',') if s.strip()]
+        if not joint_topics:
+            legacy = p('joint_state_topic').value
+            if legacy and str(legacy).strip():
+                joint_topics = [str(legacy).strip()]
+        self.joint_topics: List[str] = [t for t in joint_topics if t and t.strip()]
+
+        tactile_topics = list(p('tactile_topics').value or [])
+        if not tactile_topics:
+            csv = p('tactile_topics_csv').value or ''
+            if csv.strip():
+                tactile_topics = [s.strip() for s in csv.split(',') if s.strip()]
+        if not tactile_topics:
+            legacy = p('tactile_topic').value
+            if legacy and str(legacy).strip():
+                tactile_topics = [str(legacy).strip()]
+        self.tactile_topics: List[str] = [t for t in tactile_topics if t and t.strip()]
 
         # 频率/容差
         self.rate_hz: float = float(p('rate_hz').value)
         image_tol_ns = int(float(p('image_tolerance_ms').value) * 1e6)
-        joint_tol_ns = int(float(p('joint_tolerance_ms').value) * 1e6)
-        tactile_tol_ns = int(float(p('tactile_tolerance_ms').value) * 1e6)
+
+        def _as_list_ns(param_name: str, n: int) -> List[int]:
+            raw = p(param_name).value
+            if isinstance(raw, (list, tuple)):
+                seq = list(raw)
+                if len(seq) == 0:
+                    return [0] * n
+                if len(seq) == 1 and n > 1:
+                    return [int(float(seq[0]) * 1e6)] * n
+                assert len(seq) == n, f"{param_name} length must == {n} (got {len(seq)})"
+                return [int(float(x) * 1e6) for x in seq]
+            else:
+                return [int(float(raw) * 1e6)] * n
 
         # 窗口/目录
         self.queue_seconds: float = float(p('queue_seconds').value)
@@ -464,11 +481,19 @@ class Manager(Node):
         self.use_ros_time: bool = bool(p('use_ros_time').value)
         self.jpeg_quality: int = int(p('color_jpeg_quality').value)
 
-        # 偏置
-        color_offsets_ms = list(p('color_offsets_ms').value or [])
-        depth_offsets_ms = list(p('depth_offsets_ms').value or [])
-        joint_offset_ms = float(p('joint_offset_ms').value or 0.0)
-        tactile_offset_ms = float(p('tactile_offset_ms').value or 0.0)
+        # 偏置 -> ns 列表
+        def _as_list_offset_ns(param_name: str, n: int) -> List[int]:
+            raw = p(param_name).value
+            if isinstance(raw, (list, tuple)):
+                seq = list(raw)
+                if len(seq) == 0:
+                    return [0] * n
+                if len(seq) == 1 and n > 1:
+                    return [int(float(seq[0]) * 1e6)] * n
+                assert len(seq) == n, f"{param_name} length must == {n} (got {len(seq)})"
+                return [int(float(x) * 1e6) for x in seq]
+            else:
+                return [int(float(raw) * 1e6)] * n
 
         # 统计频率
         self.stats_window_s: float = float(p('stats_window_s').value)
@@ -476,12 +501,12 @@ class Manager(Node):
         self.do_calculate_hz: bool = bool(p('do_calculate_hz').value)
         self._attempt_win = 0
         self._success_win = 0
-        self._save_times = deque()  # 保存成功的时间戳(秒, perf_counter)
-        self._last_rate_log_t = time.perf_counter()  # 上次打印统计的时间
+        self._save_times = deque()
+        self._last_rate_log_t = time.perf_counter()
 
         self.episode_idx: int = int(p('episode_idx').value)
         self.mode: int = int(p('mode').value)
-        self.frame_idx = 0  # 新增：帧编号
+        self.frame_idx = 0
 
         if not session_name:
             session_name = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -506,41 +531,40 @@ class Manager(Node):
         self.get_logger().info(f"Session: {self.session_dir}")
         self.get_logger().info(f"Color topics: {self.color_topics}")
         self.get_logger().info(f"Depth  topics: {self.depth_topics}")
-        self.get_logger().info(f"Joint: {self.joint_topic}, Tactile: {self.tactile_topic}")
-        self.get_logger().info(
-            f"rate={self.rate_hz}Hz, tol(img/joint/tactile)=[{image_tol_ns / 1e6:.1f},{joint_tol_ns / 1e6:.1f},{tactile_tol_ns / 1e6:.1f}]ms"
-        )
+        self.get_logger().info(f"Joint topics:  {self.joint_topics}")
+        self.get_logger().info(f"Tactile topics:{self.tactile_topics}")
 
         # ---------- 对齐器 ----------
         C = len(self.color_topics)
         D = len(self.depth_topics) if self.save_depth else 0
+        J = len(self.joint_topics) if self.joint_topics else 0
+        T = len(self.tactile_topics) if self.tactile_topics else 0
+
         self._idx_color = list(range(C))
         self._idx_depth = list(range(C, C + D))
-        self._idx_joint = C + D
-        self._idx_tact = C + D + 1
-        num_streams = C + D + 2
+        self._idx_joint = list(range(C + D, C + D + J))
+        self._idx_tact  = list(range(C + D + J, C + D + J + T))
+        num_streams = C + D + J + T
 
         tolerances_ns: List[int] = []
         tolerances_ns += [image_tol_ns] * C
         tolerances_ns += [image_tol_ns] * D
-        tolerances_ns += [joint_tol_ns, tactile_tol_ns]
+        tolerances_ns += _as_list_ns('joint_tolerance_ms', J) if J else []
+        tolerances_ns += _as_list_ns('tactile_tolerance_ms', T) if T else []
 
+        color_offsets_ms = list(p('color_offsets_ms').value or [])
+        depth_offsets_ms = list(p('depth_offsets_ms').value or [])
         offsets_ns: List[int] = []
-        if color_offsets_ms and len(color_offsets_ms) == C:
-            offsets_ns += [int(ms * 1e6) for ms in color_offsets_ms]
-        else:
-            offsets_ns += [0] * C
-        if D > 0:
-            if depth_offsets_ms and len(depth_offsets_ms) == D:
-                offsets_ns += [int(ms * 1e6) for ms in depth_offsets_ms]
-            else:
-                offsets_ns += [0] * D
-        offsets_ns += [int(joint_offset_ms * 1e6), int(tactile_offset_ms * 1e6)]
+        offsets_ns += ([int(ms * 1e6) for ms in color_offsets_ms] if color_offsets_ms and len(color_offsets_ms) == C else [0] * C)
+        offsets_ns += ([int(ms * 1e6) for ms in depth_offsets_ms] if D and depth_offsets_ms and len(depth_offsets_ms) == D else [0] * D)
+        offsets_ns += _as_list_offset_ns('joint_offset_ms', J) if J else []
+        offsets_ns += _as_list_offset_ns('tactile_offset_ms', T) if T else []
 
         max_window_ns = int(self.queue_seconds * 1e9)
+        camera_refs = self._idx_color + self._idx_depth
+        non_consuming = list(self._idx_tact)          # tactile 非消耗
+        optional_indices = list(self._idx_tact)       # tactile 可选（新增关键）
 
-        camera_refs = self._idx_color + self._idx_depth  # 只用相机做 t_ref
-        non_consuming = [self._idx_tact]
         self.aligner = MultiStreamAligner(
             num_streams=num_streams,
             tolerances_ns=tolerances_ns,
@@ -549,6 +573,11 @@ class Manager(Node):
             logger=self.get_logger(),
             ref_indices=camera_refs,
             non_consuming_indices=non_consuming,
+            optional_indices=optional_indices,  # 使无 tactile 数据也能同步
+        )
+
+        self.get_logger().info(
+            f"rate={self.rate_hz}Hz, streams: C={C}, D={D}, J={J}, T={T}, total={num_streams}"
         )
 
         # ---------- 订阅（区分 QoS） ----------
@@ -565,23 +594,23 @@ class Manager(Node):
             depth=10,
         )
 
-        self.cg_color = [MutuallyExclusiveCallbackGroup() for _ in range(4)]
-        self.cg_depth = [MutuallyExclusiveCallbackGroup() for _ in range(4)]
-
         cg_color = ReentrantCallbackGroup()
         cg_depth = ReentrantCallbackGroup()
 
         for i, topic in enumerate(self.color_topics):
-            self.create_subscription(Image, topic, self._mk_color_cb(i), reliable_qos,callback_group=cg_color)
+            self.create_subscription(Image, topic, self._mk_color_cb(i), reliable_qos, callback_group=cg_color)
 
         for j in range(D):
             topic = self.depth_topics[j]
             if topic and self.save_depth:
-                self.create_subscription(Image, topic, self._mk_depth_cb(j), reliable_qos,callback_group=cg_depth)
+                self.create_subscription(Image, topic, self._mk_depth_cb(j), reliable_qos, callback_group=cg_depth)
 
-        # 关节/触觉用 RELIABLE（若上游是 BEST_EFFORT，可改成 sensor_qos）
-        self.create_subscription(JointState, self.joint_topic, self._joint_cb, reliable_qos)
-        self.create_subscription(Float32MultiArray, self.tactile_topic, self._tactile_cb, reliable_qos)
+        cg_joint = ReentrantCallbackGroup()
+        cg_tact  = ReentrantCallbackGroup()
+        for k, topic in enumerate(self.joint_topics):
+            self.create_subscription(JointState, topic, self._mk_joint_cb(k), reliable_qos, callback_group=cg_joint)
+        for k, topic in enumerate(self.tactile_topics):
+            self.create_subscription(Float32MultiArray, topic, self._mk_tactile_cb(k), reliable_qos, callback_group=cg_tact)
 
         # 工具
         self.bridge = CvBridge()
@@ -597,14 +626,12 @@ class Manager(Node):
         self.meta_jsonl_path = os.path.join(self.session_dir, 'meta.jsonl')
 
         # === 录制开关与键盘监听 ===
-        self._record_enabled = False  # 是否允许调用 _save_once（默认暂停，按 Ctrl 开始）
+        self._record_enabled = False
         self._kb_listener = None
-        self._last_pause_log = 0.0  # 限流输出“暂停中”的日志
+        self._last_pause_log = 0.0
 
-        # 可选：提示
         self.get_logger().info("Keyboard control: right Alt = start/resume, right Ctrl = stop")
 
-        # 优先尝试 pynput 全局键盘监听（无需焦点；在无 X/Wayland 的纯控制台可能不可用）
         try:
             from pynput import keyboard as _kb
             self._pynput_kb = _kb
@@ -612,7 +639,6 @@ class Manager(Node):
             self._kb_listener.daemon = True
             self._kb_listener.start()
         except Exception as e:
-            # 不能监听就仅提示（录制永远保持默认 False，或你可手动在代码里改为 True）
             self.get_logger().warn(
                 f"Keyboard control unavailable (install pynput or ensure GUI session). "
                 f"Recording remains paused until Ctrl event can be captured. detail={e}"
@@ -631,38 +657,29 @@ class Manager(Node):
             self.worker.start()
 
     def _on_key_press(self, key):
-        """全局键盘：Ctrl = start/resume，Right Arrow = stop"""
+        """Alt_R = start/resume，Ctrl_R = stop"""
         try:
             kb = getattr(self, "_pynput_kb", None)
             if kb is None:
                 return
 
-            # Ctrl：开始/继续
             if key == kb.Key.alt_r:
                 if not self._record_enabled:
                     self._record_enabled = True
                     self.get_logger().info("Recording ENABLED by right Alt")
-                else:
-                    # 已经在录就保持不变（幂等）
-                    pass
 
-            # 右方向键：停止
             elif key == kb.Key.ctrl_r:
                 if self._record_enabled:
-                    # 先保存当前episode_idx
                     prev_episode_idx = self.episode_idx
-                    # 先flush meta_buffer到当前episode
                     try:
                         episode_dir = os.path.join(self.save_dir, f"episode_{prev_episode_idx:06d}")
                         self._flush_meta_buffer(episode_dir)
                     except Exception as e:
                         self.get_logger().warn(f"Flush meta_buffer on stop failed: {e}")
-                    # 再切换episode编号
                     self._record_enabled = False
                     self.episode_idx += 1
-                    self.frame_idx = 0  # 新增：切换episode时清零帧编号
+                    self.frame_idx = 0
                     self.get_logger().info("Recording DISABLED by right Ctrl")
-                    # 新增：标记需要输出安全日志
                     self._pending_safe_log = True
 
         except Exception as e:
@@ -687,8 +704,6 @@ class Manager(Node):
             else:
                 t_ns = self.get_clock().now().nanoseconds
             self.aligner.put_nowait(self._idx_color[i], t_ns, msg)
-            # self.get_logger().info(f"receive image:{i} at {time.perf_counter()}")
-
         return _cb
 
     def _mk_depth_cb(self, j: int):
@@ -698,55 +713,50 @@ class Manager(Node):
             else:
                 t_ns = self.get_clock().now().nanoseconds
             self.aligner.put_nowait(self._idx_depth[j], t_ns, msg)
-            # self.get_logger().info(f"receive depth:{j} at {time.perf_counter()}")
-
         return _cb
 
-    def _joint_cb(self, msg: JointState):
-        # Joint 用 header（若 0 则回退）
-        t_ns = self._ns_from_header_or_clock(msg.header)
-        self.aligner.put_nowait(self._idx_joint, t_ns, msg)
+    def _mk_joint_cb(self, k: int):
+        def _cb(msg: JointState):
+            t_ns = self._ns_from_header_or_clock(msg.header)
+            self.aligner.put_nowait(self._idx_joint[k], t_ns, msg)
+        return _cb
 
-    def _tactile_cb(self, msg: Float32MultiArray):
-        # 触觉通常无 header，用接收时钟
-        t_ns = self.get_clock().now().nanoseconds
-        self.aligner.put_nowait(self._idx_tact, t_ns, msg)
+    def _mk_tactile_cb(self, k: int):
+        def _cb(msg: Float32MultiArray):
+            t_ns = self.get_clock().now().nanoseconds
+            self.aligner.put_nowait(self._idx_tact[k], t_ns, msg)
+        return _cb
 
     def _save_loop(self):
         period = 1.0 / max(1e-6, self.rate_hz)
         next_t = time.perf_counter()
-        print(rclpy.ok())
         while rclpy.ok() and not self._stop_evt.is_set():
             now = time.perf_counter()
             if now < next_t:
                 time.sleep(max(0.0, next_t - now))
             next_t += period
             try:
-                # 若暂停录制：做一次对齐推进以“排水”，但不保存，避免堆积
                 if not self._record_enabled:
                     _ = self.aligner.step()
-                    # 限流打印（每 2 秒一次）
                     if (now - self._last_pause_log) > 2.0:
-                        self.get_logger().debug("Paused: press Ctrl to start/resume, Right Arrow to stop.")
+                        self.get_logger().debug("Paused: press Alt_R to start/resume, Ctrl_R to stop.")
                         self._last_pause_log = now
-                    # 新增：检测是否所有图片写入已完成，若完成则输出安全日志
                     if hasattr(self, '_pending_safe_log') and self._pending_safe_log:
                         if self.image_writer.is_idle():
                             self.get_logger().info("[SAFE] 所有数据已安全保存，可以安全退出程序！")
                             self._pending_safe_log = False
                     continue
-                # === 新增：记录一次尝试（可选） ===
+
                 if self.do_calculate_hz:
                     self._attempt_win += 1
                 out = self.aligner.step()
                 if out is None:
+                    # self.get_logger().warn("[SAFE] failed to align!")
                     continue
-                # === 新增：记录一次成功（可选） ===
                 if self.do_calculate_hz:
                     self._success_win += 1
                 t_ref, picks = out
                 self._save_once(t_ref, picks)
-                # === 新增：保存成功后更新统计（可选） ===
                 if self.do_calculate_hz:
                     self._on_saved_stats()
             except Exception as e:
@@ -756,13 +766,10 @@ class Manager(Node):
     def _on_saved_stats(self):
         now = time.perf_counter()
         self._save_times.append(now)
-
-        # 滑动窗口：只保留最近 stats_window_s 秒的时间戳
         cutoff = now - self.stats_window_s
         while self._save_times and self._save_times[0] < cutoff:
             self._save_times.popleft()
 
-        # 计算窗口 FPS 和瞬时 FPS
         win_fps = 0.0
         inst_fps = 0.0
         if len(self._save_times) >= 2:
@@ -773,7 +780,6 @@ class Manager(Node):
             if dt_inst > 0:
                 inst_fps = 1.0 / dt_inst
 
-        # 到时间就打印一次统计，并清空尝试/成功的窗口计数
         if (now - self._last_rate_log_t) >= self.stats_log_period_s:
             hit_ratio = (self._success_win / self._attempt_win) if self._attempt_win > 0 else 0.0
             self.get_logger().info(
@@ -786,26 +792,30 @@ class Manager(Node):
             self._success_win = 0
             self._last_rate_log_t = now
 
-    def _save_once(self, t_ref: int, picks: List[Tuple[int, Any]]):
-        idx = self.frame_idx  # 用自定义帧编号
+    def _save_once(self, t_ref: int, picks: List[Optional[Tuple[int, Any]]]):
+        idx = self.frame_idx
         self.frame_idx += 1
 
-        # 新增 episode_idx，默认为 0
         episode_idx = getattr(self, 'episode_idx', 0)
         episode_dir = os.path.join(self.save_dir, f"episode_{episode_idx:06d}")
         ensure_dir(episode_dir)
 
         C = len(self._idx_color)
         D = len(self._idx_depth)
+        J = len(self._idx_joint)
+        T = len(self._idx_tact)
+
         color_picks = picks[0:C]
         depth_picks = picks[C:C + D] if D > 0 else []
-        joint_ts, js_msg = picks[C + D]
-        tact_ts, tact_msg = picks[C + D + 1]
+        joint_picks = picks[C + D:C + D + J] if J > 0 else []
+        tact_picks  = picks[C + D + J:C + D + J + T] if T > 0 else []
 
         # === 1. 图片异步写 ===
         image_fields = {}
-        # 彩色
-        for cam_i, (t_ns, msg) in enumerate(color_picks):
+        for cam_i, item in enumerate(color_picks):
+            if item is None:
+                continue
+            t_ns, msg = item
             cam_name = sanitize(self.color_topics[cam_i])
             img_dir = os.path.join(episode_dir, "images", cam_name)
             ensure_dir(img_dir)
@@ -817,68 +827,72 @@ class Manager(Node):
                 img = self.bridge.imgmsg_to_cv2(msg)
             self.image_writer.save_image(img, fp)
             image_fields[cam_name] = os.path.relpath(fp, episode_dir)
-        # 深度（同彩色处理）
+
         if self.save_depth and depth_picks:
-            for dep_i, (t_ns, msg) in enumerate(depth_picks):
+            for dep_i, item in enumerate(depth_picks):
+                if item is None:
+                    continue
+                t_ns, msg = item
                 cam_name = sanitize(self.depth_topics[dep_i])
                 img_dir = os.path.join(episode_dir, "images", cam_name)
                 ensure_dir(img_dir)
                 fn = f"frame_{idx:06d}.png"
                 fp = os.path.join(img_dir, fn)
-
-                # 统一先解为 16UC1（uint16），再打包成 rgb8
                 try:
-                    depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')  # (H,W) uint16
+                    depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')
                 except Exception:
-                    # 有的驱动给的是 mono16，兼容一下
                     depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='mono16')
-
-                depth_rgb8 = _pack_depth_u16_to_rgb8(depth_u16, order="HI_LO", b_fill=0)  # (H,W,3) uint8，无损打包
-
-                # 如果你的 image_writer 期望 BGR 顺序（OpenCV 常见），可在此转换：
-                # import cv2
-                # depth_bgr8 = cv2.cvtColor(depth_rgb8, cv2.COLOR_RGB2BGR)
-                # self.image_writer.save_image(depth_bgr8, fp)
-                # 否则直接按 rgb8 保存：
+                depth_rgb8 = _pack_depth_u16_to_rgb8(depth_u16, order="HI_LO", b_fill=0)
                 self.image_writer.save_image(depth_rgb8, fp)
-
                 image_fields[cam_name] = os.path.relpath(fp, episode_dir)
 
-        # === 2. 组装元数据 ===
+        # === 2. 组装多路 joint/tactile 元数据 ===
+        joints_meta = []
+        for k, item in enumerate(joint_picks):
+            if item is None:
+                continue
+            t_ns, js_msg = item
+            joints_meta.append(dict(
+                topic=self.joint_topics[k],
+                stamp_ns=int(t_ns),
+                name=list(getattr(js_msg, "name", [])),
+                position=[float(x) for x in getattr(js_msg, "position", [])],
+                velocity=[float(x) for x in getattr(js_msg, "velocity", [])],
+                effort=[float(x) for x in getattr(js_msg, "effort", [])],
+            ))
+
+        tactiles_meta = []
+        for k, item in enumerate(tact_picks):
+            if item is None:
+                continue
+            t_ns, tact_msg = item
+            tactiles_meta.append(dict(
+                topic=self.tactile_topics[k],
+                stamp_ns=int(t_ns),
+                data=[float(x) for x in getattr(tact_msg, "data", [])],
+            ))
+
         meta = dict(
-            episode_idx=episode_idx,  # 新增
+            episode_idx=episode_idx,
             frame_index=idx,
             timestamp=time.time(),
             **image_fields,
-            joint={
-                "stamp_ns": int(joint_ts),
-                "name": list(js_msg.name),
-                "position": [float(x) for x in js_msg.position],
-                "velocity": [float(x) for x in js_msg.velocity],
-                "effort": [float(x) for x in js_msg.effort],
-            },
-            tactile={
-                "stamp_ns": int(tact_ts),
-                "data": [float(x) for x in tact_msg.data]
-            }
+            joints=joints_meta,
+            tactiles=tactiles_meta,  # 可能为空列表
         )
 
-        # === 优化：只缓存在 meta_buffer，定期flush ===
         self.meta_buffer.append(meta)
         if len(self.meta_buffer) >= 100:
             self._flush_meta_buffer(episode_dir)
         return
 
     def _flush_meta_buffer(self, episode_dir=None):
-        # episode_dir: 当前episode的目录
         if not self.meta_buffer:
             return
         if episode_dir is None:
-            # 默认用当前episode
             episode_idx = getattr(self, 'episode_idx', 0)
             episode_dir = os.path.join(self.save_dir, f"episode_{episode_idx:06d}")
         meta_jsonl_path = os.path.join(episode_dir, 'meta.jsonl')
-        # 读出所有旧行
         old_lines = []
         old_keys = set()
         if os.path.exists(meta_jsonl_path):
@@ -891,19 +905,16 @@ class Manager(Node):
                         old_lines.append((key, line.rstrip('\n')))
                     except Exception:
                         old_lines.append((None, line.rstrip('\n')))
-        # 用dict去重，优先用buffer里的新meta
         buffer_dict = {(m['episode_idx'], m['frame_index']): json.dumps(m, ensure_ascii=False) for m in self.meta_buffer}
-        # 先保留旧行中未被新meta覆盖的
         lines = [l for k, l in old_lines if k not in buffer_dict]
-        # 再追加新meta
         lines.extend(buffer_dict.values())
+        ensure_dir(episode_dir)
         with open(meta_jsonl_path, 'w') as f:
             f.write('\n'.join(lines) + '\n')
         self.meta_buffer.clear()
 
     # ---------- 关闭 ----------
     def destroy_node(self):
-        # 停止键盘监听
         try:
             if self._kb_listener is not None:
                 self._kb_listener.stop()
@@ -912,16 +923,19 @@ class Manager(Node):
 
         self._stop_evt.set()
         try:
-            if self.worker.is_alive():
+            if getattr(self, "worker", None) and self.worker.is_alive():
                 self.worker.join(timeout=3.0)
         except Exception:
             pass
-        # 停止前flush剩余meta
         try:
             self._flush_meta_buffer()
         except Exception:
             pass
         return super().destroy_node()
+
+    def _inference_loop(self):
+        while rclpy.ok() and not self._stop_evt.is_set():
+            time.sleep(0.1)
 
 
 # ====================== main：多线程执行器 ======================
