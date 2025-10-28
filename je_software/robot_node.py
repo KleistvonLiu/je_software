@@ -121,14 +121,14 @@ class AgilexRobotNode(Node):
         # 下发到控制器（对方传入是弧度；硬件接口是“度*1000”和“夹爪微弧度”）
         self.piper.MotionCtrl_2(0x01, 0x01, 100)
         self.piper.JointCtrl(
-            int(positions[0] * 1e3 * 180.0 / math.pi),
-            int(positions[1] * 1e3 * 180.0 / math.pi),
-            int(positions[2] * 1e3 * 180.0 / math.pi),
-            int(positions[3] * 1e3 * 180.0 / math.pi),
-            int(positions[4] * 1e3 * 180.0 / math.pi),
-            int(positions[5] * 1e3 * 180.0 / math.pi),
+            int(positions[0]),
+            int(positions[1]),
+            int(positions[2]),
+            int(positions[3]),
+            int(positions[4]),
+            int(positions[5]),
         )
-        self.piper.GripperCtrl(abs(int(positions[6] * 1e6)), 1000, 0x01, 0)
+        self.piper.GripperCtrl(int(positions[6]), 1000, 0x01, 0)
 
     def end_pose_callback(self, msg: PoseStamped):
         """订阅末端位姿（如需可在此做 RPY 解析或其他处理）"""
