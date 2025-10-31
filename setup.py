@@ -15,6 +15,7 @@ setup(
         (f'share/{package_name}/launch', ['launch/tactile_sensor.launch.py']),
         (f'share/{package_name}/launch', ['launch/manager.launch.py']),
         (f'share/{package_name}/launch', ['launch/manager_test.launch.py']),
+        (f'share/{package_name}/launch', ['launch/replay_node.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -34,6 +35,7 @@ setup(
             'tactile_sensor = je_software.tactile_sensor_node:main',
             'manager_node = je_software.recorder_manager_node:main',
             'test_publisher = je_software.test_publisher_node:main',
+            'replay_node = je_software.replay_node:main',
         ],
     },
 )

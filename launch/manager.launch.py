@@ -154,11 +154,11 @@ def generate_launch_description():
     # --- 颜色/深度（CSV） ---
     color_csv = DeclareLaunchArgument(
         'color_topics_csv',
-        default_value='/camera_01/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,'
+        default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,'
     )
     depth_csv = DeclareLaunchArgument(
         'depth_topics_csv',
-        default_value='/camera_01/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
+        default_value='/camera_01/depth/image_raw,/camera_02/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
     )
 
     # --- joint/tactile：多路与兼容 ---
@@ -178,7 +178,7 @@ def generate_launch_description():
     win_sec = DeclareLaunchArgument('queue_seconds', default_value='2.0')
 
     # --- 目录/控制 ---
-    dir_arg = DeclareLaunchArgument('save_dir', default_value='/home/kleist/Documents/manager_node_temp/')
+    dir_arg = DeclareLaunchArgument('save_dir', default_value='/home/test/jemotor/log/')
     sess_arg = DeclareLaunchArgument('session_name', default_value='')
     save_dep = DeclareLaunchArgument('save_depth', default_value='true')
     use_rtime = DeclareLaunchArgument('use_ros_time', default_value='true')

@@ -8,7 +8,7 @@ from queue import SimpleQueue, Empty
 
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from .ros2_qos import reliable_qos
 
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32MultiArray
@@ -467,12 +467,6 @@ class BaseManager(Node):
         )
 
         # ---------- 订阅 ----------
-        reliable_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
         cg_color = ReentrantCallbackGroup()
         cg_depth = ReentrantCallbackGroup()
         for i, topic in enumerate(self.color_topics):

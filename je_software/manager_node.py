@@ -10,7 +10,6 @@ import pynput
 import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32MultiArray
@@ -20,7 +19,7 @@ import cv2
 import numpy as np
 
 from utils.image_writer import AsyncImageWriter
-
+from .ros2_qos import reliable_qos
 
 # ====================== 小工具 ======================
 
@@ -393,7 +392,7 @@ class Manager(Node):
 
         # 窗口与目录
         self.declare_parameter('queue_seconds', 2.0)
-        self.declare_parameter('save_dir', os.path.expanduser('/home/kleist/Documents/manager_node_temp/'))
+        self.declare_parameter('save_dir', os.path.expanduser('/home/test/jemotor/log/'))
         self.declare_parameter('session_name', '')
         self.declare_parameter('save_depth', True)
 
@@ -581,19 +580,6 @@ class Manager(Node):
         )
 
         # ---------- 订阅（区分 QoS） ----------
-        sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-        )
-        reliable_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
-
         cg_color = ReentrantCallbackGroup()
         cg_depth = ReentrantCallbackGroup()
 
