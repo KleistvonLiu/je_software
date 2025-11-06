@@ -97,13 +97,13 @@ class RecorderManager(BaseManager):
                     # 1) 先关闭录制，阻止后续 _save_once 继续积累
                     self._record_enabled = False
                     prev_episode_idx = self.episode_idx
-                    episode_dir = os.path.join(self.save_dir, f"episode_{prev_episode_idx:06d}")
+                    episode_dir = os.path.join(self.session_dir, f"episode_{prev_episode_idx:06d}")
 
-                    # 2) 等图片写线程清空（最多等 10s）
+                    # 2) 等图片写线程清空
                     try:
                         deadline = time.time() + 10.0
                         last_log = 0.0
-                        while hasattr(self, "image_writer") and not self.image_writer.is_idle() and time.time() < deadline:
+                        while hasattr(self, "image_writer") and not self.image_writer.is_idle():
                             now = time.time()
                             if now - last_log > 0.5:
                                 self.get_logger().info("[stop] waiting image writer to drain...")
@@ -123,7 +123,7 @@ class RecorderManager(BaseManager):
                     self.episode_idx += 1
                     self.frame_idx = 0
                     self.get_logger().info("Recording DISABLED by right Ctrl")
-                    self._pending_safe_log = False
+                    self._pending_safe_log = True
         except Exception as e:
             self.get_logger().warn(f"Keyboard handler error: {e}")
 
@@ -145,13 +145,13 @@ class RecorderManager(BaseManager):
             next_t += period
             try:
                 if not self._record_enabled:
-                    _ = self.aligner.step()
+                    # _ = self.aligner.step()
                     if (now - self._last_pause_log) > 2.0:
                         self.get_logger().debug("Paused: press Alt_R to start/resume, Ctrl_R to stop.")
                         self._last_pause_log = now
                     if hasattr(self, '_pending_safe_log') and self._pending_safe_log:
                         if self.image_writer.is_idle():
-                            self.get_logger().info("[SAFE] 所有数据已安全保存，可以安全退出程序！")
+                            self.get_logger().info("\x1b[32m[SAFE] 所有数据已安全保存，可以安全退出程序！\x1b[0m")
                             self._pending_safe_log = False
                     continue
 
@@ -204,7 +204,7 @@ class RecorderManager(BaseManager):
         self.frame_idx += 1
 
         episode_idx = getattr(self, 'episode_idx', 0)
-        episode_dir = os.path.join(self.save_dir, f"episode_{episode_idx:06d}")
+        episode_dir = os.path.join(self.session_dir, f"episode_{episode_idx:06d}")
         ensure_dir(episode_dir)
 
         C = len(self._idx_color)
@@ -296,7 +296,7 @@ class RecorderManager(BaseManager):
         # ----- 锁外：I/O 与合并 -----
         if episode_dir is None:
             episode_idx = getattr(self, 'episode_idx', 0)
-            episode_dir = os.path.join(self.save_dir, f"episode_{episode_idx:06d}")
+            episode_dir = os.path.join(self.session_dir, f"episode_{episode_idx:06d}")
         ensure_dir(episode_dir)
         meta_jsonl_path = os.path.join(episode_dir, 'meta.jsonl')
 

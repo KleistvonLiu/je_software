@@ -76,6 +76,8 @@ class AgilexRobotNode(Node):
 
         self._cb_count = 0
         self._ee_log_count = 0
+        # 保存上一次收到的 JointState 消息时间戳，用于检测乱序/回退（(sec,nsec) tuple）
+        self._last_joint_state_stamp = None
 
     # ---------- 参数读取工具 ----------
     def _get_param_str(self, name: str) -> str:
@@ -95,9 +97,31 @@ class AgilexRobotNode(Node):
     # ---------- 回调 ----------
     def joint_states_callback(self, msg: JointState):
         """订阅对方 JointState：重排到 joint1..joint7 的顺序并下发到硬件"""
+        # 如果消息没有名字或位置，直接忽略
         if not msg.name or not msg.position:
             self.get_logger().warn("JointState is empty.")
             return
+
+        # 比对时间戳：如果收到的消息时间戳小于上一次已处理的时间戳，则忽略并打印日志
+        try:
+            stamp = msg.header.stamp
+            incoming_ts = (int(stamp.sec), int(stamp.nanosec))
+            # self.get_logger().info(f"Received JointState with names: {incoming_ts}")
+        except Exception:
+            incoming_ts = None
+
+        if incoming_ts is not None and self._last_joint_state_stamp is not None:
+            if incoming_ts < self._last_joint_state_stamp:
+                prev = self._last_joint_state_stamp
+                self.get_logger().warn(
+                    f"Ignored out-of-order JointState: incoming ts {incoming_ts[0]}.{incoming_ts[1]:09d} "
+                    f"is older than previous {prev[0]}.{prev[1]:09d}"
+                )
+                return
+
+        # 更新为最新已处理时间戳（若有）
+        if incoming_ts is not None:
+            self._last_joint_state_stamp = incoming_ts
 
         name_to_idx = {n: i for i, n in enumerate(msg.name)}
         positions = []
