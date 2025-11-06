@@ -83,47 +83,59 @@ class RecorderManager(BaseManager):
             )
 
     def _on_key_press(self, key):
-        """Alt_R = start/resume，Ctrl_R = stop"""
+        """Alt_R = start/resume，Ctrl_R = stop（保证已入队图片全部写完再切集）"""
+        # —— 重入保护：避免多次按键导致并发切换 ——
+        if not hasattr(self, "_kb_lock"):
+            self._kb_lock = threading.Lock()
+
         try:
             kb = getattr(self, "_pynput_kb", None)
             if kb is None:
                 return
+
+            # ===== 启动 / 恢复 =====
             if key == kb.Key.alt_r:
-                if not self._record_enabled:
-                    self._record_enabled = True
-                    self.get_logger().info("Recording ENABLED by right Alt")
-            elif key == kb.Key.ctrl_r:
-                if self._record_enabled:
-                    # 1) 先关闭录制，阻止后续 _save_once 继续积累
+                with self._kb_lock:
+                    if not self._record_enabled:
+                        self._record_enabled = True
+                        self._pending_safe_log = False
+                        self.get_logger().info("Recording ENABLED by right Alt")
+                return
+
+            # ===== 停止并确保不丢帧 =====
+            if key == kb.Key.ctrl_r:
+                with self._kb_lock:
+                    if not self._record_enabled:
+                        return  # 已经是停止状态，忽略重复按键
+
+                    # 1) 立刻阻止新帧入队（_save_once 不会再执行）
                     self._record_enabled = False
                     prev_episode_idx = self.episode_idx
-                    episode_dir = os.path.join(self.session_dir, f"episode_{prev_episode_idx:06d}")
+                    episode_dir = os.path.join(self.save_dir, f"episode_{prev_episode_idx:06d}")
+                    self.get_logger().info("Recording DISABLING by right Ctrl: draining image writer...")
 
-                    # 2) 等图片写线程清空
-                    try:
-                        deadline = time.time() + 10.0
-                        last_log = 0.0
-                        while hasattr(self, "image_writer") and not self.image_writer.is_idle():
-                            now = time.time()
-                            if now - last_log > 0.5:
-                                self.get_logger().info("[stop] waiting image writer to drain...")
-                                last_log = now
-                            time.sleep(0.05)
-                    except Exception as e:
-                        self.get_logger().warn(f"[stop] wait image writer error: {e}")
+                # 2) **阻塞**直到所有已入队图片写完（严格不丢帧）
+                try:
+                    if hasattr(self, "image_writer") and self.image_writer is not None:
+                        self.image_writer.wait_until_done()  # 关键：join 而非轮询 is_idle()
+                except Exception as e:
+                    self.get_logger().warn(f"[stop] wait_until_done error: {e}")
 
-                    # 3) 将 meta 缓冲落盘（原子替换）
-                    try:
-                        self._flush_meta_buffer(episode_dir)
-                        self.get_logger().info(f"[stop] meta flushed to {os.path.join(episode_dir, 'meta.jsonl')}")
-                    except Exception as e:
-                        self.get_logger().warn(f"Flush meta_buffer on stop failed: {e}")
+                # 3) 将 meta 缓冲落盘（原子替换）
+                try:
+                    self._flush_meta_buffer(episode_dir)
+                    self.get_logger().info(f"[stop] meta flushed to {os.path.join(episode_dir, 'meta.jsonl')}")
+                except Exception as e:
+                    self.get_logger().warn(f"Flush meta_buffer on stop failed: {e}")
 
-                    # 4) 切到下一集并复位帧号
+                # 4) 切到下一集并复位帧号（已确保前一集所有图片存在）
+                with self._kb_lock:
                     self.episode_idx += 1
                     self.frame_idx = 0
-                    self.get_logger().info("Recording DISABLED by right Ctrl")
-                    self._pending_safe_log = True
+                    self._pending_safe_log = False
+                    self.get_logger().info("Recording DISABLED by right Ctrl (all frames saved)")
+                return
+
         except Exception as e:
             self.get_logger().warn(f"Keyboard handler error: {e}")
 
