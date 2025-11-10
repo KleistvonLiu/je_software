@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os, time, re, logging
+import os, time, re, logging, shutil
 from collections import deque
 from typing import List, Tuple, Optional, Any, Dict
 from datetime import datetime
@@ -301,6 +301,7 @@ class BaseManager(Node):
         self.declare_parameter('save_dir', os.path.expanduser('/home/test/jemotor/log/'))
         self.declare_parameter('session_name', '')
         self.declare_parameter('save_depth', True)
+        self.declare_parameter('overwrite', False)
 
         # 其他
         self.declare_parameter('use_ros_time', True)
@@ -378,6 +379,7 @@ class BaseManager(Node):
         self.save_dir: str = p('save_dir').value
         session_name: str = p('session_name').value
         self.save_depth: bool = bool(p('save_depth').value)
+        self.overwrite: bool = bool(p('overwrite').value)
         self.use_ros_time: bool = bool(p('use_ros_time').value)
         self.jpeg_quality: int = int(p('color_jpeg_quality').value)
 
@@ -410,9 +412,27 @@ class BaseManager(Node):
         if not session_name:
             session_name = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.session_dir = os.path.join(self.save_dir, sanitize(session_name))
-        ensure_dir(self.session_dir)
+        # 确保 save_dir 存在
+        ensure_dir(self.save_dir)
 
-        self.get_logger().info(f"Session: {self.session_dir}")
+        # 如果开启 overwrite，则清空 save_dir 下的所有内容（谨慎）
+        if self.overwrite:
+            try:
+                if os.path.exists(self.save_dir):
+                    for name in os.listdir(self.save_dir):
+                        path = os.path.join(self.save_dir, name)
+                        try:
+                            if os.path.islink(path) or os.path.isfile(path):
+                                os.remove(path)
+                            elif os.path.isdir(path):
+                                shutil.rmtree(path)
+                        except Exception as e:
+                            self.get_logger().warn(f"Failed to remove '{path}' while clearing save_dir: {e}")
+                    self.get_logger().info(f"Overwrite enabled: cleared save_dir {self.save_dir}")
+            except Exception as e:
+                self.get_logger().warn(f"Failed to clear save_dir {self.save_dir}: {e}")
+
+        self.get_logger().info(f"Save dir: {self.save_dir}")
         self.get_logger().info(f"Color topics: {self.color_topics}")
         self.get_logger().info(f"Depth  topics: {self.depth_topics}")
         self.get_logger().info(f"Joint topics:  {self.joint_topics}")

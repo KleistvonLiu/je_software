@@ -13,3 +13,5 @@ ros2 launch je_software replay_node.launch.py jsonl:=/home/test/jemotor/jedata/m
 
 
 ros2 launch je_software replay_node.launch.py jsonl:=/home/test/jemotor/jedata/action.csv rate:=30.0 loop:=false
+
+ros2 launch je_software manager.launch.py episode_idx:=0 save_dir:=/home/test/jemotor/temp_data/ overwrite:=true

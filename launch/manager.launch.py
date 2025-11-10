@@ -94,6 +94,7 @@ def _launch_setup(context, *args, **kwargs):
         'save_dir': LaunchConfiguration('save_dir').perform(context),
         'session_name': LaunchConfiguration('session_name').perform(context),
         'save_depth': _as_bool(LaunchConfiguration('save_depth').perform(context), True),
+        'overwrite': _as_bool(LaunchConfiguration('overwrite').perform(context), False),
         'use_ros_time': _as_bool(LaunchConfiguration('use_ros_time').perform(context), True),
         'do_calculate_hz': _as_bool(LaunchConfiguration('do_calculate_hz').perform(context), True),
         'color_jpeg_quality': int(float(LaunchConfiguration('color_jpeg_quality').perform(context))),
@@ -181,6 +182,7 @@ def generate_launch_description():
     dir_arg = DeclareLaunchArgument('save_dir', default_value='/home/test/jemotor/log/')
     sess_arg = DeclareLaunchArgument('session_name', default_value='')
     save_dep = DeclareLaunchArgument('save_depth', default_value='true')
+    overwrite = DeclareLaunchArgument('overwrite', default_value='false')
     use_rtime = DeclareLaunchArgument('use_ros_time', default_value='true')
     do_cal_hz = DeclareLaunchArgument('do_calculate_hz', default_value='true')
     jpg_q = DeclareLaunchArgument('color_jpeg_quality', default_value='95')
@@ -210,7 +212,7 @@ def generate_launch_description():
         rate_arg, img_tol, jnt_tol, tac_tol, win_sec,
 
         # 目录/控制
-        dir_arg, sess_arg, save_dep, use_rtime, do_cal_hz, jpg_q,
+        dir_arg, sess_arg, save_dep, overwrite, use_rtime, do_cal_hz, jpg_q,
 
         # 偏置
         color_off, depth_off, jnt_off, tac_off,

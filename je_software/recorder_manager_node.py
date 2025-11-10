@@ -51,7 +51,7 @@ class RecorderManager(BaseManager):
 
         # 元数据缓冲
         self.meta_buffer = []
-        # self.meta_jsonl_path = os.path.join(self.session_dir, 'meta.jsonl')
+        # self.meta_jsonl_path = os.path.join(self.save_dir, 'meta.jsonl')
 
         # 录制开关 & 键盘监听（子类决定是否启动）
         self._record_enabled = False
@@ -111,7 +111,7 @@ class RecorderManager(BaseManager):
                     # 1) 立刻阻止新帧入队（_save_once 不会再执行）
                     self._record_enabled = False
                     prev_episode_idx = self.episode_idx
-                    episode_dir = os.path.join(self.session_dir, f"episode_{prev_episode_idx:06d}")
+                    episode_dir = os.path.join(self.save_dir, f"episode_{prev_episode_idx:06d}")
                     self.get_logger().info("Recording DISABLING by right Ctrl: draining image writer...")
 
                 # 2) **阻塞**直到所有已入队图片写完（严格不丢帧）
@@ -216,7 +216,7 @@ class RecorderManager(BaseManager):
         self.frame_idx += 1
 
         episode_idx = getattr(self, 'episode_idx', 0)
-        episode_dir = os.path.join(self.session_dir, f"episode_{episode_idx:06d}")
+        episode_dir = os.path.join(self.save_dir, f"episode_{episode_idx:06d}")
         ensure_dir(episode_dir)
 
         C = len(self._idx_color)
@@ -308,7 +308,7 @@ class RecorderManager(BaseManager):
         # ----- 锁外：I/O 与合并 -----
         if episode_dir is None:
             episode_idx = getattr(self, 'episode_idx', 0)
-            episode_dir = os.path.join(self.session_dir, f"episode_{episode_idx:06d}")
+            episode_dir = os.path.join(self.save_dir, f"episode_{episode_idx:06d}")
         ensure_dir(episode_dir)
         meta_jsonl_path = os.path.join(episode_dir, 'meta.jsonl')
 
