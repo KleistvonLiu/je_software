@@ -51,7 +51,7 @@ class RecorderManager(BaseManager):
 
         # 元数据缓冲
         self.meta_buffer = []
-        self.meta_jsonl_path = os.path.join(self.session_dir, 'meta.jsonl')
+        # self.meta_jsonl_path = os.path.join(self.session_dir, 'meta.jsonl')
 
         # 录制开关 & 键盘监听（子类决定是否启动）
         self._record_enabled = False
@@ -99,7 +99,7 @@ class RecorderManager(BaseManager):
                     if not self._record_enabled:
                         self._record_enabled = True
                         self._pending_safe_log = False
-                        self.get_logger().info("Recording ENABLED by right Alt")
+                        self.get_logger().info("\x1b[32m[SAFE] Recording ENABLED by right Alt! \x1b[0m")
                 return
 
             # ===== 停止并确保不丢帧 =====
@@ -111,7 +111,7 @@ class RecorderManager(BaseManager):
                     # 1) 立刻阻止新帧入队（_save_once 不会再执行）
                     self._record_enabled = False
                     prev_episode_idx = self.episode_idx
-                    episode_dir = os.path.join(self.save_dir, f"episode_{prev_episode_idx:06d}")
+                    episode_dir = os.path.join(self.session_dir, f"episode_{prev_episode_idx:06d}")
                     self.get_logger().info("Recording DISABLING by right Ctrl: draining image writer...")
 
                 # 2) **阻塞**直到所有已入队图片写完（严格不丢帧）
@@ -133,7 +133,7 @@ class RecorderManager(BaseManager):
                     self.episode_idx += 1
                     self.frame_idx = 0
                     self._pending_safe_log = False
-                    self.get_logger().info("Recording DISABLED by right Ctrl (all frames saved)")
+                    self.get_logger().info("\x1b[32m[SAFE] 所有数据已安全保存，可以安全退出程序！\x1b[0m")
                 return
 
         except Exception as e:
@@ -157,7 +157,7 @@ class RecorderManager(BaseManager):
             next_t += period
             try:
                 if not self._record_enabled:
-                    # _ = self.aligner.step()
+                    _ = self.aligner.step()
                     if (now - self._last_pause_log) > 2.0:
                         self.get_logger().debug("Paused: press Alt_R to start/resume, Ctrl_R to stop.")
                         self._last_pause_log = now
