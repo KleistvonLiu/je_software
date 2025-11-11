@@ -3,7 +3,7 @@
 import json
 import os
 import threading
-import time
+import time, datetime
 from typing import List, Optional, Tuple, Any
 
 import numpy as np
@@ -112,7 +112,7 @@ class RecorderManager(BaseManager):
                     self._record_enabled = False
                     prev_episode_idx = self.episode_idx
                     episode_dir = os.path.join(self.save_dir, f"episode_{prev_episode_idx:06d}")
-                    self.get_logger().info("Recording DISABLING by right Ctrl: draining image writer...")
+                    self.get_logger().info("\x1b[32mRecording DISABLING by right Ctrl: draining image writer...\x1b[0m")
 
                 # 2) **阻塞**直到所有已入队图片写完（严格不丢帧）
                 try:
@@ -150,36 +150,60 @@ class RecorderManager(BaseManager):
     def _save_loop(self):
         period = 1.0 / max(1e-6, self.rate_hz)
         next_t = time.perf_counter()
-        while rclpy.ok() and not self._stop_evt.is_set():
-            now = time.perf_counter()
-            if now < next_t:
-                time.sleep(max(0.0, next_t - now))
-            next_t += period
-            try:
-                if not self._record_enabled:
-                    _ = self.aligner.step()
-                    if (now - self._last_pause_log) > 2.0:
-                        self.get_logger().debug("Paused: press Alt_R to start/resume, Ctrl_R to stop.")
-                        self._last_pause_log = now
-                    if hasattr(self, '_pending_safe_log') and self._pending_safe_log:
-                        if self.image_writer.is_idle():
-                            self.get_logger().info("\x1b[32m[SAFE] 所有数据已安全保存，可以安全退出程序！\x1b[0m")
-                            self._pending_safe_log = False
-                    continue
+        # time_buffer = []
+        
+        try:
+            while rclpy.ok() and not self._stop_evt.is_set():
+                now = time.perf_counter()
+                if now < next_t:
+                    time.sleep(max(0.0, next_t - now))
+                next_t += period
+                # time_buffer.append(time.perf_counter())
+                
+                try:
+                    if not self._record_enabled:
+                        _ = self.aligner.step()
+                        if (now - self._last_pause_log) > 2.0:
+                            self.get_logger().debug("Paused: press Alt_R to start/resume, Ctrl_R to stop.")
+                            self._last_pause_log = now
+                        if hasattr(self, '_pending_safe_log') and self._pending_safe_log:
+                            if self.image_writer.is_idle():
+                                self.get_logger().info("\x1b[32m[SAFE] 所有数据已安全保存，可以安全退出程序！\x1b[0m")
+                                self._pending_safe_log = False
+                        continue
 
-                if self.do_calculate_hz:
-                    self._attempt_win += 1
-                out = self.aligner.step()
-                if out is None:
-                    continue
-                if self.do_calculate_hz:
-                    self._success_win += 1
-                t_ref, picks = out
-                self._save_once(t_ref, picks)
-                if self.do_calculate_hz:
-                    self._on_saved_stats()
-            except Exception as e:
-                self.get_logger().error(f"save loop error: {e}")
+                    if self.do_calculate_hz:
+                        self._attempt_win += 1
+                    out = self.aligner.step()
+                    if out is None:
+                        continue
+                    if self.do_calculate_hz:
+                        self._success_win += 1
+                    t_ref, picks = out
+                    self._save_once(t_ref, picks)
+                    if self.do_calculate_hz:
+                        self._on_saved_stats()
+                except Exception as e:
+                    self.get_logger().error(f"save loop error: {e}")
+                    
+        finally:
+            # 循环退出后保存time_buffer到文件
+            # if time_buffer:
+            #     try:
+            #         # 使用当前时间生成文件名，避免重复
+            #         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            #         filename = f"time_buffer_{timestamp}.txt"
+                    
+            #         with open(filename, 'w') as f:
+            #             # 将时间数据转换为字符串，每行一个时间戳
+            #             for t in time_buffer:
+            #                 f.write(f"{t}\n")
+                    
+            #         self.get_logger().info(f"时间缓冲区已保存到文件: {filename}, 共{len(time_buffer)}条记录")
+                    
+            #     except Exception as e:
+            #         self.get_logger().error(f"保存时间缓冲区文件时出错: {e}")
+        
 
     # === 统计 ===
     def _on_saved_stats(self):
@@ -271,7 +295,7 @@ class RecorderManager(BaseManager):
             t_ns, js_msg = item
             joints_meta.append(dict(
                 topic=self.joint_topics[k],
-                stamp_ns=int(t_ns),
+                stamp_ns=t_ns*1e-9,
                 name=list(getattr(js_msg, "name", [])),
                 position=[float(x) for x in getattr(js_msg, "position", [])],
                 velocity=[float(x) for x in getattr(js_msg, "velocity", [])],
@@ -282,14 +306,14 @@ class RecorderManager(BaseManager):
             t_ns, tact_msg = item
             tactiles_meta.append(dict(
                 topic=self.tactile_topics[k],
-                stamp_ns=int(t_ns),
+                stamp_ns=t_ns*1e-9,
                 data=[float(x) for x in getattr(tact_msg, "data", [])],
             ))
 
         meta = dict(
             episode_idx=episode_idx,
             frame_index=idx,
-            timestamp=time.time(),
+            timestamp=t_ref*1e-9,
             **image_fields,
             joints=joints_meta,
             tactiles=tactiles_meta,
