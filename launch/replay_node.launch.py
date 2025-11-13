@@ -28,7 +28,7 @@ def generate_launch_description():
     # --- 新增：Fast DDS 配置文件（默认指向 4GB SHM 配置，可在命令行覆盖） ---
     fastdds_profiles = DeclareLaunchArgument(
         'fastdds_profiles_file',
-        default_value='~/fastdds_shm_4g.xml',
+        default_value='~/fastdds_shm_only.xml',
         description='Fast DDS profiles XML（包含 <type>SHM</type> 与 segment_size=4GiB）'
     )
 

@@ -3,6 +3,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+import os
 
 def generate_launch_description():
     # 可配置参数（可在命令行覆盖）
@@ -30,11 +31,13 @@ def generate_launch_description():
     # --- 新增：Fast DDS 配置文件（默认指向 4GB SHM 配置，可在命令行覆盖） ---
     fastdds_profiles = DeclareLaunchArgument(
         'fastdds_profiles_file',
-        default_value='/home/kleist/fastdds_shm_4g.xml',
+        default_value=os.path.expanduser('~/fastdds_shm_only.xml'),
         description='Fast DDS profiles XML（包含 <type>SHM</type> 与 segment_size=4GiB）'
     )
 
     return LaunchDescription([
+        # Declare the argument so LaunchConfiguration('fastdds_profiles_file') exists
+        fastdds_profiles,
         # 让 XML 在整个 Launch 会话中生效
         SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', LaunchConfiguration('fastdds_profiles_file')),
         joint_sub_topic_arg,

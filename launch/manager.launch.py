@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironment
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import yaml
+import os
 
 
 def _as_bool(s: str, default: bool) -> bool:
@@ -155,11 +156,11 @@ def generate_launch_description():
     # --- 颜色/深度（CSV） ---
     color_csv = DeclareLaunchArgument(
         'color_topics_csv',
-        default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,/camera_05/color/image_raw,'
+        default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,'
     )
     depth_csv = DeclareLaunchArgument(
         'depth_topics_csv',
-        default_value='/camera_01/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
+        default_value='/camera_01/depth/image_raw,/camera_02/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
     )
 
     # --- joint/tactile：多路与兼容 ---
@@ -200,11 +201,13 @@ def generate_launch_description():
     # --- 新增：Fast DDS 配置文件（默认指向 4GB SHM 配置，可在命令行覆盖） ---
     fastdds_profiles = DeclareLaunchArgument(
         'fastdds_profiles_file',
-        default_value='~/fastdds_shm_4g.xml',
+        default_value=os.path.expanduser('~/fastdds_shm_only.xml'),
         description='Fast DDS profiles XML（包含 <type>SHM</type> 与 segment_size=4GiB）'
     )
 
     return LaunchDescription([
+        # 声明 fastdds 配置文件参数（确保 LaunchConfiguration 可用）
+        fastdds_profiles,
         # 让 XML 在整个 Launch 会话中生效
         SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', LaunchConfiguration('fastdds_profiles_file')),
 
