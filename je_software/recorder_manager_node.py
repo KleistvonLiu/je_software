@@ -152,41 +152,41 @@ class RecorderManager(BaseManager):
         next_t = time.perf_counter()
         # time_buffer = []
         
-        try:
-            while rclpy.ok() and not self._stop_evt.is_set():
-                now = time.perf_counter()
-                if now < next_t:
-                    time.sleep(max(0.0, next_t - now))
-                next_t += period
-                # time_buffer.append(time.perf_counter())
-                
-                try:
-                    if not self._record_enabled:
-                        _ = self.aligner.step()
-                        if (now - self._last_pause_log) > 2.0:
-                            self.get_logger().debug("Paused: press Alt_R to start/resume, Ctrl_R to stop.")
-                            self._last_pause_log = now
-                        if hasattr(self, '_pending_safe_log') and self._pending_safe_log:
-                            if self.image_writer.is_idle():
-                                self.get_logger().info("\x1b[32m[SAFE] 所有数据已安全保存，可以安全退出程序！\x1b[0m")
-                                self._pending_safe_log = False
-                        continue
+        # try:
+        while rclpy.ok() and not self._stop_evt.is_set():
+            now = time.perf_counter()
+            if now < next_t:
+                time.sleep(max(0.0, next_t - now))
+            next_t += period
+            # time_buffer.append(time.perf_counter())
+            
+            try:
+                if not self._record_enabled:
+                    _ = self.aligner.step()
+                    if (now - self._last_pause_log) > 2.0:
+                        self.get_logger().debug("Paused: press Alt_R to start/resume, Ctrl_R to stop.")
+                        self._last_pause_log = now
+                    if hasattr(self, '_pending_safe_log') and self._pending_safe_log:
+                        if self.image_writer.is_idle():
+                            self.get_logger().info("\x1b[32m[SAFE] 所有数据已安全保存，可以安全退出程序！\x1b[0m")
+                            self._pending_safe_log = False
+                    continue
 
-                    if self.do_calculate_hz:
-                        self._attempt_win += 1
-                    out = self.aligner.step()
-                    if out is None:
-                        continue
-                    if self.do_calculate_hz:
-                        self._success_win += 1
-                    t_ref, picks = out
-                    self._save_once(t_ref, picks)
-                    if self.do_calculate_hz:
-                        self._on_saved_stats()
-                except Exception as e:
-                    self.get_logger().error(f"save loop error: {e}")
+                if self.do_calculate_hz:
+                    self._attempt_win += 1
+                out = self.aligner.step()
+                if out is None:
+                    continue
+                if self.do_calculate_hz:
+                    self._success_win += 1
+                t_ref, picks = out
+                self._save_once(t_ref, picks)
+                if self.do_calculate_hz:
+                    self._on_saved_stats()
+            except Exception as e:
+                self.get_logger().error(f"save loop error: {e}")
                     
-        finally:
+        # finally:
             # 循环退出后保存time_buffer到文件
             # if time_buffer:
             #     try:
