@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import yaml
@@ -197,7 +197,17 @@ def generate_launch_description():
     episode_idx = DeclareLaunchArgument('episode_idx', default_value='0')
     mode = DeclareLaunchArgument('mode', default_value='1', description='必须指定mode, 1为录制，2为推理')
 
+    # --- 新增：Fast DDS 配置文件（默认指向 4GB SHM 配置，可在命令行覆盖） ---
+    fastdds_profiles = DeclareLaunchArgument(
+        'fastdds_profiles_file',
+        default_value='~/fastdds_shm_4g.xml',
+        description='Fast DDS profiles XML（包含 <type>SHM</type> 与 segment_size=4GiB）'
+    )
+
     return LaunchDescription([
+        # 让 XML 在整个 Launch 会话中生效
+        SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', LaunchConfiguration('fastdds_profiles_file')),
+
         # 基本
         pkg_arg, exec_arg, ns_arg, name_arg,
 
