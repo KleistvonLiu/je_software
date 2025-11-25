@@ -7,13 +7,13 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='je_software',
-            executable='manager_node',
+            executable='manager_node',  # Python 节点
             name='manager',
             output='screen',
             parameters=[
-                {'color_topics': ['cam0', 'cam1', 'cam2', 'cam3']},
-                {'depth_topics': ['dep0', 'dep1', 'dep2', 'dep3']},
-                {'joint_state_topic': 'joint'},  # <--- 加上这一行
+                {'color_topics_csv': 'cam0,cam1,cam2,cam3'},
+                {'depth_topics_csv': 'dep0,dep1,dep2,dep3'},
+                {'joint_state_topic': 'joint'},
                 {'tactile_topic': 'tactile'},
                 {'save_dir': '/home/agx/jedata/je_dataset/'},
                 {'episode_idx': 0},
