@@ -186,7 +186,7 @@ class AgilexRobotNode(Node):
             float(highspd.motor_6.motor_speed),
             float(0.0),
         ]
-        e = [float(0.0), float(0.0), float(0.0), float(0.0), float(0.0), float(0.0), float(gripper.grippers_effort)]
+        e = [float(highspd.motor_1.effort), float(highspd.motor_2.effort), float(highspd.motor_3.effort), float(highspd.motor_4.effort), float(highspd.motor_5.effort), float(highspd.motor_6.effort), float(gripper.grippers_effort)]
 
         self.msg.header.stamp = self.get_clock().now().to_msg()
         self.msg.position = j

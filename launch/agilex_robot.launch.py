@@ -38,6 +38,10 @@ def generate_launch_description():
     return LaunchDescription([
         # Declare the argument so LaunchConfiguration('fastdds_profiles_file') exists
         fastdds_profiles,
+        # 强制使用 Fast DDS（fastrtps）作为 RMW 实现，方便确保配置文件被读取
+        SetEnvironmentVariable('RMW_IMPLEMENTATION', 'rmw_fastrtps_cpp'),
+        # 在调试阶段打开 Faster DDS 日志（可改为 INFO 以降低噪音）
+        SetEnvironmentVariable('FASTRTPS_LOG_LEVEL', 'DEBUG'),
         # 让 XML 在整个 Launch 会话中生效
         SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', LaunchConfiguration('fastdds_profiles_file')),
         joint_sub_topic_arg,

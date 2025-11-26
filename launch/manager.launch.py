@@ -156,11 +156,11 @@ def generate_launch_description():
     # --- 颜色/深度（CSV） ---
     color_csv = DeclareLaunchArgument(
         'color_topics_csv',
-        default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,'
+        default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,/camera_05/color/image_raw,'
     )
     depth_csv = DeclareLaunchArgument(
         'depth_topics_csv',
-        default_value='/camera_01/depth/image_raw,/camera_02/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
+        default_value='/camera_01/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
     )
 
     # --- joint/tactile：多路与兼容 ---
@@ -208,6 +208,10 @@ def generate_launch_description():
     return LaunchDescription([
         # 声明 fastdds 配置文件参数（确保 LaunchConfiguration 可用）
         fastdds_profiles,
+        # 强制使用 Fast DDS（fastrtps）作为 RMW 实现，方便确保配置文件被读取
+        SetEnvironmentVariable('RMW_IMPLEMENTATION', 'rmw_fastrtps_cpp'),
+        # 在调试阶段打开 Fast DDS 日志（可改为 INFO 以降低噪音）
+        SetEnvironmentVariable('FASTRTPS_LOG_LEVEL', 'DEBUG'),
         # 让 XML 在整个 Launch 会话中生效
         SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', LaunchConfiguration('fastdds_profiles_file')),
 
