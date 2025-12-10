@@ -156,7 +156,7 @@ def generate_launch_description():
     # --- 颜色/深度（CSV） ---
     color_csv = DeclareLaunchArgument(
         'color_topics_csv',
-        default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,/camera_05/color/image_raw,'
+        default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,'
     )
     depth_csv = DeclareLaunchArgument(
         'depth_topics_csv',
@@ -164,7 +164,7 @@ def generate_launch_description():
     )
 
     # --- joint/tactile：多路与兼容 ---
-    joint_csv = DeclareLaunchArgument('joint_state_topics_csv', default_value='/joint_states_right, /joint_states_left', description='CSV: /arm_a/joint_states,/arm_b/joint_states')
+    joint_csv = DeclareLaunchArgument('joint_state_topics_csv', default_value='/joint_states_right', description='CSV: /arm_a/joint_states,/arm_b/joint_states')
     joint_list = DeclareLaunchArgument('joint_state_topics', default_value='[]', description='YAML 列表: [/arm_a/joint_states, /arm_b/joint_states]')
     joint_legacy = DeclareLaunchArgument('joint_state_topic', default_value='', description='单路兼容')
 

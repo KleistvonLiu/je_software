@@ -15,7 +15,7 @@ def generate_launch_description():
                 {'depth_topics_csv': 'dep0,dep1,dep2,dep3'},
                 {'joint_state_topic': 'joint'},
                 {'tactile_topic': 'tactile'},
-                {'save_dir': '/home/agx/jedata/je_dataset/'},
+                {'save_dir': '/home/test/jedata/je_dataset/'},
                 {'episode_idx': 0},
                 {'mode': 1},
             ],

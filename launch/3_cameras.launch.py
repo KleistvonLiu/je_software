@@ -78,6 +78,10 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(base_launch),
         launch_arguments={**common_args, 'camera_name': 'camera_04', 'usb_port': '2-3'}.items()
     )
+    cam5 = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(base_launch),
+        launch_arguments={**common_args, 'camera_name': 'camera_05', 'usb_port': '2-2'}.items()
+    )
 
     return LaunchDescription([
         fastdds_profiles_arg,
@@ -88,4 +92,5 @@ def generate_launch_description():
         GroupAction([cam2]),
         GroupAction([cam3]),
         GroupAction([cam4]),
+        GroupAction([cam5]),
     ])

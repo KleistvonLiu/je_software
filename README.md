@@ -17,3 +17,9 @@ ros2 launch je_software replay_node.launch.py jsonl:=/home/test/jemotor/jedata/a
 ros2 launch je_software manager.launch.py episode_idx:=0 save_dir:=/home/test/jemotor/temp_data/ overwrite:=true
 
 ros2 run orbbec_camera list_devices_node
+ros2 launch je_software manager.launch.py episode_idx:=0 save_dir:=/home/test/jemotor/temp_data/ overwrite:=true
+
+ros2 run orbbec_camera list_devices_node
+
+
+ros2 launch je_software manager.launch.py overwrite:=false episode_idx:=1
