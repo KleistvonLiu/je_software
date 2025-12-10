@@ -103,6 +103,14 @@ def _launch_setup(context, *args, **kwargs):
         # 运行模式/集
         'episode_idx': int(float(LaunchConfiguration('episode_idx').perform(context))),
         'mode': int(float(LaunchConfiguration('mode').perform(context))),
+
+        # ===== 力矩低通滤波相关（同步 BaseManager 参数） =====
+        'effort_filter_enable': _as_bool(LaunchConfiguration('effort_filter_enable').perform(context), True),
+        'effort_filter_fs': float(LaunchConfiguration('effort_filter_fs').perform(context)),
+        'effort_filter_tau_sec': float(LaunchConfiguration('effort_filter_tau_sec').perform(context)),
+        'effort_filter_num_channels': int(
+            float(LaunchConfiguration('effort_filter_num_channels').perform(context))
+        ),
     }
 
     # --- 多路 joint/tactile 话题（支持 YAML list 或 CSV）---
@@ -118,7 +126,7 @@ def _launch_setup(context, *args, **kwargs):
     if tac_list:
         params['tactile_topics'] = tac_list
     if tac_csv.strip():
-        params['tactile_topics_csv'] = tac_csv
+        params['tactile_topics'] = tac_csv
 
     # --- 容差：joint/tactile 支持标量或列表 ---
     _maybe_set_scalar_or_list(params, context, 'joint_tolerance_ms')
@@ -164,13 +172,37 @@ def generate_launch_description():
     )
 
     # --- joint/tactile：多路与兼容 ---
-    joint_csv = DeclareLaunchArgument('joint_state_topics_csv', default_value='/joint_states_right, /joint_states_left', description='CSV: /arm_a/joint_states,/arm_b/joint_states')
-    joint_list = DeclareLaunchArgument('joint_state_topics', default_value='[]', description='YAML 列表: [/arm_a/joint_states, /arm_b/joint_states]')
-    joint_legacy = DeclareLaunchArgument('joint_state_topic', default_value='', description='单路兼容')
+    joint_csv = DeclareLaunchArgument(
+        'joint_state_topics_csv',
+        default_value='/joint_states_right, /joint_states_left',
+        description='CSV: /arm_a/joint_states,/arm_b/joint_states'
+    )
+    joint_list = DeclareLaunchArgument(
+        'joint_state_topics',
+        default_value='[]',
+        description='YAML 列表: [/arm_a/joint_states, /arm_b/joint_states]'
+    )
+    joint_legacy = DeclareLaunchArgument(
+        'joint_state_topic',
+        default_value='',
+        description='单路兼容'
+    )
 
-    tactile_csv = DeclareLaunchArgument('tactile_topics_csv', default_value='', description='CSV: /tactile/left,/tactile/right')
-    tactile_list = DeclareLaunchArgument('tactile_topics', default_value='[]', description='YAML 列表: [/tactile/left, /tactile/right]')
-    tactile_legacy = DeclareLaunchArgument('tactile_topic', default_value='', description='单路兼容')
+    tactile_csv = DeclareLaunchArgument(
+        'tactile_topics_csv',
+        default_value='',
+        description='CSV: /tactile/left,/tactile/right'
+    )
+    tactile_list = DeclareLaunchArgument(
+        'tactile_topics',
+        default_value='[]',
+        description='YAML 列表: [/tactile/left, /tactile/right]'
+    )
+    tactile_legacy = DeclareLaunchArgument(
+        'tactile_topic',
+        default_value='',
+        description='单路兼容'
+    )
 
     # --- 频率/容差/窗口 ---
     rate_arg = DeclareLaunchArgument('rate_hz', default_value='60.0')
@@ -189,14 +221,56 @@ def generate_launch_description():
     jpg_q = DeclareLaunchArgument('color_jpeg_quality', default_value='95')
 
     # --- 偏置（字符串，YAML/CSV 都行）---
-    color_off = DeclareLaunchArgument('color_offsets_ms', default_value='[]', description='如 [0,0,0] 或 0,0,0')
-    depth_off = DeclareLaunchArgument('depth_offsets_ms', default_value='[]', description='如 [0,0,0] 或 0,0,0')
-    jnt_off = DeclareLaunchArgument('joint_offset_ms', default_value='0.0', description='标量或列表')
-    tac_off = DeclareLaunchArgument('tactile_offset_ms', default_value='0.0', description='标量或列表')
+    color_off = DeclareLaunchArgument(
+        'color_offsets_ms',
+        default_value='[]',
+        description='如 [0,0,0] 或 0,0,0'
+    )
+    depth_off = DeclareLaunchArgument(
+        'depth_offsets_ms',
+        default_value='[]',
+        description='如 [0,0,0] 或 0,0,0'
+    )
+    jnt_off = DeclareLaunchArgument(
+        'joint_offset_ms',
+        default_value='0.0',
+        description='标量或列表'
+    )
+    tac_off = DeclareLaunchArgument(
+        'tactile_offset_ms',
+        default_value='0.0',
+        description='标量或列表'
+    )
 
     # --- 运行模式/集 ---
     episode_idx = DeclareLaunchArgument('episode_idx', default_value='0')
-    mode = DeclareLaunchArgument('mode', default_value='1', description='必须指定mode, 1为录制，2为推理')
+    mode = DeclareLaunchArgument(
+        'mode',
+        default_value='1',
+        description='必须指定mode, 1为录制，2为推理'
+    )
+
+    # --- 新增：力矩滤波相关参数 ---
+    eff_f_enable = DeclareLaunchArgument(
+        'effort_filter_enable',
+        default_value='true',
+        description='是否对关节力矩做一阶低通滤波'
+    )
+    eff_f_fs = DeclareLaunchArgument(
+        'effort_filter_fs',
+        default_value='50',
+        description='滤波采样频率(Hz)，<=0 时由节点内部使用 rate_hz'
+    )
+    eff_f_tau = DeclareLaunchArgument(
+        'effort_filter_tau_sec',
+        default_value='0.10',
+        description='力矩一阶低通时间常数(秒)'
+    )
+    eff_f_num = DeclareLaunchArgument(
+        'effort_filter_num_channels',
+        default_value='7',
+        description='力矩通道数，默认 7 维'
+    )
 
     # --- 新增：Fast DDS 配置文件（默认指向 4GB SHM 配置，可在命令行覆盖） ---
     fastdds_profiles = DeclareLaunchArgument(
@@ -236,6 +310,9 @@ def generate_launch_description():
 
         # 运行模式/集
         episode_idx, mode,
+
+        # 力矩滤波参数
+        eff_f_enable, eff_f_fs, eff_f_tau, eff_f_num,
 
         OpaqueFunction(function=_launch_setup),
     ])
