@@ -13,6 +13,21 @@ from .ros2_qos import reliable_qos
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32MultiArray
 
+# ====================== 一阶低通滤波 ======================
+
+class TorqueFilter:
+    def __init__(self, fs: float, tau_sec: float):
+        dt = 1.0 / fs
+        self.alpha = dt / (tau_sec + dt)
+        self.y = None
+
+    def update(self, x: float) -> float:
+        if self.y is None:
+            self.y = x
+        else:
+            self.y = self.y + self.alpha * (x - self.y)
+        return self.y
+
 # ====================== 小工具 ======================
 
 def ensure_dir(path: str):
@@ -311,6 +326,12 @@ class BaseManager(Node):
         self.declare_parameter('stats_log_period_s', 2.0)
         self.declare_parameter('episode_idx', 0)
 
+        # 力矩低通滤波配置（默认 7 维）
+        self.declare_parameter('effort_filter_enable', True)    # 是否启用力矩滤波
+        self.declare_parameter('effort_filter_fs', 0.0)         # <=0 时使用 rate_hz
+        self.declare_parameter('effort_filter_tau_sec', 0.05)   # 一阶低通时间常数
+        self.declare_parameter('effort_filter_num_channels', 7) # 默认 7 维力矩
+
         # 偏置（ms）
         self.declare_parameter('color_offsets_ms', [])
         self.declare_parameter('depth_offsets_ms', [])
@@ -406,6 +427,32 @@ class BaseManager(Node):
         self._save_times = deque()
         self._last_rate_log_t = time.perf_counter()
 
+        # ===== 力矩滤波器初始化（默认 7 维） =====
+        self.effort_filter_enable: bool = bool(p('effort_filter_enable').value)
+        self.effort_filter_tau_sec: float = float(p('effort_filter_tau_sec').value)
+        eff_fs = float(p('effort_filter_fs').value)
+        if eff_fs <= 0.0:
+            # 如果没有专门指定，就先用对齐输出频率；如果你知道 JointState 是 100Hz，可以在参数里设成 100
+            eff_fs = self.rate_hz
+        self.effort_filter_fs: float = eff_fs
+
+        self.effort_filter_num_channels: int = int(p('effort_filter_num_channels').value or 7)
+        if self.effort_filter_num_channels <= 0:
+            self.effort_filter_num_channels = 7
+
+        if self.effort_filter_enable:
+            # 默认创建 7 个滤波器，对应 7 维力矩
+            self.effort_filters = [
+                TorqueFilter(fs=self.effort_filter_fs, tau_sec=self.effort_filter_tau_sec)
+                for _ in range(self.effort_filter_num_channels)
+            ]
+        else:
+            self.effort_filters = []
+
+        # 缓存原始 effort，用于 RecorderManager._save_once 里同时保存原始 + 滤波后
+        # key: (joint_topic_index k, stamp_ns) -> List[float]
+        self._effort_raw_cache = {}
+        
         self.episode_idx: int = int(p('episode_idx').value)
         self.frame_idx = 0
 
@@ -507,7 +554,7 @@ class BaseManager(Node):
     # ---------- 回调 ----------
     def _ns_from_header_or_clock(self, header) -> int:
         try:
-            s = int(header.stamp.sec);
+            s = int(header.stamp.sec)
             ns = int(header.stamp.nanosec)
             if s != 0 or ns != 0:
                 return s * 1_000_000_000 + ns
@@ -531,13 +578,50 @@ class BaseManager(Node):
 
         return _cb
 
+    # def _mk_joint_cb(self, k: int):
+    #     def _cb(msg: JointState):
+    #         t_ns = self._ns_from_header_or_clock(msg.header)
+    #         self.aligner.put_nowait(self._idx_joint[k], t_ns, msg)
+
+    #     return _cb
+
     def _mk_joint_cb(self, k: int):
         def _cb(msg: JointState):
+            # 统一算出时间戳（ns）
             t_ns = self._ns_from_header_or_clock(msg.header)
+
+            # ===== 力矩低通滤波（高频） =====
+            try:
+                if self.effort_filter_enable and getattr(msg, "effort", None) is not None:
+                    # 原始力矩列表（拷一份，避免原地改的时候丢失原始）
+                    raw_efforts = [float(x) for x in msg.effort]
+                    n_raw = len(raw_efforts)
+
+                    # 防御：如果实际维度和配置不一致，处理前 n 个
+                    n_ch = min(self.effort_filter_num_channels, n_raw)
+
+                    filtered_efforts = []
+                    for i_dim, val in enumerate(raw_efforts):
+                        if i_dim < n_ch and i_dim < len(self.effort_filters):
+                            filtered = float(self.effort_filters[i_dim].update(val))
+                            filtered_efforts.append(filtered)
+                        else:
+                            # 超出配置范围的维度，直接原样通过
+                            filtered_efforts.append(val)
+
+                    # 按你说的方案：
+                    # 使用 msg.effort 一个字段，打包成 [原始7维, 滤波后7维]
+                    # 假设 n_raw == 7，如果不是，前 n_ch 维对应滤波，其余部分原样复制两遍也可以按需改
+                    msg.effort = raw_efforts + filtered_efforts
+            except Exception as e:
+                # 任何滤波错误都不能影响对齐逻辑
+                self._warn("effort filter in joint_cb error: %s", e)
+
+            # 无论是否启用滤波，消息都照常送给对齐器
             self.aligner.put_nowait(self._idx_joint[k], t_ns, msg)
 
         return _cb
-
+    
     def _mk_tactile_cb(self, k: int):
         def _cb(msg: Float32MultiArray):
             t_ns = self.get_clock().now().nanoseconds
