@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os, json, threading, time, re, logging
+import gc
 from collections import deque
 from typing import List, Tuple, Optional, Any, Dict
 from datetime import datetime
@@ -668,6 +669,25 @@ class Manager(Node):
                     self.get_logger().info("Recording DISABLED by right Ctrl")
                     self._pending_safe_log = True
 
+                    # Drain image writer queue and run a best-effort cleanup to reduce resident memory.
+                    try:
+                        iw = getattr(self, 'image_writer', None)
+                        if iw is not None:
+                            self.get_logger().info("Draining image writer queue (wait_until_done)...")
+                            try:
+                                iw.wait_until_done()
+                            except Exception as e:
+                                self.get_logger().warn(f"image_writer.wait_until_done() failed: {e}")
+                            # Keep writer available for reuse; if you want to fully stop threads uncomment stop()
+                            # try:
+                            #     iw.stop()
+                            #     self.image_writer = None
+                            # except Exception:
+                            #     pass
+                            gc.collect()
+                    except Exception as e:
+                        self.get_logger().warn(f"Post-stop cleanup failed: {e}")
+
         except Exception as e:
             self.get_logger().warn(f"Keyboard handler error: {e}")
 
@@ -807,12 +827,24 @@ class Manager(Node):
             ensure_dir(img_dir)
             fn = f"frame_{idx:06d}.png"
             fp = os.path.join(img_dir, fn)
-            if getattr(msg, "encoding", "") != 'rgb8':
-                img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
-            else:
-                img = self.bridge.imgmsg_to_cv2(msg)
-            self.image_writer.save_image(img, fp)
-            image_fields[cam_name] = os.path.relpath(fp, episode_dir)
+            try:
+                if getattr(msg, "encoding", "") != 'rgb8':
+                    img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
+                else:
+                    img = self.bridge.imgmsg_to_cv2(msg)
+            except Exception as e:
+                # Conversion failed; log and continue
+                self.get_logger().error(f"Failed to convert color msg for camera {cam_name}: {e}")
+                continue
+            try:
+                iw = getattr(self, 'image_writer', None)
+                if iw is None:
+                    self.get_logger().error("No image_writer available to save color image")
+                else:
+                    iw.save_image(img, fp)
+                    image_fields[cam_name] = os.path.relpath(fp, episode_dir)
+            except Exception as e:
+                self.get_logger().error(f"Failed to enqueue color image for saving {fp}: {e}")
 
         if self.save_depth and depth_picks:
             for dep_i, item in enumerate(depth_picks):
@@ -825,12 +857,27 @@ class Manager(Node):
                 fn = f"frame_{idx:06d}.png"
                 fp = os.path.join(img_dir, fn)
                 try:
-                    depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')
-                except Exception:
-                    depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='mono16')
-                depth_rgb8 = _pack_depth_u16_to_rgb8(depth_u16, order="HI_LO", b_fill=0)
-                self.image_writer.save_image(depth_rgb8, fp)
-                image_fields[cam_name] = os.path.relpath(fp, episode_dir)
+                    try:
+                        depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='16UC1')
+                    except Exception:
+                        depth_u16 = self.bridge.imgmsg_to_cv2(msg, desired_encoding='mono16')
+                except Exception as e:
+                    self.get_logger().error(f"Failed to convert depth msg for camera {cam_name}: {e}")
+                    continue
+                try:
+                    depth_rgb8 = _pack_depth_u16_to_rgb8(depth_u16, order="HI_LO", b_fill=0)
+                except Exception as e:
+                    self.get_logger().error(f"Failed to pack depth for camera {cam_name}: {e}")
+                    continue
+                try:
+                    iw = getattr(self, 'image_writer', None)
+                    if iw is None:
+                        self.get_logger().error("No image_writer available to save depth image")
+                    else:
+                        iw.save_image(depth_rgb8, fp)
+                        image_fields[cam_name] = os.path.relpath(fp, episode_dir)
+                except Exception as e:
+                    self.get_logger().error(f"Failed to enqueue depth image for saving {fp}: {e}")
 
         # === 2. 组装多路 joint/tactile 元数据 ===
         joints_meta = []
@@ -908,6 +955,23 @@ class Manager(Node):
             pass
 
         self._stop_evt.set()
+        # Ensure image writer is stopped and threads/processes joined to release resources.
+        try:
+            iw = getattr(self, 'image_writer', None)
+            if iw is not None:
+                try:
+                    iw.stop()
+                except Exception as e:
+                    self.get_logger().warn(f"image_writer.stop() failed during destroy: {e}")
+                try:
+                    # drop reference and collect
+                    self.image_writer = None
+                    gc.collect()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         try:
             if getattr(self, "worker", None) and self.worker.is_alive():
                 self.worker.join(timeout=3.0)
@@ -938,7 +1002,11 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        try:
+            rclpy.shutdown()
+        except Exception as e:
+            # ignore duplicate shutdown / RCLError on context
+            print(f"rclpy.shutdown() ignored error: {e}")
 
 
 if __name__ == '__main__':

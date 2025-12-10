@@ -17,6 +17,8 @@ import multiprocessing
 import queue
 import threading
 from pathlib import Path
+import time
+import os
 
 import numpy as np
 import PIL.Image
@@ -83,15 +85,35 @@ def write_image(image: np.ndarray | PIL.Image.Image, fpath: Path):
         print(f"Error writing image {fpath}: {e}")
 
 
-def worker_thread_loop(queue: queue.Queue):
+def worker_thread_loop(queue: queue.Queue, parent=None):
+    """Worker thread: write image then update parent's counters if provided.
+    parent: AsyncImageWriter instance or None (for process-spawned threads parent will be None).
+    """
     while True:
         item = queue.get()
         if item is None:
             queue.task_done()
             break
         image_array, fpath = item
-        write_image(image_array, fpath)
-        queue.task_done()
+        # write image; avoid verbose per-image prints to reduce log spam
+        try:
+            write_image(image_array, fpath)
+            # update counters on parent writer if available
+            if parent is not None:
+                try:
+                    parent._written_count += 1
+                    try:
+                        parent._written_bytes += int(os.path.getsize(str(fpath)))
+                    except Exception:
+                        # best-effort: ignore file-size errors
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            # write_image already prints error; continue
+            pass
+        finally:
+            queue.task_done()
 
 
 def worker_process(queue: queue.Queue, num_threads: int):
@@ -128,6 +150,11 @@ class AsyncImageWriter:
         self.processes = []
         self._stopped = False
 
+        # new runtime metrics
+        self._written_count = 0
+        self._written_bytes = 0
+        self._monitor_thread = None
+
         if num_threads <= 0 and num_processes <= 0:
             raise ValueError("Number of threads and processes must be greater than zero.")
 
@@ -135,7 +162,8 @@ class AsyncImageWriter:
             # Use threading
             self.queue = queue.Queue()
             for _ in range(self.num_threads):
-                t = threading.Thread(target=worker_thread_loop, args=(self.queue,))
+                # pass self as parent so worker can update counters
+                t = threading.Thread(target=worker_thread_loop, args=(self.queue, self))
                 t.daemon = True
                 t.start()
                 self.threads.append(t)
@@ -147,6 +175,27 @@ class AsyncImageWriter:
                 p.daemon = True
                 p.start()
                 self.processes.append(p)
+
+        # start monitor thread (daemon) to print queue depth and basic counters
+        def _monitor():
+            try:
+                last_print_t = 0.0
+                while not self._stopped:
+                    try:
+                        qsize = self.queue.qsize()
+                    except Exception:
+                        qsize = -1
+                    now_t = time.time()
+                    # Print only when queue non-empty or every 5 seconds to reduce noise
+                    if qsize > 0 or (now_t - last_print_t) >= 5.0:
+                        print(f"[image_writer] qsize={qsize} written_count={self._written_count} written_bytes={self._written_bytes}")
+                        last_print_t = now_t
+                    time.sleep(1.0)
+            except Exception:
+                pass
+
+        self._monitor_thread = threading.Thread(target=_monitor, name='image-writer-monitor', daemon=True)
+        self._monitor_thread.start()
 
     def save_image(self, image: np.ndarray | PIL.Image.Image, fpath: Path):
         # if isinstance(image, torch.Tensor):
@@ -160,6 +209,11 @@ class AsyncImageWriter:
     def stop(self):
         if self._stopped:
             return
+
+        # signal monitor to stop
+        self._stopped = True
+        if self._monitor_thread is not None:
+            self._monitor_thread.join(timeout=1.0)
 
         if self.num_processes == 0:
             for _ in self.threads:

@@ -290,17 +290,55 @@ class RecorderManager(BaseManager):
 
         # 3) meta（可自行扩展 joint/tactile）
         joints_meta, tactiles_meta = [], []
+        
+        # for k, item in enumerate(joint_picks):
+        #     if item is None: continue
+        #     t_ns, js_msg = item
+        #     joints_meta.append(dict(
+        #         topic=self.joint_topics[k],
+        #         stamp_ns=t_ns*1e-9,
+        #         name=list(getattr(js_msg, "name", [])),
+        #         position=[float(x) for x in getattr(js_msg, "position", [])],
+        #         velocity=[float(x) for x in getattr(js_msg, "velocity", [])],
+        #         effort=[float(x) for x in getattr(js_msg, "effort", [])],
+        #     ))
+            
         for k, item in enumerate(joint_picks):
-            if item is None: continue
+            if item is None:
+                continue
             t_ns, js_msg = item
+            topic = self.joint_topics[k]
+
+            names = list(getattr(js_msg, "name", []))
+            positions = [float(x) for x in getattr(js_msg, "position", [])]
+            velocities = [float(x) for x in getattr(js_msg, "velocity", [])]
+            efforts_all = [float(x) for x in getattr(js_msg, "effort", [])]
+
+            n_joints = len(names)
+            raw_efforts = []
+            filtered_efforts = []
+
+            if self.effort_filter_enable and n_joints > 0 and len(efforts_all) >= 2 * n_joints:
+                # 按约定：[原始n维, 滤波后n维, ...]
+                raw_efforts = efforts_all[:n_joints]
+                filtered_efforts = efforts_all[n_joints:2 * n_joints]
+            else:
+                # 没启用滤波或长度不匹配，就当作只有一份：两者相同
+                raw_efforts = list(efforts_all)
+                filtered_efforts = list(efforts_all)
+
             joints_meta.append(dict(
-                topic=self.joint_topics[k],
-                stamp_ns=t_ns*1e-9,
-                name=list(getattr(js_msg, "name", [])),
-                position=[float(x) for x in getattr(js_msg, "position", [])],
-                velocity=[float(x) for x in getattr(js_msg, "velocity", [])],
-                effort=[float(x) for x in getattr(js_msg, "effort", [])],
+                topic=topic,
+                stamp_ns=t_ns * 1e-9,
+                name=names,
+                position=positions,
+                velocity=velocities,
+                # 原始力矩
+                effort=raw_efforts,
+                # 新增：滤波后的力矩
+                effort_filtered=filtered_efforts,
             ))
+            
         for k, item in enumerate(tact_picks):
             if item is None: continue
             t_ns, tact_msg = item
