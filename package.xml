@@ -7,8 +7,21 @@
   <maintainer email="gmvonkleist@gmail.com">kleist</maintainer>
   <license>Apache-2.0</license>
 
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <buildtool_depend>pkg-config</buildtool_depend>
+
   <depend>rclpy</depend>
+  <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <!-- System deps for je_robot_node.cpp (rosdep keys) -->
+  <depend>cppzmq</depend>
+  <depend>libzmq3-dev</depend>
+  <depend>nlohmann-json3-dev</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
@@ -16,6 +29,6 @@
   <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>
