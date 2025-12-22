@@ -11,6 +11,11 @@
 #include <iomanip>
 #include <sstream>
 
+// ===== NEW: logging =====
+#include <fstream>
+#include <filesystem>
+// ========================
+
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -48,6 +53,13 @@ public:
         this->declare_parameter<double>("dt", 0.014);
         this->declare_parameter<double>("dt_init", 5.0);
 
+        // ===== NEW: state logging parameters =====
+        this->declare_parameter<bool>("state_log_enable", true);
+        this->declare_parameter<std::string>("state_log_dir", "./je_robot_logs");
+        this->declare_parameter<std::string>("state_log_prefix", "robot_state");
+        this->declare_parameter<int>("state_log_flush_every_n", 10);
+        // ========================================
+
         std::string joint_sub_topic =
             this->get_parameter("joint_sub_topic").as_string();
         std::string end_pose_topic =
@@ -61,6 +73,14 @@ public:
         int sub_port = this->get_parameter("sub_port").as_int();
         dt_ = this->get_parameter("dt").as_double();
         dt_init_ = this->get_parameter("dt_init").as_double();
+
+        // ===== NEW: read logging params =====
+        log_enabled_ = this->get_parameter("state_log_enable").as_bool();
+        log_dir_ = this->get_parameter("state_log_dir").as_string();
+        log_prefix_ = this->get_parameter("state_log_prefix").as_string();
+        flush_every_n_ = this->get_parameter("state_log_flush_every_n").as_int();
+        if (flush_every_n_ <= 0) flush_every_n_ = 1;
+        // ==================================
 
         if (fps <= 0.0)
         {
@@ -132,6 +152,18 @@ public:
             qos);
         RCLCPP_INFO(this->get_logger(), "[PUB] joint state: %s", joint_pub_topic.c_str());
 
+        // ===== NEW: open log file once (optional) =====
+        if (log_enabled_)
+        {
+            open_log_file_if_needed();
+            if (!last_state_json_.is_null())
+            {
+                // 记录初始状态（可选）
+                write_state_to_disk(last_state_json_, this->get_clock()->now());
+            }
+        }
+        // =============================================
+
         // 独立线程：循环读取状态并发布（避免阻塞 executor）
         state_thread_running_.store(true);
         state_thread_ = std::thread(&JeRobotNode::state_publish_loop, this);
@@ -162,6 +194,14 @@ public:
         catch (...)
         {
         }
+
+        // ===== NEW: close log =====
+        if (state_log_.is_open())
+        {
+            state_log_.flush();
+            state_log_.close();
+        }
+        // =========================
     }
 
 private:
@@ -297,7 +337,6 @@ private:
     static inline void quat_to_rpy(double qx, double qy, double qz, double qw,
                                    double &roll, double &pitch, double &yaw)
     {
-        // 可选：归一化，防止数值漂移
         const double n = std::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
         if (n > 1e-12)
         {
@@ -327,18 +366,84 @@ private:
         yaw = std::atan2(siny_cosp, cosy_cosp);
     }
 
+    // ==================== NEW: logging helpers ====================
+
+    static std::string now_string_local_compact()
+    {
+        using clock = std::chrono::system_clock;
+        const auto t = clock::to_time_t(clock::now());
+        std::tm tm{};
+#if defined(_WIN32)
+        localtime_s(&tm, &t);
+#else
+        localtime_r(&t, &tm);
+#endif
+        std::ostringstream oss;
+        oss << std::put_time(&tm, "%Y%m%d_%H%M%S");
+        return oss.str();
+    }
+
+    void open_log_file_if_needed()
+    {
+        if (!log_enabled_ || state_log_.is_open()) return;
+
+        std::error_code ec;
+        std::filesystem::create_directories(log_dir_, ec);
+        if (ec)
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Failed to create log dir '%s': %s",
+                         log_dir_.c_str(), ec.message().c_str());
+            log_enabled_ = false;
+            return;
+        }
+
+        log_path_ = (std::filesystem::path(log_dir_) /
+                     (log_prefix_ + "_" + now_string_local_compact() + ".jsonl")).string();
+
+        state_log_.open(log_path_, std::ios::out | std::ios::app);
+        if (!state_log_)
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                         "Failed to open log file '%s' for writing.", log_path_.c_str());
+            log_enabled_ = false;
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(),
+                    "State logging enabled: %s", log_path_.c_str());
+    }
+
+    void write_state_to_disk(const nlohmann::json &state_json,
+                             const rclcpp::Time &stamp)
+    {
+        if (!log_enabled_) return;
+        open_log_file_if_needed();
+        if (!state_log_.is_open()) return;
+
+        nlohmann::json out = state_json;
+        out["__ros_stamp_ns"] = stamp.nanoseconds();
+        out["__ros_stamp_sec"] = stamp.seconds();
+
+        state_log_ << out.dump() << "\n";
+
+        ++log_count_;
+        if ((log_count_ % static_cast<size_t>(flush_every_n_)) == 0)
+        {
+            state_log_.flush();
+        }
+    }
+
     // ==================== ROS 回调 ====================
 
     void joint_cmd_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
     {
-        // std::cout << "joint cmd callback" << std::endl;
         if (msg->name.empty() || msg->position.empty())
         {
             RCLCPP_WARN(this->get_logger(), "Received empty JointState cmd.");
             return;
         }
 
-        // name -> index 映射
         std::unordered_map<std::string, std::size_t> name_to_idx;
         name_to_idx.reserve(msg->name.size());
         for (std::size_t i = 0; i < msg->name.size(); ++i)
@@ -378,44 +483,44 @@ private:
 
         current_cmd_joint_ = target;
         joint_cmd_received_ = true;
-        if (std::abs(msg->effort[0] -  666) < 1e-5) {
-            // RCLCPP_INFO(this->get_logger(), "JeRobotNode received one initial joint posi.");
-            std::cout << "JeRobotNode received one initial joint posi." << std::endl;
+
+        // ===== FIX: guard effort access =====
+        const bool is_init =
+            (!msg->effort.empty() && std::abs(msg->effort[0] - 666.0) < 1e-5);
+        // ===================================
+
+        if (is_init)
+        {
+            RCLCPP_INFO(this->get_logger(), "JeRobotNode received one initial joint posi.");
             set_robot_joint(current_cmd_joint_, dt_init_);
-        } else {
+        }
+        else
+        {
             set_robot_joint(current_cmd_joint_);
         }
     }
 
     void end_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     {
-        // std::cout << "endpose cmd callback" << std::endl;
         if (!msg)
             return;
         latest_ee_pose_ = msg;
 
-        // 位置
         const double x = msg->pose.position.x;
         const double y = msg->pose.position.y;
         const double z = msg->pose.position.z;
 
-        // 四元数
         const double qx = msg->pose.orientation.x;
         const double qy = msg->pose.orientation.y;
         const double qz = msg->pose.orientation.z;
         const double qw = msg->pose.orientation.w;
 
-        // 转 RPY（弧度）
         double roll = 0.0, pitch = 0.0, yaw = 0.0;
         quat_to_rpy(qx, qy, qz, qw, roll, pitch, yaw);
 
-        // set_robot_cartesian 需要的格式：6D [x, y, z, roll, pitch, yaw]
         std::vector<double> cartesian = {x, y, z, roll, pitch, yaw};
-
-        // 下发：time 用你的插补时间参数
         set_robot_cartesian(cartesian);
 
-        // 低频日志
         static int count = 0;
         if ((++count % 50) == 0)
         {
@@ -436,9 +541,13 @@ private:
             return;
         }
 
+        // ===== NEW: log raw state (with stamp) =====
+        const rclcpp::Time stamp = this->get_clock()->now();
+        write_state_to_disk(state_json, stamp);
+        // ==========================================
+
         try
         {
-            // 建议：这里也可加 contains() 判定进一步增强鲁棒性
             auto joint_vec = state_json["Robot0"]["Joint"].get<std::vector<double>>();
             if (joint_vec.size() < 7)
             {
@@ -448,7 +557,7 @@ private:
             }
 
             sensor_msgs::msg::JointState msg;
-            msg.header.stamp = this->get_clock()->now();
+            msg.header.stamp = stamp;  // 用同一个 stamp，便于和日志对齐
             msg.name = expected_names_;
             msg.position = joint_vec;
 
@@ -474,8 +583,9 @@ private:
 private:
     // global time
     double global_time_ = 0.0;
-    double dt_ = 0.014; // 72hz
-    double dt_init_ = 5; // 从任意位置运动到初始位置期望的时间
+    double dt_ = 0.014;   // 72hz
+    double dt_init_ = 5;  // 从任意位置运动到初始位置期望的时间
+
     // ROS
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_cmd_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_end_pose_;
@@ -498,6 +608,16 @@ private:
     // 线程
     std::atomic_bool state_thread_running_;
     std::thread state_thread_;
+
+    // ===== NEW: logging members =====
+    bool log_enabled_{false};
+    std::string log_dir_{"/tmp/je_robot_logs"};
+    std::string log_prefix_{"robot_state"};
+    std::string log_path_;
+    int flush_every_n_{10};
+    std::ofstream state_log_;
+    size_t log_count_{0};
+    // ==============================
 };
 
 int main(int argc, char *argv[])
