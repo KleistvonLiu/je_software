@@ -331,7 +331,7 @@ private:
 
     void joint_cmd_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
     {
-        std::cout << "joint cmd callback" << std::endl;
+        // std::cout << "joint cmd callback" << std::endl;
         if (msg->name.empty() || msg->position.empty())
         {
             RCLCPP_WARN(this->get_logger(), "Received empty JointState cmd.");
@@ -379,6 +379,7 @@ private:
         current_cmd_joint_ = target;
         joint_cmd_received_ = true;
         if (std::abs(msg->effort[0] -  666) < 1e-5) {
+            // RCLCPP_INFO(this->get_logger(), "JeRobotNode received one initial joint posi.");
             std::cout << "JeRobotNode received one initial joint posi." << std::endl;
             set_robot_joint(current_cmd_joint_, dt_init_);
         } else {
@@ -388,7 +389,7 @@ private:
 
     void end_pose_callback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     {
-        std::cout << "endpose cmd callback" << std::endl;
+        // std::cout << "endpose cmd callback" << std::endl;
         if (!msg)
             return;
         latest_ee_pose_ = msg;
