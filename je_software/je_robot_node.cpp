@@ -46,6 +46,7 @@ public:
 
         // 下发关节指令时的插补时间（秒）
         this->declare_parameter<double>("dt", 0.014);
+        this->declare_parameter<double>("dt_init", 5.0);
 
         std::string joint_sub_topic =
             this->get_parameter("joint_sub_topic").as_string();
@@ -59,6 +60,7 @@ public:
         int pub_port = this->get_parameter("pub_port").as_int();
         int sub_port = this->get_parameter("sub_port").as_int();
         dt_ = this->get_parameter("dt").as_double();
+        dt_init_ = this->get_parameter("dt_init").as_double();
 
         if (fps <= 0.0)
         {

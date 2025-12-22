@@ -13,6 +13,7 @@ def generate_launch_description():
     joint_pub_topic_arg = DeclareLaunchArgument('joint_pub_topic', default_value='/joint_states')
     fps_arg             = DeclareLaunchArgument('fps',             default_value='50')
     dt_arg              = DeclareLaunchArgument('dt',              default_value='0.014')
+    dt_init_arg         = DeclareLaunchArgument('dt_init',         default_value='3.0')
 
     # -------------------- ZMQ params --------------------
     robot_ip_arg  = DeclareLaunchArgument('robot_ip',  default_value='192.168.0.99')
@@ -32,6 +33,7 @@ def generate_launch_description():
                 "joint_pub_topic": LaunchConfiguration("joint_pub_topic"),
                 "fps": ParameterValue(LaunchConfiguration("fps"), value_type=float),
                 "dt": ParameterValue(LaunchConfiguration("dt"), value_type=float),
+                "dt_init": ParameterValue(LaunchConfiguration("dt_init"), value_type=float),
                 "robot_ip": LaunchConfiguration("robot_ip"),
                 "pub_port": LaunchConfiguration("pub_port"),
                 "sub_port": LaunchConfiguration("sub_port"),
@@ -58,6 +60,7 @@ def generate_launch_description():
         joint_pub_topic_arg,
         fps_arg,
         dt_arg,
+        dt_init_arg,
         robot_ip_arg,
         pub_port_arg,
         sub_port_arg,
