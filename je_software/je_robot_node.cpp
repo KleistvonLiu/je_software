@@ -22,6 +22,7 @@
 
 #include <zmq.hpp>
 #include "nlohmann/json.hpp"
+#include <Eigen/Dense>
 
 using namespace std::chrono_literals;
 
@@ -366,6 +367,20 @@ private:
         yaw = std::atan2(siny_cosp, cosy_cosp);
     }
 
+    static inline void quat_to_rpy_eigen(const double qx, const double qy, const double qz, const double qw,
+                                   double &roll, double &pitch, double &yaw)
+    {
+        Eigen::Quaterniond q(qw, qx, qy, qz);
+        Eigen::Matrix3d R = q.toRotationMatrix();
+
+        // 返回的是绕 Z, Y, X 的角（顺序与参数一致）
+        Eigen::Vector3d ypr = R.eulerAngles(2, 1, 0);
+        yaw   = ypr[0];
+        pitch = ypr[1];
+        roll  = ypr[2];
+    }
+
+
     // ==================== NEW: logging helpers ====================
 
     static std::string now_string_local_compact()
@@ -516,7 +531,8 @@ private:
         const double qw = msg->pose.orientation.w;
 
         double roll = 0.0, pitch = 0.0, yaw = 0.0;
-        quat_to_rpy(qx, qy, qz, qw, roll, pitch, yaw);
+        // quat_to_rpy(qx, qy, qz, qw, roll, pitch, yaw);
+        quat_to_rpy_eigen(qx, qy, qz, qw, roll, pitch, yaw);
 
         std::vector<double> cartesian = {x, y, z, roll, pitch, yaw};
         set_robot_cartesian(cartesian);
