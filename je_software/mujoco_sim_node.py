@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""ROS2 node to run a lightweight MuJoCo visualization simulation and bridge data for IK.
+
+- Loads a MuJoCo XML model (configurable)
+- Runs a simulation loop at control_frequency
+- Publishes `/sim/joint_states` (sensor_msgs/JointState)
+- Subscribes to `/joint_command` (sensor_msgs/JointState) to accept position targets
+
+This file is intentionally standalone and uses the MuJoCo python bindings directly
+so it does not require the project follower class to be importable.
+"""
+
+import sys
+import time
+import threading
+from typing import List, Dict
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+
+try:
+    import mujoco
+except Exception as e:
+    mujoco = None
+
+# try to import mujoco.viewer and glfw (zongzhuang implementation imports these explicitly)
+try:
+    import mujoco.viewer as mujoco_viewer
+except Exception:
+    mujoco_viewer = None
+
+try:
+    import glfw
+except Exception:
+    glfw = None
+
+
+class MujocoSimNode(Node):
+    def __init__(self):
+        super().__init__('mujoco_sim_node')
+
+        # Parameters
+        self.declare_parameter('model_xml', '/home/agx/price/issac-sim/zongzhuang2/meshes/zongzhuang2.xml')
+        self.declare_parameter('joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6', 'joint7'])
+        self.declare_parameter('control_frequency', 50.0)
+        self.declare_parameter('use_viewer', False)
+
+        model_xml = self.get_parameter('model_xml').get_parameter_value().string_value
+        self.joint_names: List[str] = list(self.get_parameter('joint_names').get_parameter_value().string_array_value)
+        self.control_frequency = float(self.get_parameter('control_frequency').get_parameter_value().double_value)
+        self.use_viewer = bool(self.get_parameter('use_viewer').get_parameter_value().bool_value)
+
+        if mujoco is None:
+            self.get_logger().error('mujoco python bindings not available. Install mujoco or adjust PYTHONPATH.')
+            raise RuntimeError('mujoco missing')
+
+        self.get_logger().info(f'Loading MuJoCo model from: {model_xml}')
+        self.model = mujoco.MjModel.from_xml_path(model_xml)
+        self.data = mujoco.MjData(self.model)
+
+        # optionally start an interactive passive viewer for manual inspection
+        self.viewer = None
+        self._glfw_window = None
+        if self.use_viewer:
+            try:
+                # try to create an invisible OpenGL context (helps some mujoco viewer backends)
+                if glfw is not None:
+                    try:
+                        if not glfw.init():
+                            self.get_logger().debug('glfw.init() returned False')
+                        else:
+                            glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+                            # small invisible window
+                            self._glfw_window = glfw.create_window(1, 1, 'mj_offscreen', None, None)
+                            if self._glfw_window is not None:
+                                glfw.make_context_current(self._glfw_window)
+                    except Exception:
+                        self.get_logger().debug('Failed to create offscreen GLFW context for viewer')
+
+                # prefer mujoco.viewer submodule if available (zongzhuang imports mujoco.viewer explicitly)
+                viewer_launcher = None
+                if mujoco_viewer is not None and hasattr(mujoco_viewer, 'launch_passive'):
+                    viewer_launcher = getattr(mujoco_viewer, 'launch_passive')
+                elif hasattr(mujoco, 'viewer') and hasattr(mujoco.viewer, 'launch_passive'):
+                    viewer_launcher = mujoco.viewer.launch_passive
+
+                if viewer_launcher is None:
+                    raise RuntimeError('No mujoco.viewer.launch_passive available')
+
+                self.get_logger().info('Launching passive MuJoCo viewer (interactive)')
+                self.viewer = viewer_launcher(self.model, self.data)
+
+                try:
+                    self.viewer.cam.lookat[:] = [0.0, 0.0, 1.0]
+                    self.viewer.cam.distance = 2.0
+                    self.viewer.cam.azimuth = 0.0
+                    self.viewer.cam.elevation = -30.0
+                except Exception:
+                    pass
+            except Exception as e:
+                self.get_logger().warning(f'Failed to launch passive viewer: {e}')
+
+        # publishers/subscribers
+        self.pub_js = self.create_publisher(JointState, '/sim/joint_states', 10)
+        self.sub_cmd = self.create_subscription(JointState, '/joint_command', self._on_joint_command, 10)
+
+        self._target_positions: Dict[int, float] = {}
+        self._lock = threading.Lock()
+
+        # Precompute joint qpos addresses if possible
+        self._joint_qposadr = []
+        for name in self.joint_names:
+            try:
+                jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+                if jid >= 0:
+                    adr = int(self.model.jnt_qposadr[jid])
+                    self._joint_qposadr.append(adr)
+                else:
+                    self._joint_qposadr.append(None)
+            except Exception:
+                self._joint_qposadr.append(None)
+
+        # timer
+        period = 1.0 / max(1.0, float(self.control_frequency))
+        self._timer = self.create_timer(period, self._loop)
+        self.get_logger().info('MujocoSimNode initialized')
+
+    def _on_joint_command(self, msg: JointState):
+        # Accept incoming JointState commands; map by name
+        with self._lock:
+            for i, name in enumerate(msg.name):
+                try:
+                    pos = float(msg.position[i]) if i < len(msg.position) else None
+                except Exception:
+                    pos = None
+                if pos is None:
+                    continue
+                # accept both 'joint1' or 'joint_1' or 'joint1' etc. Try to find matching index
+                try:
+                    # direct match
+                    idx = self.joint_names.index(name) if name in self.joint_names else None
+                except Exception:
+                    idx = None
+                if idx is None:
+                    # try stripping prefixes/suffixes
+                    bare = name.replace('_', '').replace('-', '')
+                    for k, jn in enumerate(self.joint_names):
+                        if jn.replace('_', '') in bare or bare in jn.replace('_', ''):
+                            idx = k
+                            break
+                if idx is not None:
+                    self._target_positions[idx] = pos
+
+    def _apply_targets(self):
+        # Apply target positions to model qpos when available
+        with self._lock:
+            for idx, pos in self._target_positions.items():
+                if idx < 0 or idx >= len(self.joint_names):
+                    continue
+                adr = self._joint_qposadr[idx] if idx < len(self._joint_qposadr) else None
+                jname = self.joint_names[idx]
+                try:
+                    if adr is not None:
+                        self.data.qpos[adr] = float(pos)
+                    else:
+                        # fallback: try data.joint(name).qpos if available
+                        try:
+                            self.data.joint(jname).qpos = float(pos)
+                        except Exception:
+                            # last resort: search model.joint to find qpos address
+                            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, jname)
+                            if jid >= 0:
+                                adr2 = int(self.model.jnt_qposadr[jid])
+                                self.data.qpos[adr2] = float(pos)
+                except Exception:
+                    self.get_logger().debug(f'Failed to set qpos for joint {jname}')
+
+    def _publish_joint_states(self):
+        names = []
+        positions = []
+        for i, jn in enumerate(self.joint_names):
+            names.append(jn)
+            try:
+                adr = self._joint_qposadr[i]
+                if adr is not None:
+                    positions.append(float(self.data.qpos[adr]))
+                else:
+                    positions.append(float(self.data.joint(jn).qpos))
+            except Exception:
+                positions.append(0.0)
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = names
+        msg.position = positions
+        self.pub_js.publish(msg)
+
+    def _loop(self):
+        # apply requested targets
+        self._apply_targets()
+        # step physics a small amount (or forward kinematics)
+        try:
+            mujoco.mj_forward(self.model, self.data)
+        except Exception:
+            pass
+        # publish state and image
+        self._publish_joint_states()
+        # no image publishing
+        # drive passive viewer if running so it updates with simulation
+        try:
+            if getattr(self, 'viewer', None) is not None:
+                try:
+                    self.viewer.sync()
+                except Exception:
+                    # viewer may be closed or not support sync in some mujoco versions
+                    pass
+        except Exception:
+            pass
+
+    def _close_viewer_and_glfw(self):
+        # close mujoco viewer if present
+        try:
+            if getattr(self, 'viewer', None) is not None:
+                try:
+                    self.viewer.close()
+                except Exception:
+                    pass
+                self.viewer = None
+        except Exception:
+            pass
+        # destroy glfw window if created
+        try:
+            if getattr(self, '_glfw_window', None) is not None and glfw is not None:
+                try:
+                    glfw.destroy_window(self._glfw_window)
+                except Exception:
+                    pass
+                try:
+                    glfw.terminate()
+                except Exception:
+                    pass
+                self._glfw_window = None
+        except Exception:
+            pass
+
+    def destroy_node(self):
+        # try to close passive viewer and glfw context if present
+        try:
+            self._close_viewer_and_glfw()
+        except Exception:
+            pass
+        return super().destroy_node()
+
+    def render_viewer(self):
+        # compatible helper similar to zongzhuang implementation
+        try:
+            if getattr(self, 'viewer', None) is None:
+                # attempt to (re)launch
+                if mujoco_viewer is not None and hasattr(mujoco_viewer, 'launch_passive'):
+                    self.viewer = mujoco_viewer.launch_passive(self.model, self.data)
+                elif hasattr(mujoco, 'viewer') and hasattr(mujoco.viewer, 'launch_passive'):
+                    self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+                else:
+                    self.get_logger().warning('No mujoco viewer available to render')
+                    return
+            try:
+                self.viewer.cam.lookat[:] = [0.0, 0.0, 1.0]
+                self.viewer.cam.distance = 2
+                self.viewer.cam.azimuth = 0
+                self.viewer.cam.elevation = -45
+            except Exception:
+                pass
+        except Exception as e:
+            self.get_logger().warning(f'render_viewer failed: {e}')
+
+    def viewer_step(self):
+        try:
+            if getattr(self, 'viewer', None) is not None:
+                self.viewer.sync()
+        except Exception:
+            pass
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MujocoSimNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
