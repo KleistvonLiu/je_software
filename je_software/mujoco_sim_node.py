@@ -121,6 +121,43 @@ class MujocoSimNode(Node):
             except Exception:
                 self._joint_qposadr.append(None)
 
+        # === actuator mapping: map joints -> actuator indices (pos_jointN) ===
+        self._actuator_name_to_idx = {}
+        self._actuator_ctrlrange = {}
+        try:
+            nact = int(getattr(self.model, 'nactuator'))
+        except Exception:
+            # fallback: scan ids
+            nact = 0
+            for i in range(1024):
+                if not mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, i):
+                    break
+                nact += 1
+        for ai in range(nact):
+            aname = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, ai)
+            if not aname:
+                continue
+            self._actuator_name_to_idx[aname] = ai
+            try:
+                self._actuator_ctrlrange[ai] = (float(self.model.actuator_ctrlrange[ai][0]), float(self.model.actuator_ctrlrange[ai][1]))
+            except Exception:
+                pass
+
+        # Build direct mapping from joint index -> actuator index if actuator names follow pos_jointN or pos_<jointname>
+        self._joint_to_actuator = [None] * len(self.joint_names)
+        for jidx, jname in enumerate(self.joint_names):
+            candidates = [f'pos_{jname}', f'pos_joint{jidx+1}', f'pos_joint{jidx}']
+            for cand in candidates:
+                if cand in self._actuator_name_to_idx:
+                    self._joint_to_actuator[jidx] = self._actuator_name_to_idx[cand]
+                    break
+
+        # Initialize previous ctrl values for smoothing
+        try:
+            self._prev_ctrls = [float(self.data.ctrl[i]) for i in range(nact)]
+        except Exception:
+            self._prev_ctrls = [0.0] * nact
+
         # timer
         period = 1.0 / max(1.0, float(self.control_frequency))
         self._timer = self.create_timer(period, self._loop)
@@ -153,28 +190,57 @@ class MujocoSimNode(Node):
                     self._target_positions[idx] = pos
 
     def _apply_targets(self):
-        # Apply target positions to model qpos when available
+        # Apply target positions to actuator controls when available (positional actuators)
         with self._lock:
+            # smoothing step per control publish
+            step_max = 0.05
             for idx, pos in self._target_positions.items():
                 if idx < 0 or idx >= len(self.joint_names):
                     continue
-                adr = self._joint_qposadr[idx] if idx < len(self._joint_qposadr) else None
-                jname = self.joint_names[idx]
+                act_idx = None
+                # get mapped actuator index
+                if idx < len(self._joint_to_actuator):
+                    act_idx = self._joint_to_actuator[idx]
+                # fallback: try common actuator name patterns
+                if act_idx is None:
+                    cand1 = f'pos_joint{idx+1}'
+                    cand2 = f'pos_{self.joint_names[idx]}'
+                    if cand1 in self._actuator_name_to_idx:
+                        act_idx = self._actuator_name_to_idx[cand1]
+                    elif cand2 in self._actuator_name_to_idx:
+                        act_idx = self._actuator_name_to_idx[cand2]
+                if act_idx is None:
+                    # nothing to do for this joint (no actuator mapped)
+                    continue
+
+                # clamp to ctrlrange if available
+                low, high = None, None
                 try:
-                    if adr is not None:
-                        self.data.qpos[adr] = float(pos)
-                    else:
-                        # fallback: try data.joint(name).qpos if available
-                        try:
-                            self.data.joint(jname).qpos = float(pos)
-                        except Exception:
-                            # last resort: search model.joint to find qpos address
-                            jid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, jname)
-                            if jid >= 0:
-                                adr2 = int(self.model.jnt_qposadr[jid])
-                                self.data.qpos[adr2] = float(pos)
+                    low, high = self._actuator_ctrlrange.get(act_idx, (pos, pos))
                 except Exception:
-                    self.get_logger().debug(f'Failed to set qpos for joint {jname}')
+                    low, high = pos, pos
+                tgt = float(pos)
+                tgt_clamped = max(min(tgt, high), low) if (low is not None and high is not None) else tgt
+
+                # smoothing
+                prev = float(self._prev_ctrls[act_idx]) if act_idx < len(self._prev_ctrls) else 0.0
+                delta = tgt_clamped - prev
+                if abs(delta) > step_max:
+                    tgt_clamped = prev + step_max * (1 if delta > 0 else -1)
+
+                # final clamp
+                if low is not None and tgt_clamped < low:
+                    tgt_clamped = low
+                if high is not None and tgt_clamped > high:
+                    tgt_clamped = high
+
+                # write into control buffer
+                try:
+                    self.data.ctrl[act_idx] = float(tgt_clamped)
+                    if act_idx < len(self._prev_ctrls):
+                        self._prev_ctrls[act_idx] = float(tgt_clamped)
+                except Exception:
+                    self.get_logger().debug(f'Failed to set ctrl for actuator idx={act_idx}')
 
     def _publish_joint_states(self):
         names = []
@@ -198,21 +264,23 @@ class MujocoSimNode(Node):
     def _loop(self):
         # apply requested targets
         self._apply_targets()
-        # step physics a small amount (or forward kinematics)
+        # step physics a small amount so actuators take effect
         try:
-            mujoco.mj_forward(self.model, self.data)
+            mujoco.mj_step(self.model, self.data)
         except Exception:
-            pass
-        # publish state and image
+            # fallback to forward kinematics if stepping unsupported in this environment
+            try:
+                mujoco.mj_forward(self.model, self.data)
+            except Exception:
+                pass
+        # publish state
         self._publish_joint_states()
-        # no image publishing
         # drive passive viewer if running so it updates with simulation
         try:
             if getattr(self, 'viewer', None) is not None:
                 try:
                     self.viewer.sync()
                 except Exception:
-                    # viewer may be closed or not support sync in some mujoco versions
                     pass
         except Exception:
             pass
