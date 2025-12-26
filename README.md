@@ -19,3 +19,5 @@ ros2 launch je_software manager.launch.py episode_idx:=0 save_dir:=/home/test/je
 ros2 run orbbec_camera list_devices_node
 
 source install/share/ros2_ik_cpp/local_setup.bash
+
+colcon build --merge-install --symlink-install

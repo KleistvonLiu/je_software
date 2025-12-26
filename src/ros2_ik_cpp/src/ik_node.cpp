@@ -47,7 +47,24 @@ public:
     // Enable SVD-damped pseudo-inverse and per-step clamping
     use_svd_damped_ = this->declare_parameter<bool>("planning.use_svd_damped", true);
     ik_svd_damping_ = this->declare_parameter<double>("planning.ik_svd_damping", 1e-6);
+    // remember initial damping so we can reset it at the start of each solve
+    initial_ik_svd_damping_ = ik_svd_damping_;
     max_delta_ = this->declare_parameter<double>("planning.max_delta", 0.03); // rad, per-iteration max joint change
+    // remember initial max_delta so we can reset it per solve
+    initial_max_delta_ = max_delta_;
+
+    // LM-style damping bounds and factors
+    ik_svd_damping_min_ = this->declare_parameter<double>("planning.ik_svd_damping_min", 1e-12);
+    ik_svd_damping_max_ = this->declare_parameter<double>("planning.ik_svd_damping_max", 1e6);
+    ik_svd_damping_reduce_factor_ = this->declare_parameter<double>("planning.ik_svd_damping_reduce_factor", 0.1);
+    ik_svd_damping_increase_factor_ = this->declare_parameter<double>("planning.ik_svd_damping_increase_factor", 10.0);
+    ik_svd_truncation_tol_ = this->declare_parameter<double>("planning.ik_svd_trunc_tol", 1e-6); // relative to smax
+    ik_svd_min_relative_reduction_ = this->declare_parameter<double>("planning.ik_svd_min_rel_reduction", 1e-8);
+
+    // Hybrid numeric-J fallback parameters (trigger numeric-J after several LS rejects)
+    numeric_fallback_after_rejects_ = this->declare_parameter<int>("planning.numeric_fallback_after_rejects", 3);
+    numeric_fallback_duration_ = this->declare_parameter<int>("planning.numeric_fallback_duration", 10);
+    debug_log_predictions_ = this->declare_parameter<bool>("planning.debug_log_predictions", true);
 
     max_velocity_ = this->declare_parameter<double>("planning.max_velocity", 1.0);
     max_acceleration_ = this->declare_parameter<double>("planning.max_acceleration", 2.0);
@@ -221,6 +238,9 @@ private:
       RCLCPP_DEBUG(this->get_logger(), "FK current pose: pos=(%.4f, %.4f, %.4f) quat=(%.4f, %.4f, %.4f, %.4f) rpy=(%.4f, %.4f, %.4f)",
                    cur_fk.translation()[0], cur_fk.translation()[1], cur_fk.translation()[2],
                    qcur.x(), qcur.y(), qcur.z(), qcur.w(), rpy_cur[0], rpy_cur[1], rpy_cur[2]);
+      if (log_to_file_ && log_ofs_) {
+        log_ofs_ << "FK_CUR pos " << cur_fk.translation().transpose() << " quat " << qcur.coeffs().transpose() << " rpy " << rpy_cur.transpose() << std::endl;
+      }
     } catch (const std::exception &e) {
       RCLCPP_WARN(this->get_logger(), "FK debug print failed: %s", e.what());
     }
@@ -250,6 +270,16 @@ private:
   }
 
   bool solveIK6D(const SE3 &target_pose, const VectorXd &q_init, VectorXd &q_solution) {
+    // reset per-solve damping to the configured initial value so adjustments
+    // within one solve (increase/decrease) do not leak to subsequent solves
+    ik_svd_damping_ = initial_ik_svd_damping_;
+    // reset adaptive max_delta and saturation counter for this solve
+    max_delta_ = initial_max_delta_;
+    consecutive_max_damping_rejections_ = 0;
+    // hybrid fallback state for this solve
+    int consecutive_ls_rejects = 0;
+    int numeric_fallback_remaining = 0;
+    bool numeric_force_active = false;
     q_solution = q_init;
     const double DT = dt_;
     const double damp = damp_;
@@ -304,79 +334,437 @@ private:
       // Ensure Pinocchio has computed joint Jacobians for the current configuration
       pinocchio::computeJointJacobians(model_, data, q_solution);
       // updateFramePlacements already called above; now get the frame Jacobian
-      J = pinocchio::getFrameJacobian(model_, data, tip_frame_id_, pinocchio::LOCAL);
+      // analytic Jacobian expressed in WORLD frame (twist: [v_world; omega_world])
+      // Using WORLD makes the linear part correspond to the position error expressed in world coords
+      MatrixXd J_world = pinocchio::getFrameJacobian(model_, data, tip_frame_id_, pinocchio::WORLD);
+
+      // Map analytic Jacobian to the error representation used by this solver.
+      // err6 = [pos_err; ang_err], where ang_err is rotation vector (axis * angle) = log(R_target * R_current^T).
+      // Build a numeric 6x6 mapping M that maps spatial twist (v_world, omega_world)
+      // to the rate of change of our error coordinates err6. This captures cross-terms
+      // between translation and rotation that a simple block-diagonal invJl misses.
+      ang_err = err6.template tail<3>();
+
+      // Numeric approximation of 6x6 left-Jacobian mapping at the current end-effector pose
+      Eigen::Matrix<double,6,6> M = Eigen::Matrix<double,6,6>::Zero();
+      const double eps_se3 = 1e-6; // small spatial perturbation
+      // current SE3 of the frame
+      SE3 cur_se3 = current_pose;
+      for (int k = 0; k < 6; ++k) {
+        // construct small twist in world frame: first 3 = translation perturbation, last 3 = angular perturbation
+        Eigen::Matrix<double,6,1> xi = Eigen::Matrix<double,6,1>::Zero();
+        xi(k) = eps_se3;
+        Eigen::Vector3d dv = xi.template head<3>();
+        Eigen::Vector3d dw = xi.template tail<3>();
+
+        // build perturbed pose: apply small rotation (from dw) then small translation dv (both in world frame)
+        Eigen::Quaterniond q_delta;
+        double ang = dw.norm();
+        if (ang < 1e-12) {
+          q_delta = Eigen::Quaterniond::Identity();
+        } else {
+          Eigen::Vector3d axis = dw / ang;
+          q_delta = Eigen::Quaterniond(Eigen::AngleAxisd(ang, axis));
+        }
+        Eigen::Quaterniond qcur(cur_se3.rotation());
+        Eigen::Quaterniond qpert = q_delta * qcur; qpert.normalize();
+        Eigen::Vector3d tpert = cur_se3.translation() + dv;
+        SE3 pert_se3(qpert, tpert);
+
+        // compute err6 at perturbed pose (same mapping used elsewhere)
+        Eigen::Vector3d pos_err_pert = target_pose.translation() - pert_se3.translation();
+        Eigen::Quaterniond qcur_pert(pert_se3.rotation());
+        Eigen::Quaterniond qerr_pert = qtgt * qcur_pert.conjugate(); qerr_pert.normalize();
+        Eigen::AngleAxisd aa_pert(qerr_pert);
+        Eigen::Vector3d ang_err_pert = Eigen::Vector3d::Zero();
+        double angle_pert = aa_pert.angle();
+        if (std::isfinite(angle_pert) && std::abs(angle_pert) > 1e-12) ang_err_pert = aa_pert.axis() * angle_pert;
+
+        Eigen::Matrix<double,6,1> err6_pert;
+        err6_pert.template head<3>() = pos_err_pert;
+        err6_pert.template tail<3>() = ang_err_pert;
+
+        // column k approximates (d err / d xi_k)
+        M.col(k) = (err6_pert - err6) / eps_se3;
+      }
+
+      // analytic Jacobian that maps q_dot -> err_dot (err = target - current)
+      // J_world maps q_dot -> twist expressed in world frame; so err_dot ≈ M * twist_world
+      MatrixXd J_err = - M * J_world;
+
+      // Optionally compute numeric Jacobian (finite-difference of err6) once for either
+      // diagnostics or to use directly as the Jacobian for solving.
+      const bool run_numeric_check_early = true; // always compute when requested
+      MatrixXd numJ = MatrixXd::Zero(6, model_.nv);
+      bool numeric_computed = false;
+      if (use_numeric_jacobian_ || run_numeric_check_early) {
+        const double eps_q = 1e-6;
+        for (int j = 0; j < (int)model_.nv; ++j) {
+          Eigen::VectorXd dq = Eigen::VectorXd::Zero(model_.nv);
+          dq[j] = eps_q;
+          Eigen::VectorXd q_pert = Eigen::VectorXd::Zero(q_solution.size());
+          pinocchio::integrate(model_, q_solution, dq, q_pert);
+
+          Data data_pert(model_);
+          pinocchio::forwardKinematics(model_, data_pert, q_pert);
+          pinocchio::updateFramePlacements(model_, data_pert);
+          const SE3 &pose_pert = data_pert.oMf[tip_frame_id_];
+
+          // compute err6 at perturbed configuration using same mapping as above
+          Eigen::Vector3d pos_err_pert = target_pose.translation() - pose_pert.translation();
+          Eigen::Quaterniond qcur_pert(pose_pert.rotation());
+          Eigen::Quaterniond qerr_pert = qtgt * qcur_pert.conjugate();
+          qerr_pert.normalize();
+          Eigen::AngleAxisd aa_pert(qerr_pert);
+          Eigen::Vector3d ang_err_pert = Eigen::Vector3d::Zero();
+          double angle_pert = aa_pert.angle();
+          if (std::isfinite(angle_pert) && std::abs(angle_pert) > 1e-12) ang_err_pert = aa_pert.axis() * angle_pert;
+
+          Eigen::Matrix<double,6,1> err6_pert;
+          err6_pert.template head<3>() = pos_err_pert;
+          err6_pert.template tail<3>() = ang_err_pert;
+
+          numJ.col(j) = (err6_pert - err6) / eps_q;
+        }
+        numeric_computed = true;
+      }
+
+      // Hybrid selection: allow numeric forcing when fallback is active, otherwise respect parameter
+      MatrixXd J_used = ((use_numeric_jacobian_ && numeric_computed) || numeric_force_active) ? numJ : J_err;
 
       // If Jacobian appears all-zero, warn once — indicates model/joint mismatch or fixed frame
       static bool jacobian_zero_warned = false;
-      if (!jacobian_zero_warned && J.norm() == 0.0) {
-        RCLCPP_WARN(this->get_logger(), "Jacobian is zero matrix. Check model joint mapping, tip frame, and that computeJointJacobians was called.");
+      if (!jacobian_zero_warned && J_used.norm() == 0.0) {
+        RCLCPP_WARN(this->get_logger(), "Jacobian (in error coords) is zero matrix. Check model joint mapping, tip frame, and that computeJointJacobians was called.");
         jacobian_zero_warned = true;
       }
 
       // compute singular values and condition estimate for diagnosis
-      Eigen::JacobiSVD<MatrixXd> svd(J, Eigen::ComputeThinU | Eigen::ComputeThinV);
+      // Apply row weights to balance position (meters) and angle (radians)
+      Eigen::Matrix<double,6,6> W = Eigen::Matrix<double,6,6>::Identity();
+      W(0,0) = pos_weight_; W(1,1) = pos_weight_; W(2,2) = pos_weight_;
+      W(3,3) = ang_weight_; W(4,4) = ang_weight_; W(5,5) = ang_weight_;
+      MatrixXd Jw = J_used;
+      for (int ri = 0; ri < 6; ++ri) Jw.row(ri) *= W(ri,ri);
+      Eigen::Matrix<double,6,1> errw = err6;
+      errw.template head<3>() *= pos_weight_;
+      errw.template tail<3>() *= ang_weight_;
+
+      Eigen::JacobiSVD<MatrixXd> svd(Jw, Eigen::ComputeThinU | Eigen::ComputeThinV);
       Eigen::VectorXd s = svd.singularValues();
-      int sn = (int)s.size();
-      double cond = std::numeric_limits<double>::infinity();
-      if (sn > 0 && s(sn-1) > 0) cond = s(0) / s(sn-1);
-      // build a compact string of singular values (up to 6)
-      std::ostringstream ss;
-      for (int i = 0; i < sn; ++i) {
-        if (i) ss << ", ";
-        ss << s(i);
-      }
-      RCLCPP_DEBUG(this->get_logger(), "Jacobian singular values (%d) = %s cond=%.3e", sn, ss.str().c_str(), cond);
+       int sn = (int)s.size();
+       double cond = std::numeric_limits<double>::infinity();
+       if (sn > 0 && s(sn-1) > 0) cond = s(0) / s(sn-1);
+       // build a compact string of singular values (up to 6)
+       std::ostringstream ss;
+       for (int i = 0; i < sn; ++i) {
+         if (i) ss << ", ";
+         ss << s(i);
+       }
+      RCLCPP_DEBUG(this->get_logger(), "Weighted Jacobian singular values (%d) = %s cond=%.3e pos_w=%.3e ang_w=%.3e", sn, ss.str().c_str(), cond, pos_weight_, ang_weight_);
       if (log_to_file_ && log_ofs_) {
         log_ofs_ << "ITER " << it << " SVD ";
         for (int ii = 0; ii < sn; ++ii) { if (ii) log_ofs_ << ","; log_ofs_ << s(ii); }
-        log_ofs_ << " COND " << cond << " ERR " << cur_err << std::endl;
+        log_ofs_ << " COND " << cond << " ERR " << cur_err << " POS_W " << pos_weight_ << " ANG_W " << ang_weight_ << std::endl;
       }
 
-      // Compute joint-space velocity v using SVD-damped pseudo-inverse if enabled
+       // Compute joint-space velocity v using Levenberg-Marquardt (LM) style solve
       if (use_svd_damped_ && sn > 0) {
-        // matrixU is 6 x r, matrixV is nv x r, singularValues length r
-        Eigen::MatrixXd U = svd.matrixU();
-        Eigen::MatrixXd V = svd.matrixV();
-        Eigen::VectorXd sval = svd.singularValues();
-        int r = (int)sval.size();
-        double smax = (r > 0) ? sval(0) : 0.0;
-        // Tikhonov-style damping scaled by largest singular value
-        double lambda = ik_svd_damping_ * smax * smax;
+        // Build approximate normal equations: A = Jw^T Jw
+        MatrixXd A = Jw.transpose() * Jw; // nv x nv
+        Eigen::VectorXd g = Jw.transpose() * errw; // gradient (nv x 1)
 
-        // project error into singular-vector basis
-        Eigen::VectorXd Ut_err = U.transpose() * err6;
-        Eigen::VectorXd scaled = Eigen::VectorXd::Zero(r);
-        for (int ii = 0; ii < r; ++ii) {
-          double si = sval(ii);
-          double coeff = (si * 1.0) / (si*si + lambda);
-          scaled(ii) = coeff * Ut_err(ii);
+        // LM damping parameter stored in ik_svd_damping_. We'll treat it as absolute lambda here.
+        double lambda = std::max(ik_svd_damping_min_, std::min(ik_svd_damping_, ik_svd_damping_max_));
+        const int lm_max_attempts = 8;
+        double predicted_reduction = -1.0;
+        Eigen::VectorXd v_candidate = VectorXd::Zero(model_.nv);
+
+        // We will try to find a lambda that yields positive predicted reduction
+        for (int attempt = 0; attempt < lm_max_attempts; ++attempt) {
+          // build damped system: (A + lambda I) v = -g
+          MatrixXd Ad = A;
+          Ad.diagonal().array() += lambda;
+          Eigen::VectorXd rhs = -g;
+
+          // solve (use LDLT for symmetric positive-definite)
+          Eigen::LDLT<MatrixXd> ldlt(Ad);
+          if (ldlt.info() != Eigen::Success) {
+            // increase damping and retry
+            lambda *= ik_svd_damping_increase_factor_;
+            if (lambda > ik_svd_damping_max_) lambda = ik_svd_damping_max_;
+            continue;
+          }
+          v_candidate = ldlt.solve(rhs);
+
+          // predicted reduction (in weighted error norm) for full step v_candidate
+          Eigen::VectorXd pred_errw = errw + Jw * v_candidate;
+          double errw_norm2 = errw.squaredNorm();
+          double pred_errw_norm2 = pred_errw.squaredNorm();
+          predicted_reduction = 0.5 * (errw_norm2 - pred_errw_norm2);
+
+          if (predicted_reduction > 0) {
+            // found acceptable lambda
+            break;
+          }
+          // otherwise increase damping and retry
+          lambda *= ik_svd_damping_increase_factor_;
+          if (lambda > ik_svd_damping_max_) { lambda = ik_svd_damping_max_; break; }
         }
-        v = - V * scaled; // nv x 1
+
+        // commit chosen lambda back to adaptive damping variable (so subsequent iterations use updated value)
+        double old_d = ik_svd_damping_;
+        ik_svd_damping_ = std::max(ik_svd_damping_min_, std::min(lambda, ik_svd_damping_max_));
+
+        v = v_candidate;
 
         if (log_to_file_ && log_ofs_) {
-          log_ofs_ << "ITER " << it << " LAMBDA " << lambda << " MAX_DELTA " << max_delta_ << std::endl;
+          log_ofs_ << "ITER " << it << " LM_LAMBDA " << ik_svd_damping_ << " PRED_REDUCTION " << predicted_reduction << "\n";
         }
+        RCLCPP_DEBUG(this->get_logger(), "IK iter=%d LM lambda=%.3e pred_reduction=%.3e", it, ik_svd_damping_, predicted_reduction);
+
       } else {
-        // fallback to previous JJt-based solve if SVD is disabled or rank==0
-        MatrixXd JJt = J * J.transpose();
+        // fallback to previous JJt-based solve if SVD/LM is disabled or rank==0
+        MatrixXd JJt = J_err * J_err.transpose();
         JJt.diagonal().array() += damp;
-        v = -J.transpose() * JJt.ldlt().solve(err6);
+        // Solve for ∆q that reduces the error using analytic J_err
+        v = J_err.transpose() * JJt.ldlt().solve(err6);
       }
 
-      // Apply per-joint per-iteration clamping on delta = v * DT
-      double max_abs_dq = 0.0;
-      for (int qi = 0; qi < (int)q_solution.size() && qi < (int)v.size(); ++qi) {
-        double dq = v[qi] * DT;
-        if (!std::isfinite(dq)) dq = 0.0;
-        if (dq > max_delta_) dq = max_delta_;
-        else if (dq < -max_delta_) dq = -max_delta_;
-        q_solution[qi] += dq;
-        max_abs_dq = std::max(max_abs_dq, std::abs(dq));
+      // compute full delta in tangent space
+      Eigen::VectorXd delta_full = v * DT; // tangent-space step
+
+      // Diagnostic / logging for numeric vs analytic Jacobian (use precomputed numJ if available)
+      if (numeric_computed) {
+        double nnum = numJ.norm();
+        double nJ_err = J_err.norm();
+        // also compute Jacobian expressed in WORLD frame for comparison
+        double nJ_world = J_world.norm();
+        double ndiff_err = (numJ - J_err).norm();
+        double ndiff_world = (numJ - J_world).norm();
+        double ndiff_sign_err = (numJ + J_err).norm();
+        double ndiff_sign_world = (numJ + J_world).norm();
+        double pred_err_norm = (J_err * delta_full).norm();
+        double pred_err_world_norm = (J_world * delta_full).norm();
+        double num_pred_err_norm = (numJ * delta_full).norm();
+
+        if (log_to_file_ && log_ofs_) {
+          log_ofs_ << "DEBUG_NUMJ norm_num=" << nnum << " norm_J_err=" << nJ_err << " norm_J_world=" << nJ_world
+                   << " norm(diff=num-J_err)=" << ndiff_err << " norm(diff=num-J_world)=" << ndiff_world
+                   << " norm(diff=num+J_err)=" << ndiff_sign_err << " norm(diff=num+J_world)=" << ndiff_sign_world << std::endl;
+          log_ofs_ << "DEBUG_PRED pred_norm(J_err*delta)=" << pred_err_norm << " pred_norm(J_world*delta)=" << pred_err_world_norm
+                   << " pred_norm(numJ*delta)=" << num_pred_err_norm << " delta_norm=" << delta_full.norm() << std::endl;
+          for (int j = 0; j < std::min(6, (int)model_.nv); ++j) {
+            log_ofs_ << "DEBUG_NUMJ col" << j << " num=" << numJ.col(j).transpose()
+                     << " J_err=" << J_err.col(j).transpose() << " J_world=" << J_world.col(j).transpose() << std::endl;
+          }
+        }
+
+        RCLCPP_INFO(this->get_logger(), "DEBUG_NUMJ nnum=%.6e nJ_err=%.6e nJ_world=%.6e diff_err=%.6e diff_world=%.6e pred_err=%.6e pred_world=%.6e pred_num=%.6e",
+                    nnum, nJ_err, nJ_world, ndiff_err, ndiff_world, pred_err_norm, pred_err_world_norm, num_pred_err_norm);
       }
-      RCLCPP_DEBUG(this->get_logger(), "IK iter=%d applied max_abs_dq=%.6f (rad)", it, max_abs_dq);
+
+      // Line-search / backtracking along delta_full on the manifold
+      bool accepted = false;
+      Eigen::VectorXd q_candidate(q_solution.size());
+      double best_trial_err = cur_err;
+      Eigen::VectorXd best_trial_q = q_solution;
+      const int max_ls = 6; // tries: alpha = 1, 1/2, 1/4, ...
+      for (int ls = 0; ls < max_ls; ++ls) {
+        double alpha = std::pow(0.5, ls);
+        Eigen::VectorXd delta_try = delta_full * alpha;
+        // clamp per-joint magnitude
+        for (int i = 0; i < delta_try.size(); ++i) delta_try[i] = std::max(-max_delta_, std::min(max_delta_, delta_try[i]));
+        // integrate to get candidate configuration
+        Eigen::VectorXd q_try(q_solution.size());
+        pinocchio::integrate(model_, q_solution, delta_try, q_try);
+        // compute error at q_try
+        Data data_try(model_);
+        pinocchio::forwardKinematics(model_, data_try, q_try);
+        pinocchio::updateFramePlacements(model_, data_try);
+        const SE3 &pose_try = data_try.oMf[tip_frame_id_];
+        Eigen::Vector3d pos_err_try = target_pose.translation() - pose_try.translation();
+        Eigen::Quaterniond qcur_try(pose_try.rotation());
+        Eigen::Quaterniond qerr_try = qtgt * qcur_try.conjugate();
+        qerr_try.normalize();
+        Eigen::AngleAxisd aa_try(qerr_try);
+        Eigen::Vector3d ang_err_try = Eigen::Vector3d::Zero();
+        double angle_try = aa_try.angle();
+        if (std::isfinite(angle_try) && std::abs(angle_try) > 1e-12) ang_err_try = aa_try.axis() * angle_try;
+        Eigen::Matrix<double,6,1> err6_try;
+        err6_try.template head<3>() = pos_err_try;
+        err6_try.template tail<3>() = ang_err_try;
+        double err_try = err6_try.norm();
+
+        if (log_to_file_ && log_ofs_) {
+          // also log linearized prediction vs actual try error for diagnosis
+          double predicted_norm = -1.0;
+          double predicted_reduction = -1.0;
+          double actual_reduction = -1.0;
+          double rho = -1.0;
+          if (J_used.size() != 0) {
+            // predicted err6 after applying delta_try by linearization: err6 + J_used * delta_try
+            Eigen::Matrix<double,6,1> pred_err6 = err6 + J_used * delta_try;
+            predicted_norm = pred_err6.norm();
+            // compute predicted reduction in weighted norm using Jw
+            Eigen::Matrix<double,6,1> pred_errw = errw + Jw * delta_try;
+            predicted_reduction = 0.5 * (errw.squaredNorm() - pred_errw.squaredNorm());
+          }
+          // actual reduction (weighted)
+          Eigen::Matrix<double,6,1> errw_try = err6_try;
+          errw_try.template head<3>() *= pos_weight_;
+          errw_try.template tail<3>() *= ang_weight_;
+          actual_reduction = 0.5 * (errw.squaredNorm() - errw_try.squaredNorm());
+          if (predicted_reduction > 1e-16) rho = actual_reduction / predicted_reduction; else rho = -1.0;
+
+          log_ofs_ << "ITER " << it << " LS_TRY alpha=" << alpha << " ERR=" << err_try
+                   << " PRED_NORM=" << predicted_norm
+                   << " PRED_REDUCTION=" << predicted_reduction
+                   << " ACT_REDUCTION=" << actual_reduction
+                   << " RHO=" << rho
+                   << " LAMBDA=" << ik_svd_damping_ << std::endl;
+          RCLCPP_DEBUG(this->get_logger(), "ITER %d LS_TRY alpha=%.6f ERR=%.6e PRED_NORM=%.6e PRED_RED=%.6e ACT_RED=%.6e RHO=%.6e LAMBDA=%.6e",
+                       it, alpha, err_try, predicted_norm, predicted_reduction, actual_reduction, rho, ik_svd_damping_);
+         }
+
+        if (err_try < cur_err) {
+          accepted = true;
+          q_candidate = q_try;
+          best_trial_err = err_try;
+          best_trial_q = q_try;
+          if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " LS_ACCEPT alpha=" << alpha << " ERR=" << err_try << std::endl;
+          break;
+        } else {
+          if (err_try < best_trial_err) { best_trial_err = err_try; best_trial_q = q_try; }
+        }
+      }
+
+      if (accepted) {
+        // accepted -> clear LS reject counter and, if fallback active, reduce its remaining duration
+        consecutive_ls_rejects = 0;
+        if (numeric_force_active && numeric_fallback_remaining > 0) {
+          --numeric_fallback_remaining;
+          if (numeric_fallback_remaining <= 0) {
+            numeric_force_active = false;
+            if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " NUMERIC_FALLBACK_END" << std::endl;
+          }
+        }
+         q_solution = q_candidate;
+         double max_abs_dq = 0.0;
+         if (delta_full.size() > 0) max_abs_dq = (delta_full.cwiseAbs() * 1.0).maxCoeff();
+         // compute component norms for diagnostics
+         double pos_norm = err6.template head<3>().norm();
+         double ang_norm = err6.template tail<3>().norm();
+         RCLCPP_DEBUG(this->get_logger(), "IK iter=%d accepted line-search step, trial_err=%.6e max_abs_dq=%.6f pos=%.6e ang=%.6e", it, best_trial_err, max_abs_dq, pos_norm, ang_norm);
+
+        // relative reduction
+        double rel_red = (cur_err - best_trial_err) / std::max(cur_err, 1e-12);
+        // Decrease damping only if significant relative reduction achieved
+        if (rel_red > ik_svd_min_relative_reduction_) {
+          double old_d = ik_svd_damping_;
+          ik_svd_damping_ = std::max(ik_svd_damping_min_, ik_svd_damping_ * ik_svd_damping_reduce_factor_);
+          if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " LS_ACCEPT decrease_damping " << old_d << " -> " << ik_svd_damping_ << " rel_red=" << rel_red << std::endl;
+          RCLCPP_DEBUG(this->get_logger(), "IK iter=%d decreased damping %.3e -> %.3e (rel_red=%.3e)", it, old_d, ik_svd_damping_, rel_red);
+        } else {
+          if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " LS_ACCEPT no_significant_reduction rel_red=" << rel_red << std::endl;
+        }
+
+      } else {
+        // rejection: increment LS reject counter and possibly trigger numeric fallback
+        ++consecutive_ls_rejects;
+        if (!numeric_force_active && numeric_computed && consecutive_ls_rejects >= numeric_fallback_after_rejects_) {
+          numeric_force_active = true;
+          numeric_fallback_remaining = numeric_fallback_duration_;
+          if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " NUMERIC_FALLBACK_START remaining=" << numeric_fallback_remaining << std::endl;
+          RCLCPP_WARN(this->get_logger(), "Numeric-J fallback activated for %d iterations due to repeated LS rejects", numeric_fallback_duration_);
+        }
+        // If none of the alphas improved but the best trial is effectively equal (within tiny tol)
+        // and produces a measurable configuration change, accept it to escape stagnation.
+        double tiny_tol = 1e-10;
+        double movement = (best_trial_q - q_solution).norm();
+        if (best_trial_err <= cur_err + tiny_tol && movement > 1e-8) {
+          q_solution = best_trial_q;
+          if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " LS_ACCEPT_BEST_TOL ERR=" << best_trial_err << " movement=" << movement << std::endl;
+          RCLCPP_DEBUG(this->get_logger(), "IK iter=%d accepted best_trial within tol (err=%.6e movement=%.6e)", it, best_trial_err, movement);
+          // modestly reduce damping to allow further progress
+          double old_d = ik_svd_damping_;
+          ik_svd_damping_ = std::max(ik_svd_damping_min_, ik_svd_damping_ * ik_svd_damping_reduce_factor_);
+          if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " LS_ACCEPT_BEST_TOL decrease_damping " << old_d << " -> " << ik_svd_damping_ << std::endl;
+          // reset saturation counter
+          consecutive_max_damping_rejections_ = 0;
+        } else {
+          // no trial reduced error -> increase damping to be more conservative next time
+          double old_d = ik_svd_damping_;
+          ik_svd_damping_ *= ik_svd_damping_increase_factor_;
+          // clamp to maximum to avoid overflow
+          if (ik_svd_damping_ > ik_svd_damping_max_) ik_svd_damping_ = ik_svd_damping_max_;
+
+          // Track consecutive saturations of damping and adapt max_delta_ if stuck
+          if (old_d >= ik_svd_damping_max_ * 0.999) {
+            ++consecutive_max_damping_rejections_;
+          } else {
+            consecutive_max_damping_rejections_ = 0;
+          }
+
+          if (consecutive_max_damping_rejections_ >= consecutive_shrink_after_) {
+            double old_max_delta = max_delta_;
+            max_delta_ = std::max(max_delta_min_, max_delta_ * 0.5);
+            // also try to relax damping a bit so small steps can be attempted
+            double old_d2 = ik_svd_damping_;
+            ik_svd_damping_ = std::max(ik_svd_damping_min_, ik_svd_damping_ * ik_svd_damping_reduce_factor_);
+            consecutive_max_damping_rejections_ = 0;
+            if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " LS_REJECTED saturated->shrink_max_delta " << old_max_delta << " -> " << max_delta_
+                                                   << " and reduce_damping " << old_d2 << " -> " << ik_svd_damping_ << std::endl;
+            RCLCPP_DEBUG(this->get_logger(), "IK iter=%d damping saturated, shrink max_delta %.3e -> %.3e and reduce damping %.3e -> %.3e", it, old_max_delta, max_delta_, old_d2, ik_svd_damping_);
+          } else {
+            if (log_to_file_ && log_ofs_) log_ofs_ << "ITER " << it << " LS_REJECTED increase_damping " << old_d << " -> " << ik_svd_damping_ << std::endl;
+            RCLCPP_DEBUG(this->get_logger(), "IK iter=%d line-search rejected, increasing ik_svd_damping %.3e -> %.3e (consec=%d)", it, old_d, ik_svd_damping_, consecutive_max_damping_rejections_);
+          }
+          // keep q_solution as-is (i.e., reject the step)
+        }
+      }
     }
 
-    if (best_error < eps_ * 100.0) { q_solution = best_q; if (log_to_file_ && log_ofs_) log_ofs_ << "IK_CONVERGED BEST_ERR " << best_error << std::endl; return true; }
+    // if best_error small accept
+    if (best_error < eps_ * 100.0) {
+      q_solution = best_q;
+      if (log_to_file_ && log_ofs_) log_ofs_ << "IK_SUCCESS BEST_ERR " << best_error << std::endl;
+      return true;
+    }
+
+    // Dual-threshold: if we exhausted iterations but final solution is within a relaxed tolerance,
+    // accept it as success. Use 3D relaxed tol when input_type_=="xyz", otherwise 6D.
+    {
+      double relaxed_eps = (input_type_ == "xyz") ? ik_epsilon_relaxed_3d_ : ik_epsilon_relaxed_6d_;
+      // evaluate final error at current q_solution
+      Data data_check(model_);
+      pinocchio::forwardKinematics(model_, data_check, q_solution);
+      pinocchio::updateFramePlacements(model_, data_check);
+      const SE3 &cur_pose = data_check.oMf[tip_frame_id_];
+
+      Eigen::Vector3d pos_err = target_pose.translation() - cur_pose.translation();
+      Eigen::Quaterniond qcur(cur_pose.rotation());
+      Eigen::Quaterniond qtgt(target_pose.rotation());
+      Eigen::Quaterniond qerr = qtgt * qcur.conjugate();
+      qerr.normalize();
+      Eigen::AngleAxisd aa(qerr);
+      Eigen::Vector3d ang_err = Eigen::Vector3d::Zero();
+      double angle = aa.angle();
+      if (std::isfinite(angle) && std::abs(angle) > 1e-12) ang_err = aa.axis() * angle;
+
+      Eigen::Matrix<double,6,1> final_err6;
+      final_err6.template head<3>() = pos_err;
+      final_err6.template tail<3>() = ang_err;
+      double final_err = final_err6.norm();
+
+      if (final_err <= relaxed_eps) {
+        // accept as success under relaxed threshold
+        if (log_to_file_ && log_ofs_) log_ofs_ << "IK_SUCCESS RELAXED final_err=" << final_err << " relaxed_eps=" << relaxed_eps << std::endl;
+        RCLCPP_INFO(this->get_logger(), "IK accepted by relaxed tolerance (err=%.6e <= relaxed=%.6e)", final_err, relaxed_eps);
+        return true;
+      }
+    }
+
     if (log_to_file_ && log_ofs_) log_ofs_ << "IK_FAILED BEST_ERR " << best_error << std::endl;
     return false;
   }
@@ -425,7 +813,39 @@ private:
   // SVD damped pseudo-inverse / clamp parameters
   bool use_svd_damped_{true};
   double ik_svd_damping_{1e-6};
+  // store the original configured damping so we can reset per solve
+  double initial_ik_svd_damping_{1e-6};
   double max_delta_{0.03};
+
+  // LM-style damping bounds and factors
+  double ik_svd_damping_min_{1e-12};
+  double ik_svd_damping_max_{1e6};
+  double ik_svd_damping_reduce_factor_{0.1};
+  double ik_svd_damping_increase_factor_{10.0};
+  double ik_svd_truncation_tol_{1e-6}; // relative to smax
+  double ik_svd_min_relative_reduction_{1e-8};
+
+  // Hybrid numeric-J fallback parameters (trigger numeric-J after several LS rejects)
+  int numeric_fallback_after_rejects_{3};
+  int numeric_fallback_duration_{10};
+  bool debug_log_predictions_{true};
+
+  // store initial adaptive values so each solve can start from configured state
+  double initial_max_delta_{0.03};
+
+  // Adaptive shrink when damping saturates
+  int consecutive_max_damping_rejections_{0};
+  int consecutive_shrink_after_{3};
+  double max_delta_min_{1e-6};
+
+  // new fallback parameters
+  bool gradient_fallback_enable_ = this->declare_parameter<bool>("planning.gradient_fallback_enable", true);
+  double gradient_fallback_alpha_ = this->declare_parameter<double>("planning.gradient_fallback_alpha", 0.02);
+  // Option to use finite-difference Jacobian directly for the solver (diagnostic / debugging)
+  bool use_numeric_jacobian_ = this->declare_parameter<bool>("planning.use_numeric_jacobian", false);
+  // new parameters for balancing position vs orientation residuals
+  double pos_weight_ = this->declare_parameter<double>("planning.pos_weight", 1.0);
+  double ang_weight_ = this->declare_parameter<double>("planning.ang_weight", 1.0);
 };
 
 int main(int argc, char **argv) {
