@@ -45,11 +45,15 @@ class MujocoSimNode(Node):
         self.declare_parameter('joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6', 'joint7'])
         self.declare_parameter('control_frequency', 50.0)
         self.declare_parameter('use_viewer', False)
+        # topic used to publish simulated joint states (make configurable so it can publish to /joint_states)
+        self.declare_parameter('state_topic', '/joint_states')
 
         model_xml = self.get_parameter('model_xml').get_parameter_value().string_value
         self.joint_names: List[str] = list(self.get_parameter('joint_names').get_parameter_value().string_array_value)
         self.control_frequency = float(self.get_parameter('control_frequency').get_parameter_value().double_value)
         self.use_viewer = bool(self.get_parameter('use_viewer').get_parameter_value().bool_value)
+        # read the state topic parameter
+        self.state_topic = self.get_parameter('state_topic').get_parameter_value().string_value
 
         if mujoco is None:
             self.get_logger().error('mujoco python bindings not available. Install mujoco or adjust PYTHONPATH.')
@@ -102,7 +106,8 @@ class MujocoSimNode(Node):
                 self.get_logger().warning(f'Failed to launch passive viewer: {e}')
 
         # publishers/subscribers
-        self.pub_js = self.create_publisher(JointState, '/sim/joint_states', 10)
+        # use configured topic (default '/sim/joint_states') so users can set it to '/joint_states' if needed
+        self.pub_js = self.create_publisher(JointState, self.state_topic, 10)
         self.sub_cmd = self.create_subscription(JointState, '/joint_command', self._on_joint_command, 10)
 
         self._target_positions: Dict[int, float] = {}
@@ -158,6 +163,35 @@ class MujocoSimNode(Node):
         except Exception:
             self._prev_ctrls = [0.0] * nact
 
+        # --- New: allow setting initial joint positions at startup via parameter
+        self.declare_parameter('initial_positions', [0.947, -0.567, -0.148, -1.16, 0.148, -0.97, -0.769])
+        try:
+            initial_positions = list(self.get_parameter('initial_positions').get_parameter_value().double_array_value)
+        except Exception:
+            initial_positions = []
+
+        if initial_positions:
+            # apply initial qpos values where joint qpos addresses are known
+            for jidx, val in enumerate(initial_positions):
+                try:
+                    if jidx < len(self._joint_qposadr):
+                        adr = self._joint_qposadr[jidx]
+                        if adr is not None:
+                            self.data.qpos[adr] = float(val)
+                        else:
+                            # fallback: try set via data.joint(name).qpos if available
+                            try:
+                                self.data.joint(self.joint_names[jidx]).qpos = float(val)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            # update forward kinematics after setting qpos
+            try:
+                mujoco.mj_forward(self.model, self.data)
+            except Exception:
+                pass
+
         # timer
         period = 1.0 / max(1.0, float(self.control_frequency))
         self._timer = self.create_timer(period, self._loop)
@@ -193,7 +227,7 @@ class MujocoSimNode(Node):
         # Apply target positions to actuator controls when available (positional actuators)
         with self._lock:
             # smoothing step per control publish
-            step_max = 0.05
+            step_max = 0.2
             for idx, pos in self._target_positions.items():
                 if idx < 0 or idx >= len(self.joint_names):
                     continue

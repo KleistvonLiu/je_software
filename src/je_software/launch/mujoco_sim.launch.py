@@ -19,6 +19,7 @@ def generate_launch_description():
         name='mujoco_sim_node',
         output='screen',
         parameters=[{
+            'state_topic': '/joint_states',
             'model_xml': model_xml,
             'use_viewer': use_viewer,
             'joint_names': joint_names,
