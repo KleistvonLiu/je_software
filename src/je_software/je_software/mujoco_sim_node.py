@@ -45,6 +45,8 @@ class MujocoSimNode(Node):
         self.declare_parameter('joint_names', ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6', 'joint7'])
         self.declare_parameter('control_frequency', 50.0)
         self.declare_parameter('use_viewer', False)
+        # control_mode: 'actuator' (default) uses actuator.ctrl; 'direct' writes qpos directly
+        self.declare_parameter('control_mode', 'direct')
         # topic used to publish simulated joint states (make configurable so it can publish to /joint_states)
         self.declare_parameter('state_topic', '/joint_states')
 
@@ -52,6 +54,7 @@ class MujocoSimNode(Node):
         self.joint_names: List[str] = list(self.get_parameter('joint_names').get_parameter_value().string_array_value)
         self.control_frequency = float(self.get_parameter('control_frequency').get_parameter_value().double_value)
         self.use_viewer = bool(self.get_parameter('use_viewer').get_parameter_value().bool_value)
+        self.control_mode = str(self.get_parameter('control_mode').get_parameter_value().string_value)
         # read the state topic parameter
         self.state_topic = self.get_parameter('state_topic').get_parameter_value().string_value
 
@@ -226,6 +229,29 @@ class MujocoSimNode(Node):
     def _apply_targets(self):
         # Apply target positions to actuator controls when available (positional actuators)
         with self._lock:
+            # If control_mode is 'direct', write target into qpos directly and advance kinematics
+            if getattr(self, 'control_mode', 'actuator') == 'direct':
+                for idx, pos in list(self._target_positions.items()):
+                    if idx < 0 or idx >= len(self.joint_names):
+                        continue
+                    try:
+                        adr = self._joint_qposadr[idx] if idx < len(self._joint_qposadr) else None
+                        if adr is not None:
+                            self.data.qpos[adr] = float(pos)
+                        else:
+                            # fallback to joint accessor
+                            try:
+                                self.data.joint(self.joint_names[idx]).qpos = float(pos)
+                            except Exception:
+                                pass
+                    except Exception:
+                        self.get_logger().debug(f'Failed to set direct qpos for joint idx={idx}')
+                # update kinematics so frame placements reflect new qpos immediately
+                try:
+                    mujoco.mj_forward(self.model, self.data)
+                except Exception:
+                    pass
+                return
             # smoothing step per control publish
             step_max = 0.2
             for idx, pos in self._target_positions.items():
