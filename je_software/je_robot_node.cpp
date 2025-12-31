@@ -19,6 +19,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "je_software/msg/end_effector_command.hpp"
 
 #include <zmq.hpp>
 #include "nlohmann/json.hpp"
@@ -54,6 +55,9 @@ public:
         this->declare_parameter<double>("dt", 0.014);
         this->declare_parameter<double>("dt_init", 5.0);
 
+        // Gripper ROS2 command topic
+        this->declare_parameter<std::string>("gripper_sub_topic", "/end_effector_cmd");
+
         // ===== NEW: state logging parameters =====
         this->declare_parameter<bool>("state_log_enable", true);
         this->declare_parameter<std::string>("state_log_dir", "./je_robot_logs");
@@ -67,6 +71,8 @@ public:
             this->get_parameter("end_pose_topic").as_string();
         std::string joint_pub_topic =
             this->get_parameter("joint_pub_topic").as_string();
+        std::string gripper_sub_topic =
+            this->get_parameter("gripper_sub_topic").as_string();
         double fps = this->get_parameter("fps").as_double();
 
         std::string robot_ip = this->get_parameter("robot_ip").as_string();
@@ -74,6 +80,8 @@ public:
         int sub_port = this->get_parameter("sub_port").as_int();
         dt_ = this->get_parameter("dt").as_double();
         dt_init_ = this->get_parameter("dt_init").as_double();
+
+        gripper_sub_topic_ = gripper_sub_topic;
 
         // ===== NEW: read logging params =====
         log_enabled_ = this->get_parameter("state_log_enable").as_bool();
@@ -139,6 +147,13 @@ public:
             qos,
             std::bind(&JeRobotNode::joint_cmd_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] joint cmd: %s", joint_sub_topic.c_str());
+
+        // 订阅夹爪指令（模式 + 指令值）
+        sub_gripper_cmd_ = this->create_subscription<je_software::msg::EndEffectorCommand>(
+            gripper_sub_topic_,
+            qos,
+            std::bind(&JeRobotNode::gripper_cmd_callback, this, std::placeholders::_1));
+        RCLCPP_INFO(this->get_logger(), "[SUB] gripper cmd: %s", gripper_sub_topic_.c_str());
 
         // 订阅末端位姿（暂只缓存，不控制）
         sub_end_pose_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -298,6 +313,20 @@ private:
         nlohmann::json data;
         data["Robot0"]["time"] = global_time_;
         data["Robot0"]["joint"] = joint;
+        if (gripper_cmd_received_)
+        {
+            nlohmann::json ee;
+            ee["mode"] = gripper_cmd_mode_;
+            if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_POSITION)
+            {
+                ee["position"] = gripper_cmd_position_;
+            }
+            else if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_PRESET)
+            {
+                ee["preset"] = gripper_cmd_preset_;
+            }
+            data["Robot0"]["end_effector"] = ee;
+        }
 
         std::ostringstream oss;
         oss.setf(std::ios::fixed);
@@ -459,6 +488,11 @@ private:
             return;
         }
 
+        RCLCPP_INFO_THROTTLE(
+            this->get_logger(), *this->get_clock(), 1000,
+            "Received JointState cmd: names=%zu positions=%zu",
+            msg->name.size(), msg->position.size());
+
         std::unordered_map<std::string, std::size_t> name_to_idx;
         name_to_idx.reserve(msg->name.size());
         for (std::size_t i = 0; i < msg->name.size(); ++i)
@@ -512,6 +546,41 @@ private:
         else
         {
             set_robot_joint(current_cmd_joint_);
+        }
+    }
+
+    void gripper_cmd_callback(const je_software::msg::EndEffectorCommand::SharedPtr msg)
+    {
+        if (!msg)
+        {
+            return;
+        }
+
+        if (msg->mode != je_software::msg::EndEffectorCommand::MODE_POSITION &&
+            msg->mode != je_software::msg::EndEffectorCommand::MODE_PRESET)
+        {
+            RCLCPP_WARN(this->get_logger(), "Invalid end effector mode: %d", msg->mode);
+            return;
+        }
+
+        gripper_cmd_mode_ = msg->mode;
+        gripper_cmd_position_ = msg->position;
+        gripper_cmd_preset_ = msg->preset;
+        gripper_cmd_received_ = true;
+
+        if (msg->mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+        {
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(), *this->get_clock(), 1000,
+                "Received end effector cmd: mode=POSITION position=%.3f",
+                msg->position);
+        }
+        else
+        {
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(), *this->get_clock(), 1000,
+                "Received end effector cmd: mode=PRESET preset=%d",
+                msg->preset);
         }
     }
 
@@ -604,6 +673,7 @@ private:
 
     // ROS
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_cmd_;
+    rclcpp::Subscription<je_software::msg::EndEffectorCommand>::SharedPtr sub_gripper_cmd_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_end_pose_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_joint_state_;
 
@@ -617,6 +687,13 @@ private:
     zmq::socket_t publisher_;
     zmq::socket_t subscriber_;
     nlohmann::json last_state_json_;
+
+    // End-effector command cache from ROS2
+    std::string gripper_sub_topic_{"/end_effector_cmd"};
+    int gripper_cmd_mode_{je_software::msg::EndEffectorCommand::MODE_POSITION};
+    double gripper_cmd_position_{0.0};
+    int gripper_cmd_preset_{0};
+    bool gripper_cmd_received_{false};
 
     // 参数
     double publish_period_;
