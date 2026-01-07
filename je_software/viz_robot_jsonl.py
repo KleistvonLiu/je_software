@@ -3,6 +3,8 @@
 
 """
 Docstring for je_software.viz_robot_jsonl
+
+Examples:
 python3 ./je_software/viz_robot_jsonl.py your_log.jsonl
 python3 ./je_software/viz_robot_jsonl.py your_log.jsonl --deg
 python3 ./je_software/viz_robot_jsonl.py your_log.jsonl --stride 10
@@ -31,7 +33,7 @@ def load_jsonl(
     Load robot state jsonl into numpy arrays.
     Returns dict with:
       t, joint, target_joint, cart, target_cart, move_state, power_state,
-      joint_velocity, joint_torque
+      joint_velocity, joint_torque, joint_sensor_torque
     """
     ts: List[float] = []
     joint: List[List[float]] = []
@@ -43,6 +45,7 @@ def load_jsonl(
 
     joint_velocity: List[List[float]] = []
     joint_torque: List[List[float]] = []
+    joint_sensor_torque: List[List[float]] = []  # NEW
 
     with open(path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f):
@@ -84,8 +87,9 @@ def load_jsonl(
             c = _safe_get(rob, "Cartesian", None)
             tc = _safe_get(rob, "TargetCartesian", None)
 
-            jv = _safe_get(rob, "JointVelocity", None)  # NEW
-            jtq = _safe_get(rob, "JointTorque", None)   # NEW
+            jv = _safe_get(rob, "JointVelocity", None)
+            jtq = _safe_get(rob, "JointTorque", None)
+            jstq = _safe_get(rob, "JointSensorTorque", None)  # NEW
 
             # Basic validation
             if j is None or c is None:
@@ -111,7 +115,7 @@ def load_jsonl(
                 except Exception:
                     tc = None
 
-            # JointVelocity / JointTorque: allow missing; if present validate length
+            # JointVelocity / JointTorque / JointSensorTorque: allow missing; if present validate length
             if jv is not None:
                 try:
                     jv = [float(x) for x in jv]
@@ -127,6 +131,14 @@ def load_jsonl(
                         jtq = None
                 except Exception:
                     jtq = None
+
+            if jstq is not None:
+                try:
+                    jstq = [float(x) for x in jstq]
+                    if len(jstq) != dof:
+                        jstq = None
+                except Exception:
+                    jstq = None
 
             ms = _safe_get(rob, "MoveState", None)
             ps = _safe_get(rob, "PowerState", None)
@@ -149,6 +161,7 @@ def load_jsonl(
 
             joint_velocity.append(jv if jv is not None else [np.nan] * dof)
             joint_torque.append(jtq if jtq is not None else [np.nan] * dof)
+            joint_sensor_torque.append(jstq if jstq is not None else [np.nan] * dof)  # NEW
 
     if not ts:
         raise RuntimeError(f"No valid records loaded from: {path}")
@@ -167,6 +180,7 @@ def load_jsonl(
 
     joint_vel_np = np.array(joint_velocity, dtype=np.float64)[order]
     joint_torque_np = np.array(joint_torque, dtype=np.float64)[order]
+    joint_sensor_torque_np = np.array(joint_sensor_torque, dtype=np.float64)[order]  # NEW
 
     # relative time
     t0 = ts_np[0]
@@ -182,6 +196,7 @@ def load_jsonl(
         "power_state": power_np,
         "joint_velocity": joint_vel_np,
         "joint_torque": joint_torque_np,
+        "joint_sensor_torque": joint_sensor_torque_np,  # NEW
     }
 
 
@@ -237,28 +252,51 @@ def plot_joint_velocity(t: np.ndarray, joint_velocity: np.ndarray, save: Optiona
     return fig
 
 
-def plot_joint_torque(t: np.ndarray, joint_torque: np.ndarray, save: Optional[str] = None):
+def plot_joint_torque_compare(
+    t: np.ndarray,
+    joint_torque: np.ndarray,
+    joint_sensor_torque: np.ndarray,
+    save: Optional[str] = None,
+):
     """
-    Plot JointTorque (Nm or N; depends on hardware). If all-NaN, return None.
+    Plot JointSensorTorque vs JointTorque (Nm or N; depends on hardware).
+    For each joint dimension i: plot both in the same subplot.
+    If both are all-NaN, return None.
     """
-    if joint_torque.size == 0 or np.all(np.isnan(joint_torque)):
+    if (
+        (joint_torque.size == 0 or np.all(np.isnan(joint_torque)))
+        and (joint_sensor_torque.size == 0 or np.all(np.isnan(joint_sensor_torque)))
+    ):
         return None
 
-    n = joint_torque.shape[1]
+    # Determine DOF robustly
+    n = 0
+    if joint_torque.ndim == 2 and joint_torque.shape[1] > 0:
+        n = joint_torque.shape[1]
+    if joint_sensor_torque.ndim == 2 and joint_sensor_torque.shape[1] > 0:
+        n = max(n, joint_sensor_torque.shape[1])
+    if n <= 0:
+        return None
+
     fig, axs = plt.subplots(n, 1, sharex=True, figsize=(12, 2.0 * n))
     if n == 1:
         axs = [axs]
 
     for i in range(n):
-        if np.all(np.isnan(joint_torque[:, i])):
-            continue
-        axs[i].plot(t, joint_torque[:, i], label=f"JointTorque[{i}]")
+        # JointTorque
+        if joint_torque.ndim == 2 and i < joint_torque.shape[1] and not np.all(np.isnan(joint_torque[:, i])):
+            axs[i].plot(t, joint_torque[:, i], label=f"JointTorque[{i}]")
+
+        # JointSensorTorque
+        if joint_sensor_torque.ndim == 2 and i < joint_sensor_torque.shape[1] and not np.all(np.isnan(joint_sensor_torque[:, i])):
+            axs[i].plot(t, joint_sensor_torque[:, i] * 1e-3, label=f"JointSensorTorque[{i}]")
+
         axs[i].set_ylabel("Nm/N")
         axs[i].grid(True, alpha=0.3)
         axs[i].legend(loc="best")
 
     axs[-1].set_xlabel("t (s)")
-    fig.suptitle("JointTorque")
+    fig.suptitle("JointSensorTorque vs JointTorque")
     fig.tight_layout()
 
     if save:
@@ -364,15 +402,21 @@ def main():
     save_xyz = f"{save_prefix}_xyz.png" if save_prefix else None
     save_state = f"{save_prefix}_state.png" if save_prefix else None
     save_vel = f"{save_prefix}_joint_vel.png" if save_prefix else None
-    save_torque = f"{save_prefix}_joint_torque.png" if save_prefix else None
+    save_torque_cmp = f"{save_prefix}_joint_torque_cmp.png" if save_prefix else None  # NEW
 
     plot_joints(data["t"], data["joint"], data["target_joint"], save=save_joint)
     plot_cartesian(data["t"], data["cart"], data["target_cart"], angles_in_deg=args.deg, save=save_cart)
     plot_states(data["t"], data["move_state"], data["power_state"], save=save_state)
 
-    # NEW
     plot_joint_velocity(data["t"], data["joint_velocity"], save=save_vel)
-    plot_joint_torque(data["t"], data["joint_torque"], save=save_torque)
+
+    # NEW: compare JointSensorTorque vs JointTorque in the same figure
+    plot_joint_torque_compare(
+        data["t"],
+        data["joint_torque"],
+        data["joint_sensor_torque"],
+        save=save_torque_cmp,
+    )
 
     if not args.no_xyz:
         plot_xyz_trajectory(data["cart"], save=save_xyz)

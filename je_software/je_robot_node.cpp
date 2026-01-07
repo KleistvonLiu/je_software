@@ -343,7 +343,7 @@ private:
             "Sending joint cmd: %s", oss.str().c_str());
 
         std::string payload = "Joint " + data.dump();
-        publisher_.send(zmq::buffer(payload), zmq::send_flags::none);
+        publisher_.send(zmq::buffer(payload));
     }
 
     void set_robot_cartesian(const std::vector<double> &cartesian, double delta_time = 0.0)
@@ -360,6 +360,20 @@ private:
         nlohmann::json data;
         data["Robot0"]["time"] = global_time_;
         data["Robot0"]["cartesian"] = cartesian;
+        if (gripper_cmd_received_)
+        {
+            nlohmann::json ee;
+            ee["mode"] = gripper_cmd_mode_;
+            if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_POSITION)
+            {
+                ee["position"] = gripper_cmd_position_;
+            }
+            else if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_PRESET)
+            {
+                ee["preset"] = gripper_cmd_preset_;
+            }
+            data["Robot0"]["end_effector"] = ee;
+        }
         publisher_.send(zmq::buffer("Cartesian " + data.dump()));
     }
 
@@ -482,6 +496,7 @@ private:
 
     void joint_cmd_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
     {
+        RCLCPP_INFO(this->get_logger(), "joint cmd callback!");
         if (msg->name.empty() || msg->position.empty())
         {
             RCLCPP_WARN(this->get_logger(), "Received empty JointState cmd.");

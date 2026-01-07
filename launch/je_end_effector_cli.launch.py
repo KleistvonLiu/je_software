@@ -20,7 +20,7 @@ def generate_launch_description():
     attach_init_pose_arg = DeclareLaunchArgument(
         'attach_init_pose_to_cmd', default_value='false')
     init_pose_arg = DeclareLaunchArgument(
-        'init_pose', default_value='[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]')
+        'init_pose', default_value='[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]')
 
     node = Node(
         package="je_software",

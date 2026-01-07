@@ -1,3 +1,11 @@
+/**
+0: 停止 6 电机
+1..6: 停止单电机 (Motor1..Motor6)
+10: 二指 0%
+11: 二指 71%
+20: 三指 0%
+21: 三指 88%
+*/
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
@@ -7,6 +15,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -30,7 +39,7 @@ public:
         this->declare_parameter<bool>("attach_init_pose_to_cmd", false);
         this->declare_parameter<std::string>(
             "init_pose",
-            "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]");
+            "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]");
 
         end_effector_topic_ = this->get_parameter("end_effector_topic").as_string();
         pose_topic_ = this->get_parameter("pose_topic").as_string();
@@ -67,9 +76,9 @@ public:
     }
 
 private:
-    static std::array<double, 7> parse_init_pose(const std::vector<double> &vals)
+    static std::array<double, 6> parse_init_pose(const std::vector<double> &vals)
     {
-        std::array<double, 7> pose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+        std::array<double, 6> pose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
         for (size_t i = 0; i < pose.size() && i < vals.size(); ++i)
         {
             pose[i] = vals[i];
@@ -77,7 +86,7 @@ private:
         return pose;
     }
 
-    static std::array<double, 7> parse_init_pose_param(const rclcpp::Parameter &param)
+    static std::array<double, 6> parse_init_pose_param(const rclcpp::Parameter &param)
     {
         if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY)
         {
@@ -91,7 +100,7 @@ private:
         }
         else
         {
-            return {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+            return {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
         }
 
         for (char &c : s)
@@ -111,6 +120,22 @@ private:
         return parse_init_pose(vals);
     }
 
+    static void rpy_to_quat(double roll, double pitch, double yaw,
+                            double &qx, double &qy, double &qz, double &qw)
+    {
+        const double cy = std::cos(yaw * 0.5);
+        const double sy = std::sin(yaw * 0.5);
+        const double cp = std::cos(pitch * 0.5);
+        const double sp = std::sin(pitch * 0.5);
+        const double cr = std::cos(roll * 0.5);
+        const double sr = std::sin(roll * 0.5);
+
+        qw = cr * cp * cy + sr * sp * sy;
+        qx = sr * cp * cy - cr * sp * sy;
+        qy = cr * sp * cy + sr * cp * sy;
+        qz = cr * cp * sy - sr * sp * cy;
+    }
+
     static bool poll_stdin(int timeout_ms)
     {
         struct pollfd pfd;
@@ -126,7 +151,7 @@ private:
                   << "Commands:\n"
                   << "  p <value>            send MODE_POSITION with position\n"
                   << "  m <preset>           send MODE_PRESET with preset int\n"
-                  << "  pose <x y z qx qy qz qw>   set init pose\n"
+                  << "  pose <x y z r p y>   set init pose (rpy in radians)\n"
                   << "  send_pose            publish init pose once\n"
                   << "  pose_on / pose_off   toggle attach init pose to each cmd\n"
                   << "  help\n"
@@ -134,7 +159,7 @@ private:
                   << "Examples:\n"
                   << "  p 0.5\n"
                   << "  m 2\n"
-                  << "  pose 0 0 0 0 0 0 1\n"
+                  << "  pose 0 0 0 0 0 0\n"
                   << "  pose_on\n"
                   << "========================\n\n";
     }
@@ -147,16 +172,18 @@ private:
         msg.pose.position.x = init_pose_[0];
         msg.pose.position.y = init_pose_[1];
         msg.pose.position.z = init_pose_[2];
-        msg.pose.orientation.x = init_pose_[3];
-        msg.pose.orientation.y = init_pose_[4];
-        msg.pose.orientation.z = init_pose_[5];
-        msg.pose.orientation.w = init_pose_[6];
+        double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
+        rpy_to_quat(init_pose_[3], init_pose_[4], init_pose_[5], qx, qy, qz, qw);
+        msg.pose.orientation.x = qx;
+        msg.pose.orientation.y = qy;
+        msg.pose.orientation.z = qz;
+        msg.pose.orientation.w = qw;
         pub_pose_->publish(msg);
 
         RCLCPP_INFO(this->get_logger(),
-                    "Published init pose: pos(%.3f, %.3f, %.3f) quat(%.3f, %.3f, %.3f, %.3f)",
+                    "Published init pose: pos(%.3f, %.3f, %.3f) rpy(%.3f, %.3f, %.3f)",
                     init_pose_[0], init_pose_[1], init_pose_[2],
-                    init_pose_[3], init_pose_[4], init_pose_[5], init_pose_[6]);
+                    init_pose_[3], init_pose_[4], init_pose_[5]);
     }
 
     void publish_end_effector_cmd(int8_t mode, double position, int32_t preset)
@@ -242,13 +269,13 @@ private:
             }
             if (cmd == "pose")
             {
-                double x, y, z, qx, qy, qz, qw;
-                if (!(iss >> x >> y >> z >> qx >> qy >> qz >> qw))
+                double x, y, z, r, p, yv;
+                if (!(iss >> x >> y >> z >> r >> p >> yv))
                 {
-                    RCLCPP_WARN(this->get_logger(), "Usage: pose <x y z qx qy qz qw>");
+                    RCLCPP_WARN(this->get_logger(), "Usage: pose <x y z r p y>");
                     continue;
                 }
-                init_pose_ = {x, y, z, qx, qy, qz, qw};
+                init_pose_ = {x, y, z, r, p, yv};
                 RCLCPP_INFO(this->get_logger(), "Init pose updated.");
                 continue;
             }
@@ -285,7 +312,7 @@ private:
     std::string end_effector_topic_;
     std::string pose_topic_;
     std::string frame_id_;
-    std::array<double, 7> init_pose_{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+    std::array<double, 6> init_pose_{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     bool attach_init_pose_{false};
 
     rclcpp::Publisher<je_software::msg::EndEffectorCommand>::SharedPtr pub_cmd_;
