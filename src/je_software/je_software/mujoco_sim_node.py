@@ -19,6 +19,9 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
+import datetime
+import json
+
 try:
     import mujoco
 except Exception as e:
@@ -50,6 +53,15 @@ class MujocoSimNode(Node):
         # topic used to publish simulated joint states (make configurable so it can publish to /joint_states)
         self.declare_parameter('state_topic', '/joint_states')
 
+        # --- Logging: enable saving received joint_command messages to file
+        self.declare_parameter('log_joint_commands', True)
+        self.declare_parameter('joint_command_log_file', '/home/agx/price/je_software/log/mujoco_joint_commands.log')
+
+        # --- Joint states periodic logging (for observing drift when no commands)
+        self.declare_parameter('log_joint_states', True)
+        self.declare_parameter('joint_states_log_file', '/home/agx/price/je_software/log/mujoco_joint_states.log')
+        self.declare_parameter('joint_states_log_frequency', 1.0)
+
         model_xml = self.get_parameter('model_xml').get_parameter_value().string_value
         self.joint_names: List[str] = list(self.get_parameter('joint_names').get_parameter_value().string_array_value)
         self.control_frequency = float(self.get_parameter('control_frequency').get_parameter_value().double_value)
@@ -57,6 +69,30 @@ class MujocoSimNode(Node):
         self.control_mode = str(self.get_parameter('control_mode').get_parameter_value().string_value)
         # read the state topic parameter
         self.state_topic = self.get_parameter('state_topic').get_parameter_value().string_value
+
+        # read logging parameters
+        try:
+            self.log_joint_commands = bool(self.get_parameter('log_joint_commands').get_parameter_value().bool_value)
+        except Exception:
+            self.log_joint_commands = True
+        try:
+            self.joint_command_log_file = self.get_parameter('joint_command_log_file').get_parameter_value().string_value
+        except Exception:
+            self.joint_command_log_file = '/tmp/mujoco_joint_commands.log'
+
+        # read joint_states logging parameters
+        try:
+            self.log_joint_states = bool(self.get_parameter('log_joint_states').get_parameter_value().bool_value)
+        except Exception:
+            self.log_joint_states = False
+        try:
+            self.joint_states_log_file = self.get_parameter('joint_states_log_file').get_parameter_value().string_value
+        except Exception:
+            self.joint_states_log_file = '/tmp/mujoco_joint_states.log'
+        try:
+            self.joint_states_log_frequency = float(self.get_parameter('joint_states_log_frequency').get_parameter_value().double_value)
+        except Exception:
+            self.joint_states_log_frequency = 1.0
 
         if mujoco is None:
             self.get_logger().error('mujoco python bindings not available. Install mujoco or adjust PYTHONPATH.')
@@ -198,6 +234,18 @@ class MujocoSimNode(Node):
         # timer
         period = 1.0 / max(1.0, float(self.control_frequency))
         self._timer = self.create_timer(period, self._loop)
+
+        # optional periodic joint_states logger
+        if getattr(self, 'log_joint_states', False):
+            try:
+                js_period = max(1e-3, 1.0 / float(self.joint_states_log_frequency))
+            except Exception:
+                js_period = 1.0
+            try:
+                self._js_log_timer = self.create_timer(js_period, self._log_joint_states)
+            except Exception as e:
+                self.get_logger().warning(f'Failed to create joint_states log timer: {e}')
+
         self.get_logger().info('MujocoSimNode initialized')
 
     def _on_joint_command(self, msg: JointState):
@@ -225,6 +273,42 @@ class MujocoSimNode(Node):
                             break
                 if idx is not None:
                     self._target_positions[idx] = pos
+
+            # Log the received joint_command message and publishers to a file if enabled
+            if getattr(self, 'log_joint_commands', False):
+                try:
+                    # snapshot publishers for the topic (best-effort; not per-message identity)
+                    pubs = []
+                    try:
+                        infos = self.get_publishers_info_by_topic('/joint_command')
+                        for p in infos:
+                            node_name = getattr(p, 'node_name', None)
+                            node_ns = getattr(p, 'node_namespace', None)
+                            if node_name is None and node_ns is None:
+                                continue
+                            pubs.append(f"{node_name}@{node_ns}")
+                    except Exception:
+                        pubs = []
+
+                    payload = {
+                        'ts': datetime.datetime.utcnow().isoformat() + 'Z',
+                        'publishers': pubs,
+                        'msg_header': {
+                            'stamp': getattr(getattr(msg, 'header', None), 'stamp', None),
+                            'frame_id': getattr(getattr(msg, 'header', None), 'frame_id', None),
+                        },
+                        'names': list(msg.name),
+                        'positions': list(msg.position),
+                        'mapped_targets': {str(k): v for k, v in self._target_positions.items()},
+                    }
+                    # append as one JSON line
+                    try:
+                        with open(self.joint_command_log_file, 'a') as f:
+                            f.write(json.dumps(payload, default=str) + '\n')
+                    except Exception as e:
+                        self.get_logger().warning(f'Failed to write joint_command log file: {e}')
+                except Exception as e:
+                    self.get_logger().warning(f'Failed to prepare joint_command log entry: {e}')
 
     def _apply_targets(self):
         # Apply target positions to actuator controls when available (positional actuators)
@@ -320,6 +404,66 @@ class MujocoSimNode(Node):
         msg.name = names
         msg.position = positions
         self.pub_js.publish(msg)
+
+    def _log_joint_states(self):
+        # Periodically write current joint_states (names + positions) to a file as JSON lines
+        if not getattr(self, 'log_joint_states', False):
+            return
+        try:
+            # snapshot publishers for the state topic (best-effort)
+            pubs = []
+            try:
+                infos = self.get_publishers_info_by_topic(self.state_topic)
+                for p in infos:
+                    node_name = getattr(p, 'node_name', None)
+                    node_ns = getattr(p, 'node_namespace', None)
+                    if node_name is None and node_ns is None:
+                        continue
+                    pubs.append(f"{node_name}@{node_ns}")
+            except Exception:
+                pubs = []
+
+            # capture current joint positions under lock to avoid races with _apply_targets
+            names = []
+            positions = []
+            try:
+                with self._lock:
+                    for i, jn in enumerate(self.joint_names):
+                        names.append(jn)
+                        try:
+                            adr = self._joint_qposadr[i]
+                            if adr is not None:
+                                positions.append(float(self.data.qpos[adr]))
+                            else:
+                                positions.append(float(self.data.joint(jn).qpos))
+                        except Exception:
+                            positions.append(0.0)
+            except Exception:
+                # fallback, try without lock
+                for i, jn in enumerate(self.joint_names):
+                    names.append(jn)
+                    try:
+                        adr = self._joint_qposadr[i]
+                        if adr is not None:
+                            positions.append(float(self.data.qpos[adr]))
+                        else:
+                            positions.append(float(self.data.joint(jn).qpos))
+                    except Exception:
+                        positions.append(0.0)
+
+            payload = {
+                'ts': datetime.datetime.utcnow().isoformat() + 'Z',
+                'publishers': pubs,
+                'names': names,
+                'positions': positions,
+            }
+            try:
+                with open(self.joint_states_log_file, 'a') as f:
+                    f.write(json.dumps(payload, default=str) + '\n')
+            except Exception as e:
+                self.get_logger().warning(f'Failed to write joint_states log file: {e}')
+        except Exception as e:
+            self.get_logger().warning(f'Error while logging joint_states: {e}')
 
     def _loop(self):
         # apply requested targets

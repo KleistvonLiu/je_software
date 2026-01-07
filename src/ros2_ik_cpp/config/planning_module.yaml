@@ -12,7 +12,7 @@ ik_node:
       ik_solver_type: "official_3d"
 
       # ========== IK 求解参数 ==========
-      ik_max_iterations: 200
+      ik_max_iterations: 1000
       ik_epsilon: 0.0001
       ik_epsilon_relaxed_3d: 0.005
       ik_epsilon_relaxed_6d: 0.01
@@ -39,6 +39,9 @@ ik_node:
       ik_svd_damping_increase_factor: 1.5   # 减缓阻尼放大速度，避免指数级增加
       ik_svd_trunc_tol: 1e-6              # 与最大奇异值的相对截断阈值
       ik_svd_min_rel_reduction: 1e-10     # 更宽容，允许更小的相对下降被接受
+      publish_pose_pos_deadband: 1e-2
+      publish_pose_ang_deadband: 1e-3
+      publish_deadband: 1e-4
 
       # ========== 线搜索 / 步长 / 限幅 ==========
       ik_line_search_factors: [1.0, 0.5, 0.25, 0.125]
@@ -63,9 +66,11 @@ ik_node:
       use_numeric_jacobian: true
 
       # ========== 日志 / 诊断 ==========
-      log_to_file: true
+      log_to_file: false
       log_file: "/home/agx/price/je_software/log/ik_log.log"
-      log_level: debug
+      svd_q_log_file: "/home/agx/price/je_software/log/ik_svd.log"
+      diagnostics_log_file: "/home/agx/price/je_software/log/ik_diagnostics.log"
+      log_level: info
       log_svd_values: false
       log_fk_each_iter: false
 

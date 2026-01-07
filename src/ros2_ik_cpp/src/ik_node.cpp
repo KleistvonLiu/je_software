@@ -17,6 +17,7 @@
 #include <string>
 #include <limits>
 #include <algorithm>
+#include <chrono>
 
 using Eigen::VectorXd;
 using Eigen::MatrixXd;
@@ -74,16 +75,48 @@ public:
     joint_limits_min_ = this->declare_parameter<std::vector<double>>("planning.joint_limits_min", std::vector<double>{-3.14, -2.0, -2.5, -3.14, -3.14});
     joint_limits_max_ = this->declare_parameter<std::vector<double>>("planning.joint_limits_max", std::vector<double>{3.14, 2.0, 2.5, 3.14, 3.14});
 
-    // Optional: file to write IK diagnostics (set planning.log_file to enable)
+    // Optional: file to write IK diagnostics (controlled by planning.log_to_file and planning.log_file)
+    bool log_to_file_param = this->declare_parameter<bool>("planning.log_to_file", false);
     std::string log_file = this->declare_parameter<std::string>("planning.log_file", std::string());
-    if (!log_file.empty()) {
+    if (log_to_file_param && !log_file.empty()) {
       log_ofs_.open(log_file, std::ios::out | std::ios::app);
       if (!log_ofs_) {
         RCLCPP_WARN(this->get_logger(), "Failed to open IK diagnostics log file: %s", log_file.c_str());
       } else {
         log_to_file_ = true;
-        RCLCPP_INFO(this->get_logger(), "IK diagnostics will be written to: %s", log_file.c_str());
+        RCLCPP_DEBUG(this->get_logger(), "IK diagnostics will be written to: %s", log_file.c_str());
       }
+    } else {
+      log_to_file_ = false;
+      RCLCPP_DEBUG(this->get_logger(), "IK diagnostics logging disabled by planning.log_to_file or empty planning.log_file");
+    }
+
+    // Optional: separate file to record per-iteration q_solution and singular values
+    std::string svd_q_log_file = this->declare_parameter<std::string>("planning.svd_q_log_file", std::string());
+    if (log_to_file_param && !svd_q_log_file.empty()) {
+      svd_q_ofs_.open(svd_q_log_file, std::ios::out | std::ios::app);
+      if (!svd_q_ofs_) {
+        RCLCPP_WARN(this->get_logger(), "Failed to open SVD/Q diagnostics file: %s", svd_q_log_file.c_str());
+      } else {
+        svd_q_log_to_file_ = true;
+        RCLCPP_DEBUG(this->get_logger(), "SVD/Q diagnostics will be written to: %s", svd_q_log_file.c_str());
+      }
+    } else {
+      svd_q_log_to_file_ = false;
+    }
+
+    // Optional: separate diagnostics log file to capture verbose IK/joint/publish events
+    std::string diagnostics_log_file = this->declare_parameter<std::string>("planning.diagnostics_log_file", std::string());
+    if (log_to_file_param && !diagnostics_log_file.empty()) {
+      diag_ofs_.open(diagnostics_log_file, std::ios::out | std::ios::app);
+      if (!diag_ofs_) {
+        RCLCPP_WARN(this->get_logger(), "Failed to open diagnostics log file: %s", diagnostics_log_file.c_str());
+      } else {
+        diag_log_to_file_ = true;
+        RCLCPP_DEBUG(this->get_logger(), "Diagnostics will be written to: %s", diagnostics_log_file.c_str());
+      }
+    } else {
+      diag_log_to_file_ = false;
     }
 
     if (urdf_path_.empty()) {
@@ -108,8 +141,8 @@ public:
     tip_frame_id_ = model_.getFrameId(tip_frame_name_);
 
     // Diagnostic: print model sizes and tip frame info
-    RCLCPP_INFO(this->get_logger(), "Pinocchio model loaded: nq=%d nv=%d tip_frame='%s' id=%u",
-                static_cast<int>(model_.nq), static_cast<int>(model_.nv), tip_frame_name_.c_str(), tip_frame_id_);
+    RCLCPP_DEBUG(this->get_logger(), "Pinocchio model loaded: nq=%d nv=%d tip_frame='%s' id=%u",
+                 static_cast<int>(model_.nq), static_cast<int>(model_.nv), tip_frame_name_.c_str(), tip_frame_id_);
 
     sub_js_ = this->create_subscription<sensor_msgs::msg::JointState>(
         "joint_states", 10, std::bind(&IkNode::onJointState, this, std::placeholders::_1));
@@ -124,7 +157,7 @@ public:
 
     timer_ = this->create_wall_timer(std::chrono::milliseconds(50), std::bind(&IkNode::spinOnce, this));
 
-    RCLCPP_INFO(this->get_logger(), "ik_node initialized, tip_frame=%s", tip_frame_name_.c_str());
+    RCLCPP_DEBUG(this->get_logger(), "ik_node initialized, tip_frame=%s", tip_frame_name_.c_str());
   }
 
 private:
@@ -162,7 +195,7 @@ private:
 
         // Print FK result (position, quaternion and RPY)
         Eigen::Vector3d rpy = current_pose.rotation().eulerAngles(0, 1, 2);
-        RCLCPP_INFO(this->get_logger(), "FK init pose: pos=(%.4f, %.4f, %.4f) quat=(%.4f, %.4f, %.4f, %.4f) rpy=(%.4f, %.4f, %.4f)",
+        RCLCPP_DEBUG(this->get_logger(), "FK init pose: pos=(%.4f, %.4f, %.4f) quat=(%.4f, %.4f, %.4f, %.4f) rpy=(%.4f, %.4f, %.4f)",
                     current_pose.translation()[0], current_pose.translation()[1], current_pose.translation()[2],
                     eq.x(), eq.y(), eq.z(), eq.w(), rpy[0], rpy[1], rpy[2]);
 
@@ -221,6 +254,9 @@ private:
       target = last_target_;
     }
 
+    // start timing for this spinOnce invocation (measure compute + IK solve + publish)
+    auto __spin_start = std::chrono::steady_clock::now();
+
     VectorXd q_init = VectorXd::Zero(model_.nq);
     for (size_t i = 0; i < js.position.size() && i < (size_t)q_init.size(); ++i) {
       q_init[i] = js.position[i];
@@ -267,9 +303,22 @@ private:
     } else {
       RCLCPP_WARN(this->get_logger(), "IK failed or did not converge");
     }
+
+    // end timing and report
+    auto __spin_end = std::chrono::steady_clock::now();
+    double __spin_elapsed_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(__spin_end - __spin_start).count();
+    const char *status_str = "失败";
+    if (last_solve_status_ == 1) status_str = "精准成功";
+    else if (last_solve_status_ == 2) status_str = "粗略成功";
+    RCLCPP_INFO(this->get_logger(), "spinOnce elapsed: %.3f ms [结果: %s]", __spin_elapsed_ms, status_str);
+    if (log_to_file_ && log_ofs_) {
+      log_ofs_ << "SPINONCE_TIME_MS " << __spin_elapsed_ms << " STATUS " << status_str << std::endl;
+    }
   }
 
   bool solveIK6D(const SE3 &target_pose, const VectorXd &q_init, VectorXd &q_solution) {
+    // reset last_solve_status_ to failure by default
+    last_solve_status_ = 0;
     // reset per-solve damping to the configured initial value so adjustments
     // within one solve (increase/decrease) do not leak to subsequent solves
     ik_svd_damping_ = initial_ik_svd_damping_;
@@ -317,7 +366,7 @@ private:
 
       // Print initial err6 once and per-iteration diagnostics at DEBUG level
       if (!printed_initial) {
-        RCLCPP_INFO(this->get_logger(), "IK initial err6 = [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f] (norm=%.6f)",
+        RCLCPP_DEBUG(this->get_logger(), "IK initial err6 = [%.6f, %.6f, %.6f, %.6f, %.6f, %.6f] (norm=%.6f)",
                     err6(0), err6(1), err6(2), err6(3), err6(4), err6(5), cur_err);
         if (log_to_file_ && log_ofs_) {
           log_ofs_ << "ITER 0 INIT_ERR6 " << err6.transpose() << " NORM " << cur_err << std::endl;
@@ -329,7 +378,7 @@ private:
                    err6(0), err6(1), err6(2), err6(3), err6(4), err6(5));
 
       if (cur_err < best_error) { best_error = cur_err; best_q = q_solution; }
-      if (cur_err < eps_) { return true; }
+      if (cur_err < eps_) { last_solve_status_ = 1; return true; }
 
       // Ensure Pinocchio has computed joint Jacobians for the current configuration
       pinocchio::computeJointJacobians(model_, data, q_solution);
@@ -560,7 +609,7 @@ private:
           }
         }
 
-        RCLCPP_INFO(this->get_logger(), "DEBUG_NUMJ nnum=%.6e nJ_err=%.6e nJ_world=%.6e diff_err=%.6e diff_world=%.6e pred_err=%.6e pred_world=%.6e pred_num=%.6e",
+        RCLCPP_DEBUG(this->get_logger(), "DEBUG_NUMJ nnum=%.6e nJ_err=%.6e nJ_world=%.6e diff_err=%.6e diff_world=%.6e pred_err=%.6e pred_world=%.6e pred_num=%.6e",
                     nnum, nJ_err, nJ_world, ndiff_err, ndiff_world, pred_err_norm, pred_err_world_norm, num_pred_err_norm);
       }
 
@@ -728,6 +777,7 @@ private:
     // if best_error small accept
     if (best_error < eps_ * 100.0) {
       q_solution = best_q;
+      last_solve_status_ = 2; // consider coarse success
       if (log_to_file_ && log_ofs_) log_ofs_ << "IK_SUCCESS BEST_ERR " << best_error << std::endl;
       return true;
     }
@@ -759,12 +809,14 @@ private:
 
       if (final_err <= relaxed_eps) {
         // accept as success under relaxed threshold
+        last_solve_status_ = 2;
         if (log_to_file_ && log_ofs_) log_ofs_ << "IK_SUCCESS RELAXED final_err=" << final_err << " relaxed_eps=" << relaxed_eps << std::endl;
-        RCLCPP_INFO(this->get_logger(), "IK accepted by relaxed tolerance (err=%.6e <= relaxed=%.6e)", final_err, relaxed_eps);
+        RCLCPP_DEBUG(this->get_logger(), "IK accepted by relaxed tolerance (err=%.6e <= relaxed=%.6e)", final_err, relaxed_eps);
         return true;
       }
     }
 
+    last_solve_status_ = 0;
     if (log_to_file_ && log_ofs_) log_ofs_ << "IK_FAILED BEST_ERR " << best_error << std::endl;
     return false;
   }
@@ -810,6 +862,13 @@ private:
   // Optional diagnostics file
   std::ofstream log_ofs_;
   bool log_to_file_{false};
+  // Last solve status: 0 = failed, 1 = precise success, 2 = relaxed/coarse success
+  int last_solve_status_{0};
+  // Additional optional files for SVD/q traces and verbose diagnostics
+  std::ofstream svd_q_ofs_;
+  bool svd_q_log_to_file_{false};
+  std::ofstream diag_ofs_;
+  bool diag_log_to_file_{false};
   // SVD damped pseudo-inverse / clamp parameters
   bool use_svd_damped_{true};
   double ik_svd_damping_{1e-6};
