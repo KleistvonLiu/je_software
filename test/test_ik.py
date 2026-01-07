@@ -4,8 +4,8 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 
-LIN_STEP = 0.05
-ANG_STEP = 0.02
+LIN_STEP = 0.5
+ANG_STEP = 0.5
 
 # 12 keys: increase/decrease for linear x,y,z and angular x,y,z
 # Mapping: key -> (type, axis_index, sign)

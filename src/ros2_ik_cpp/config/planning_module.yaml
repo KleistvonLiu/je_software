@@ -18,7 +18,7 @@ ik_node:
       ik_epsilon_relaxed_6d: 0.01
       ik_damping_3d: 1e-12
       ik_damping_6d: 1e-4
-      ik_step_size: 0.02
+      ik_step_size: 1.0
 
       # ========== 轨迹约束 ==========
       max_velocity: 1.0
