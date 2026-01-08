@@ -138,7 +138,7 @@ public:
         current_cmd_joint_.assign(7, 0.0);
 
         // ---------- ROS 订阅/发布 ----------
-        auto qos = rclcpp::QoS(rclcpp::KeepLast(10));
+        auto qos = rclcpp::QoS(rclcpp::KeepLast(1));
         qos.reliable();
 
         // 订阅关节目标
