@@ -18,14 +18,29 @@ pkg_check_modules(ZMQ REQUIRED IMPORTED_TARGET libzmq)
 find_package(nlohmann_json REQUIRED)
 find_package(Eigen3 REQUIRED)
 
+if(NOT DEFINED PYTHON_INSTALL_DIR)
+  set(PYTHON_INSTALL_DIR lib/python3.10/site-packages)
+endif()
+
+install(DIRECTORY je_software/
+  DESTINATION ${PYTHON_INSTALL_DIR}/je_software
+  PATTERN "__pycache__" EXCLUDE
+)
+
+install(PROGRAMS
+  scripts/camera_node
+  scripts/agilex_robot
+  scripts/tactile_sensor
+  scripts/manager_node
+  scripts/test_publisher
+  scripts/replay_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/EndEffectorCommand.msg"
   SKIP_GROUP_MEMBERSHIP_CHECK
 )
-
-if(NOT TARGET ament_cmake_python_copy_${PROJECT_NAME})
-  ament_python_install_package(${PROJECT_NAME})
-endif()
 ############# je_robot_node ############# 
 add_executable(je_robot_node je_software/je_robot_node.cpp)
 target_compile_features(je_robot_node PUBLIC cxx_std_17)
