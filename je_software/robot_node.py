@@ -5,7 +5,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from piper_sdk import C_PiperInterface
 from rclpy.parameter import Parameter
-from .ros2_qos import reliable_qos
+from .ros2_qos import reliable_qos, reliable_qos_shallow
 import math
 
 DEG2RAD = math.pi / 180.0
@@ -43,7 +43,7 @@ class AgilexRobotNode(Node):
         self.joint_positions_received = False
 
         self.sub_jointstate = self.create_subscription(
-            JointState, joint_topic_name, self.joint_states_callback, reliable_qos
+            JointState, joint_topic_name, self.joint_states_callback, reliable_qos_shallow
         )
         self.get_logger().info(f"[SUB] joint states: {joint_topic_name}")
 
@@ -51,7 +51,7 @@ class AgilexRobotNode(Node):
         self.latest_ee_pose = None
         self.ee_pose_received = False
         self.sub_end_pose = self.create_subscription(
-            PoseStamped, endpose_topic_name, self.end_pose_callback, reliable_qos
+            PoseStamped, endpose_topic_name, self.end_pose_callback, reliable_qos_shallow
         )
         self.get_logger().info(f"[SUB] EE pose: {endpose_topic_name}")
 
