@@ -70,6 +70,33 @@ pkg_check_modules(ZMQ REQUIRED IMPORTED_TARGET libzmq)
 
 find_package(nlohmann_json REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+# ----------------------------
+# Python install (Manual, to avoid target collision with rosidl)
+# ----------------------------
+# We manually install the python package because ament_python_install_package(${PROJECT_NAME})
+# conflicts with rosidl_generate_interfaces(${PROJECT_NAME} ...) which creates the same targets.
+
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" -c "import sysconfig; print(sysconfig.get_path('purelib', vars={'base': ''}).lstrip('/'))"
+  OUTPUT_VARIABLE PYTHON_INSTALL_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+install(DIRECTORY ${PROJECT_NAME}
+  DESTINATION ${PYTHON_INSTALL_DIR}
+)
+
+install(PROGRAMS
+  scripts/agilex_robot
+  scripts/camera_node
+  scripts/manager_node
+  scripts/replay_node
+  scripts/tactile_sensor
+  scripts/test_publisher
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 # ----------------------------
 # ROS interfaces
@@ -82,16 +109,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 # Humble recommended: get typesupport target and link it explicitly
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
-# ----------------------------
-# Python install (guard against duplicate target creation)
-# ----------------------------
-# Only install Python package if it is a real Python package dir (has __init__.py).
-# Also guard against being invoked twice (target name collision).
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}/__init__.py")
-  if(NOT TARGET ament_cmake_python_copy_${PROJECT_NAME})
-    ament_python_install_package(${PROJECT_NAME})
-  endif()
-endif()
 
 # ----------------------------
 # Targets
