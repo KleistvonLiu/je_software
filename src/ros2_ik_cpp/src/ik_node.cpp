@@ -199,6 +199,9 @@ public:
         "joint_states", 10, std::bind(&IkNode::onJointState, this, std::placeholders::_1));
     sub_target_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         "target_pose", 10, std::bind(&IkNode::onTargetPose, this, std::placeholders::_1));
+    // new: subscription to receive an explicit end-effector target pose that should take precedence
+    sub_target_end_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+        "target_end_pose", 10, std::bind(&IkNode::onTargetEndPose, this, std::placeholders::_1));
     // new: subscription to receive small pose deltas (e.g. from a teleop key node)
     ik_delta_scale_linear_ = this->declare_parameter<double>("planning.ik_delta_linear_scale", 0.01);
     ik_delta_scale_angular_ = this->declare_parameter<double>("planning.ik_delta_angular_scale", 0.02); // radians per unit
@@ -273,12 +276,28 @@ private:
     std::lock_guard<std::mutex> lk(mutex_);
     last_target_ = *msg;
     target_received_ = true;
+    // receiving a normal target_pose should allow ik_delta to resume
+    prefer_end_pose_target_ = false;
   }
 
-  // Apply incremental pose delta messages to the internally tracked target pose
-  void onIkDelta(const geometry_msgs::msg::Twist::SharedPtr msg) {
+  // Handler for explicit end-effector target pose which takes precedence over incremental deltas
+  void onTargetEndPose(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
     std::lock_guard<std::mutex> lk(mutex_);
+    last_target_ = *msg;
+    target_received_ = true;
+    prefer_end_pose_target_ = true; // ignore ik_delta messages until another target overrides
+    RCLCPP_DEBUG(this->get_logger(), "Received target_end_pose; will ignore ik_delta until overridden");
+  }
+
+   // Apply incremental pose delta messages to the internally tracked target pose
+   void onIkDelta(const geometry_msgs::msg::Twist::SharedPtr msg) {
+     std::lock_guard<std::mutex> lk(mutex_);
     if (!target_received_) return;
+    if (prefer_end_pose_target_) {
+      // When an explicit end pose is active, ignore incremental delta commands
+      RCLCPP_DEBUG(this->get_logger(), "Ignoring ik_delta because target_end_pose is active");
+      return;
+    }
 
     // linear deltas (assumed in world frame) scaled by parameter
     last_target_.pose.position.x += msg->linear.x * ik_delta_scale_linear_;
@@ -940,6 +959,7 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_js_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_target_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_target_end_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_delta_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_cmd_;
   rclcpp::TimerBase::SharedPtr timer_;
@@ -948,6 +968,8 @@ private:
   sensor_msgs::msg::JointState last_js_;
   geometry_msgs::msg::PoseStamped last_target_;
   bool target_received_{false};
+  // when true, ignore ik_delta messages and use last_target_ (from target_end_pose) as authoritative
+  bool prefer_end_pose_target_{false};
   double ik_delta_scale_linear_{0.01};
   double ik_delta_scale_angular_{0.02};
 

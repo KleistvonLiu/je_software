@@ -21,3 +21,11 @@ ros2 run orbbec_camera list_devices_node
 source install/share/ros2_ik_cpp/local_setup.bash
 
 colcon build --merge-install --symlink-install
+
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run ros2_ik_cpp ik_node --ros-args --params-file src/ros2_ik_cpp/config/planning_module.yaml
+ros2 launch je_software mujoco_sim.launch.py
+python test/test_ik.py
+
+ros2 topic pub /target_end_pose geometry_msgs/msg/PoseStamped "{header: {frame_id: 'base_link'}, pose: {position: {x: 0.145938, y: -0.321009, z: 0.636514}, orientation: {x: 0.737535, y: -0.664778, z: -0.0404043, w: 0.111800}}}" -1

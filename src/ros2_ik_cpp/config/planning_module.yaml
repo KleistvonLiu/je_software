@@ -71,7 +71,7 @@ ik_node:
       # log_file: "/home/agx/price/je_software/log/ik_log.log"
       # svd_q_log_file: "/home/agx/price/je_software/log/ik_svd.log"
       # diagnostics_log_file: "/home/agx/price/je_software/log/ik_diagnostics.log"
-      nullspace_log_file: "/home/agx/price/je_software/log/nullspace_log_file.log"
+      # nullspace_log_file: "/home/agx/price/je_software/log/nullspace_log_file.log"
       log_level: info
       log_svd_values: false
       log_fk_each_iter: false
