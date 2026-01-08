@@ -49,6 +49,7 @@ ik_node:
       max_delta_linear_scale: 0.05         # 增加线性分量尺度，允许更大位移步长
       max_delta_angular_scale: 0.05        # 增加角度分量尺度
       max_delta_min: 0.005
+      nullspace_penalty_scale: 1e-2
 
       # ========== 权重 / 尺度 ==========
       pos_weight: 1.0
@@ -67,9 +68,10 @@ ik_node:
 
       # ========== 日志 / 诊断 ==========
       log_to_file: false
-      log_file: "/home/agx/price/je_software/log/ik_log.log"
-      svd_q_log_file: "/home/agx/price/je_software/log/ik_svd.log"
-      diagnostics_log_file: "/home/agx/price/je_software/log/ik_diagnostics.log"
+      # log_file: "/home/agx/price/je_software/log/ik_log.log"
+      # svd_q_log_file: "/home/agx/price/je_software/log/ik_svd.log"
+      # diagnostics_log_file: "/home/agx/price/je_software/log/ik_diagnostics.log"
+      nullspace_log_file: "/home/agx/price/je_software/log/nullspace_log_file.log"
       log_level: info
       log_svd_values: false
       log_fk_each_iter: false

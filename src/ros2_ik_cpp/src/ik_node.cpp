@@ -67,6 +67,11 @@ public:
     numeric_fallback_duration_ = this->declare_parameter<int>("planning.numeric_fallback_duration", 10);
     debug_log_predictions_ = this->declare_parameter<bool>("planning.debug_log_predictions", true);
 
+    // targeted null-space penalty parameters: if joint4 is near zero and nullspace has joint5/joint7 opposite signs,
+    // add a small penalty along that null direction to avoid the degenerate combination.
+    joint4_penalty_threshold_ = this->declare_parameter<double>("planning.joint4_penalty_threshold", 0.05); // radians
+    nullspace_penalty_scale_ = this->declare_parameter<double>("planning.nullspace_penalty_scale", 1e-4);
+
     max_velocity_ = this->declare_parameter<double>("planning.max_velocity", 1.0);
     max_acceleration_ = this->declare_parameter<double>("planning.max_acceleration", 2.0);
     max_jerk_ = this->declare_parameter<double>("planning.max_jerk", 5.0);
@@ -119,6 +124,20 @@ public:
       diag_log_to_file_ = false;
     }
 
+    // Optional: separate file to record null-space penalty trigger events (to avoid DEBUG spam)
+    std::string nullspace_log_file = this->declare_parameter<std::string>("planning.nullspace_log_file", std::string());
+    if (log_to_file_param && !nullspace_log_file.empty()) {
+      null_ns_ofs_.open(nullspace_log_file, std::ios::out | std::ios::app);
+      if (!null_ns_ofs_) {
+        RCLCPP_WARN(this->get_logger(), "Failed to open null-space penalty log file: %s", nullspace_log_file.c_str());
+      } else {
+        null_ns_log_to_file_ = true;
+        RCLCPP_DEBUG(this->get_logger(), "Null-space penalty events will be written to: %s", nullspace_log_file.c_str());
+      }
+    } else {
+      null_ns_log_to_file_ = false;
+    }
+
     if (urdf_path_.empty()) {
       RCLCPP_ERROR(this->get_logger(), "urdf_path param required");
       throw std::runtime_error("urdf_path missing");
@@ -139,6 +158,38 @@ public:
     }
     data_ = Data(model_);
     tip_frame_id_ = model_.getFrameId(tip_frame_name_);
+
+    // cache q indices for joints we may want to target for null-space penalty (joint4, joint5, joint7)
+    // also include joint3 index for diagnostics / alternative penalty pair
+    j4_q_index_ = j5_q_index_ = j7_q_index_ = j3_q_index_ = -1;
+    try {
+      int j4_id = model_.getJointId("joint4");
+      if (j4_id >= 0 && j4_id < (int)model_.joints.size()) {
+        int idx = model_.joints[j4_id].idx_q();
+        if (idx >= 0) j4_q_index_ = idx;
+      }
+    } catch(...) { }
+    try {
+      int j3_id = model_.getJointId("joint3");
+      if (j3_id >= 0 && j3_id < (int)model_.joints.size()) {
+        int idx = model_.joints[j3_id].idx_q();
+        if (idx >= 0) j3_q_index_ = idx;
+      }
+    } catch(...) { }
+    try {
+      int j5_id = model_.getJointId("joint5");
+      if (j5_id >= 0 && j5_id < (int)model_.joints.size()) {
+        int idx = model_.joints[j5_id].idx_q();
+        if (idx >= 0) j5_q_index_ = idx;
+      }
+    } catch(...) { }
+    try {
+      int j7_id = model_.getJointId("joint7");
+      if (j7_id >= 0 && j7_id < (int)model_.joints.size()) {
+        int idx = model_.joints[j7_id].idx_q();
+        if (idx >= 0) j7_q_index_ = idx;
+      }
+    } catch(...) { }
 
     // Diagnostic: print model sizes and tip frame info
     RCLCPP_DEBUG(this->get_logger(), "Pinocchio model loaded: nq=%d nv=%d tip_frame='%s' id=%u",
@@ -523,6 +574,35 @@ private:
         MatrixXd A = Jw.transpose() * Jw; // nv x nv
         Eigen::VectorXd g = Jw.transpose() * errw; // gradient (nv x 1)
 
+        // targeted null-space penalty: only apply when joint4 is near zero and the null vector
+        // has joint5 and joint7 components with opposite sign (indicating the problematic combination)
+        double alpha_ns = 0.0;
+        if (sn > 0) {
+          Eigen::VectorXd ns_vec = svd.matrixV().col(sn-1); // smallest-singular-value null vector
+          // read components (guard indices)
+          double c3 = (j3_q_index_ >= 0) ? ns_vec[j3_q_index_] : 0.0;
+          double c5 = (j5_q_index_ >= 0) ? ns_vec[j5_q_index_] : 0.0;
+          double c7 = (j7_q_index_ >= 0) ? ns_vec[j7_q_index_] : 0.0;
+
+          bool pair_j5j7 = (j5_q_index_ >= 0 && j7_q_index_ >= 0) && (c5 * c7 < 0.0) && (std::abs(c5) > 1e-6) && (std::abs(c7) > 1e-6);
+          bool pair_j3j5 = (j3_q_index_ >= 0 && j5_q_index_ >= 0) && (c3 * c5 < 0.0) && (std::abs(c3) > 1e-6) && (std::abs(c5) > 1e-6);
+
+          if (j4_q_index_ >= 0 && std::abs(q_solution[j4_q_index_]) < joint4_penalty_threshold_ && (pair_j5j7 || pair_j3j5)) {
+            double smax = (s.size() > 0) ? s(0) : 1.0;
+            alpha_ns = nullspace_penalty_scale_ * (smax * smax);
+            const char *which = pair_j5j7 ? "j5/j7" : "j3/j5";
+            RCLCPP_DEBUG(this->get_logger(), "Applying null-space penalty alpha=%.3e triggered_by=%s q4=%.3e ns_comp(j3,j5,j7)=(%.3e, %.3e, %.3e)", alpha_ns, which, q_solution[j4_q_index_], c3, c5, c7);
+            if (null_ns_log_to_file_ && null_ns_ofs_) {
+              null_ns_ofs_ << "ITER " << it << " ALPHA " << alpha_ns << " TRIG " << which << " Q4 " << q_solution[j4_q_index_]
+                           << " NS " << c3 << " " << c5 << " " << c7 << std::endl;
+            }
+          }
+
+          if (alpha_ns > 0.0) {
+            A += alpha_ns * (ns_vec * ns_vec.transpose());
+          }
+        }
+
         // LM damping parameter stored in ik_svd_damping_. We'll treat it as absolute lambda here.
         double lambda = std::max(ik_svd_damping_min_, std::min(ik_svd_damping_, ik_svd_damping_max_));
         const int lm_max_attempts = 8;
@@ -905,6 +985,18 @@ private:
   // new parameters for balancing position vs orientation residuals
   double pos_weight_ = this->declare_parameter<double>("planning.pos_weight", 1.0);
   double ang_weight_ = this->declare_parameter<double>("planning.ang_weight", 1.0);
+
+  // targeted null-space penalty caching (q indices for joint4,5,7) and tuning
+  int j4_q_index_{-1};
+  int j5_q_index_{-1};
+  int j7_q_index_{-1};
+  int j3_q_index_{-1};
+  double joint4_penalty_threshold_{0.05};
+  double nullspace_penalty_scale_{1e-4};
+
+  // Optional: separate file to record null-space penalty trigger events (to avoid DEBUG spam)
+  std::ofstream null_ns_ofs_;
+  bool null_ns_log_to_file_{false};
 };
 
 int main(int argc, char **argv) {
