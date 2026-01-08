@@ -77,8 +77,8 @@ public:
     max_jerk_ = this->declare_parameter<double>("planning.max_jerk", 5.0);
     control_frequency_ = this->declare_parameter<double>("planning.control_frequency", 50.0);
 
-    joint_limits_min_ = this->declare_parameter<std::vector<double>>("planning.joint_limits_min", std::vector<double>{-3.14, -2.0, -2.5, -3.14, -3.14});
-    joint_limits_max_ = this->declare_parameter<std::vector<double>>("planning.joint_limits_max", std::vector<double>{3.14, 2.0, 2.5, 3.14, 3.14});
+    joint_limits_min_ = this->declare_parameter<std::vector<double>>("planning.joint_limits_min", std::vector<double>{-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83});
+    joint_limits_max_ = this->declare_parameter<std::vector<double>>("planning.joint_limits_max", std::vector<double>{2.96, 2.18, 2.96, 0, 2.96, 1.83, 1.83});
 
     // Optional: file to write IK diagnostics (controlled by planning.log_to_file and planning.log_file)
     bool log_to_file_param = this->declare_parameter<bool>("planning.log_to_file", false);
@@ -219,6 +219,19 @@ private:
     return ss.str();
   }
 
+  // Clamp an Eigen vector of joint positions to the configured joint_limits arrays
+  void clampToJointLimits(Eigen::VectorXd &q) {
+    if (joint_limits_min_.size() == (size_t)q.size() && joint_limits_max_.size() == (size_t)q.size()) {
+      for (int i = 0; i < q.size(); ++i) {
+        double lo = joint_limits_min_[i];
+        double hi = joint_limits_max_[i];
+        if (lo >= hi) continue; // skip malformed limits
+        if (q[i] < lo) q[i] = lo;
+        if (q[i] > hi) q[i] = hi;
+      }
+    }
+  }
+
   void onJointState(const sensor_msgs::msg::JointState::SharedPtr msg) {
     std::lock_guard<std::mutex> lk(mutex_);
     last_js_ = *msg;
@@ -343,6 +356,9 @@ private:
     VectorXd q_sol;
     bool ok = solveIK6D(target_se3, q_init, q_sol);
     if (ok) {
+      // clamp final solution to joint limits before publishing
+      clampToJointLimits(q_sol);
+
       sensor_msgs::msg::JointState out;
       out.header.stamp = this->get_clock()->now();
       out.name = js.name;
@@ -429,7 +445,7 @@ private:
                    err6(0), err6(1), err6(2), err6(3), err6(4), err6(5));
 
       if (cur_err < best_error) { best_error = cur_err; best_q = q_solution; }
-      if (cur_err < eps_) { last_solve_status_ = 1; return true; }
+      if (cur_err < eps_) { last_solve_status_ = 1; clampToJointLimits(q_solution); return true; }
 
       // Ensure Pinocchio has computed joint Jacobians for the current configuration
       pinocchio::computeJointJacobians(model_, data, q_solution);
@@ -704,6 +720,25 @@ private:
         Eigen::VectorXd delta_try = delta_full * alpha;
         // clamp per-joint magnitude
         for (int i = 0; i < delta_try.size(); ++i) delta_try[i] = std::max(-max_delta_, std::min(max_delta_, delta_try[i]));
+
+        // --- NEW: per-joint delta limiting to avoid exceeding joint limits
+        // If joint limits are configured and match q_solution size, scale/clip delta_try
+        if (joint_limits_min_.size() == (size_t)q_solution.size() && joint_limits_max_.size() == (size_t)q_solution.size()) {
+          // compute tentative q_try by applying delta_try in tangent space (approx via direct add)
+          Eigen::VectorXd q_try_est = q_solution + delta_try; // approximate candidate (works for revolute additive convention here)
+          // clamp estimated q to limits and recompute delta_try = q_try_est - q_solution
+          for (int i = 0; i < q_try_est.size(); ++i) {
+            double lo = joint_limits_min_[i];
+            double hi = joint_limits_max_[i];
+            if (lo >= hi) continue; // skip malformed limit
+            if (q_try_est[i] < lo) q_try_est[i] = lo;
+            if (q_try_est[i] > hi) q_try_est[i] = hi;
+          }
+          // replace delta_try with the (possibly reduced) step that does not cross limits
+          delta_try = q_try_est - q_solution;
+        }
+        // --- END NEW
+
         // integrate to get candidate configuration
         Eigen::VectorXd q_try(q_solution.size());
         pinocchio::integrate(model_, q_solution, delta_try, q_try);
@@ -859,6 +894,7 @@ private:
       q_solution = best_q;
       last_solve_status_ = 2; // consider coarse success
       if (log_to_file_ && log_ofs_) log_ofs_ << "IK_SUCCESS BEST_ERR " << best_error << std::endl;
+      clampToJointLimits(q_solution);
       return true;
     }
 
@@ -892,6 +928,7 @@ private:
         last_solve_status_ = 2;
         if (log_to_file_ && log_ofs_) log_ofs_ << "IK_SUCCESS RELAXED final_err=" << final_err << " relaxed_eps=" << relaxed_eps << std::endl;
         RCLCPP_DEBUG(this->get_logger(), "IK accepted by relaxed tolerance (err=%.6e <= relaxed=%.6e)", final_err, relaxed_eps);
+        clampToJointLimits(q_solution);
         return true;
       }
     }

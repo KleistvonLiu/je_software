@@ -54,11 +54,11 @@ class MujocoSimNode(Node):
         self.declare_parameter('state_topic', '/joint_states')
 
         # --- Logging: enable saving received joint_command messages to file
-        self.declare_parameter('log_joint_commands', True)
+        self.declare_parameter('log_joint_commands', False)
         self.declare_parameter('joint_command_log_file', '/home/agx/price/je_software/log/mujoco_joint_commands.log')
 
         # --- Joint states periodic logging (for observing drift when no commands)
-        self.declare_parameter('log_joint_states', True)
+        self.declare_parameter('log_joint_states', False)
         self.declare_parameter('joint_states_log_file', '/home/agx/price/je_software/log/mujoco_joint_states.log')
         self.declare_parameter('joint_states_log_frequency', 1.0)
 

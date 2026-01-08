@@ -12,7 +12,7 @@ ik_node:
       ik_solver_type: "official_3d"
 
       # ========== IK 求解参数 ==========
-      ik_max_iterations: 1000
+      ik_max_iterations: 200
       ik_epsilon: 0.0001
       ik_epsilon_relaxed_3d: 0.005
       ik_epsilon_relaxed_6d: 0.01
@@ -27,8 +27,8 @@ ik_node:
       control_frequency: 50.0
 
       # ========== 关节限位 ==========
-      joint_limits_min: [-3.14, -2.0, -2.5, -3.14, -3.14]
-      joint_limits_max: [3.14, 2.0, 2.5, 3.14, 3.14]
+      joint_limits_min: [-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83]
+      joint_limits_max: [2.96, 0.2, 2.96, 0.0, 2.96, 1.83, 1.83]
 
       # ========== IK / SVD / LM 扩展参数 ==========
       use_svd_damped: true                # 是否使用 SVD 阻尼伪逆
