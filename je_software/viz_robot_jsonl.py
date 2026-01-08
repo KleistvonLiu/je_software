@@ -263,6 +263,7 @@ def plot_joint_torque_compare(
     For each joint dimension i: plot both in the same subplot.
     If both are all-NaN, return None.
     """
+    factor = 1e-0
     if (
         (joint_torque.size == 0 or np.all(np.isnan(joint_torque)))
         and (joint_sensor_torque.size == 0 or np.all(np.isnan(joint_sensor_torque)))
@@ -289,7 +290,7 @@ def plot_joint_torque_compare(
 
         # JointSensorTorque
         if joint_sensor_torque.ndim == 2 and i < joint_sensor_torque.shape[1] and not np.all(np.isnan(joint_sensor_torque[:, i])):
-            axs[i].plot(t, joint_sensor_torque[:, i] * 1e-3, label=f"JointSensorTorque[{i}]")
+            axs[i].plot(t, joint_sensor_torque[:, i] * factor, label=f"JointSensorTorque[{i}]")
 
         axs[i].set_ylabel("Nm/N")
         axs[i].grid(True, alpha=0.3)
