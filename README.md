@@ -22,6 +22,11 @@ source install/share/ros2_ik_cpp/local_setup.bash
 
 colcon build --merge-install --symlink-install
 
+
+## ik
+install pinocchio
+https://stack-of-tasks.github.io/pinocchio/download.html
+
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run ros2_ik_cpp ik_node --ros-args --params-file src/ros2_ik_cpp/config/planning_module.yaml
