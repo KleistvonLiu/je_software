@@ -33,4 +33,4 @@ ros2 run ros2_ik_cpp ik_node --ros-args --params-file src/ros2_ik_cpp/config/pla
 ros2 launch je_software mujoco_sim.launch.py
 python test/test_ik.py
 
-ros2 topic pub /target_end_pose geometry_msgs/msg/PoseStamped "{header: {frame_id: 'base_link'}, pose: {position: {x: 0.145938, y: -0.321009, z: 0.636514}, orientation: {x: 0.737535, y: -0.664778, z: -0.0404043, w: 0.111800}}}" -1
+ros2 topic pub /target_end_pose geometry_msgs/msg/PoseStamped "{header: {frame_id: 'base_link'}, pose: {position: {x: -0.488399, y: -0.230812, z: 0.85731}, orientation: {x: 0.665206, y: 0.728268, z: -0.0997388, w: -0.131065}}}" -1

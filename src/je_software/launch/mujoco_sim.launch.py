@@ -5,7 +5,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    model_arg = DeclareLaunchArgument('model_xml', default_value='/home/agx/price/issac-sim/zongzhuang2/meshes/zongzhuang2.xml')
+    model_arg = DeclareLaunchArgument('model_xml', default_value='/home/agx/price/issac-sim/URDF_LAST/LH_JEARM/zongzhuang2.xml')
     use_viewer_arg = DeclareLaunchArgument('use_viewer', default_value='true')
     joint_names_arg = DeclareLaunchArgument('joint_names', default_value='["joint1","joint2","joint3","joint4","joint5","joint6","joint7"]')
 

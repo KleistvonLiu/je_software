@@ -3,7 +3,7 @@ ik_node:
     planning:
       # ========== 机械臂配置 ==========
       dof: 7
-      urdf_path: "/home/agx/price/issac-sim/zongzhuang2/urdf/zongzhuang2.urdf"
+      urdf_path: "/home/agx/price/issac-sim/URDF_LAST/LH_JEARM/zongzhuang2.urdf"
       tip_link: "Link7"
       gripper_offset_z: 0.35
 
@@ -27,8 +27,8 @@ ik_node:
       control_frequency: 50.0
 
       # ========== 关节限位 ==========
-      joint_limits_min: [-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83]
-      joint_limits_max: [2.96, 0.2, 2.96, 0.0, 2.96, 1.83, 1.83]
+      joint_limits_min: [-2.96, -0.2, -2.96, 0.0, -2.96, -1.83, -1.83]
+      joint_limits_max: [2.96, 2.18, 2.96, 3.13, 2.96, 1.83, 1.83]
 
       # ========== IK / SVD / LM 扩展参数 ==========
       use_svd_damped: true                # 是否使用 SVD 阻尼伪逆
@@ -67,8 +67,8 @@ ik_node:
       use_numeric_jacobian: true
 
       # ========== 日志 / 诊断 ==========
-      log_to_file: false
-      # log_file: "/home/agx/price/je_software/log/ik_log.log"
+      log_to_file: true
+      log_file: "/home/agx/price/je_software/log/ik_log.log"
       # svd_q_log_file: "/home/agx/price/je_software/log/ik_svd.log"
       # diagnostics_log_file: "/home/agx/price/je_software/log/ik_diagnostics.log"
       # nullspace_log_file: "/home/agx/price/je_software/log/nullspace_log_file.log"
