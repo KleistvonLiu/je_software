@@ -102,6 +102,7 @@ def _launch_setup(context, *args, **kwargs):
 
         # 运行模式/集
         'episode_idx': int(float(LaunchConfiguration('episode_idx').perform(context))),
+        # 'episode_idx':150,
         'mode': int(float(LaunchConfiguration('mode').perform(context))),
 
         # ===== 力矩低通滤波相关（同步 BaseManager 参数） =====
@@ -175,7 +176,7 @@ def generate_launch_description():
 
     joint_csv = DeclareLaunchArgument(
         'joint_state_topics_csv',
-        default_value='/joint_states_right, /joint_states_left',
+        default_value='/joint_states_right',
         description='CSV: /arm_a/joint_states,/arm_b/joint_states'
     )
     joint_list = DeclareLaunchArgument(

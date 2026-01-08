@@ -60,6 +60,9 @@ def generate_launch_description():
         'right_ir_height': '480',
         'right_ir_fps': '30',
         'right_ir_format': 'Y8',
+
+        'enable_color_auto_white_balance': 'false',
+        'color_white_balance':'5000'
     }
 
     cam1 = IncludeLaunchDescription(
