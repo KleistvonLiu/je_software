@@ -1,3 +1,18 @@
+# 
+# 默认（RelWithDebInfo，无 LTO，无 native）
+# colcon build --packages-select je_software
+
+# Release + 开 LTO
+# colcon build --packages-select je_software --cmake-args \
+#   -DCMAKE_BUILD_TYPE=Release \
+#   -DJE_ENABLE_LTO=ON
+
+# RelWithDebInfo + native（仅建议本机部署）
+# colcon build --packages-select je_software --cmake-args \
+#   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+#   -DJE_ENABLE_NATIVE=ON
+
+# 
 cmake_minimum_required(VERSION 3.8)
 project(je_software LANGUAGES C CXX)
 
