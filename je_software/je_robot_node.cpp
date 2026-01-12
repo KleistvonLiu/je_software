@@ -4,6 +4,7 @@
 #include <thread>
 #include <vector>
 #include <unordered_map>
+#include <array>
 #include <iostream>
 #include <atomic>
 #include <cerrno>
@@ -20,6 +21,8 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "je_software/msg/end_effector_command.hpp"
+#include "common/msg/oculus_controllers.hpp"
+#include "common/msg/oculus_init_joint_state.hpp"
 
 #include <zmq.hpp>
 #include "nlohmann/json.hpp"
@@ -44,6 +47,8 @@ public:
         this->declare_parameter<std::string>("joint_sub_topic", "/joint_cmd");
         this->declare_parameter<std::string>("end_pose_topic", "/end_pose");
         this->declare_parameter<std::string>("joint_pub_topic", "/joint_states");
+        this->declare_parameter<std::string>("oculus_controllers_topic", "/oculus_controllers");
+        this->declare_parameter<std::string>("oculus_init_joint_state_topic", "/oculus_init_joint_state");
         this->declare_parameter<double>("fps", 50.0);
 
         // ZMQ 相关参数
@@ -71,6 +76,10 @@ public:
             this->get_parameter("end_pose_topic").as_string();
         std::string joint_pub_topic =
             this->get_parameter("joint_pub_topic").as_string();
+        std::string oculus_controllers_topic =
+            this->get_parameter("oculus_controllers_topic").as_string();
+        std::string oculus_init_joint_state_topic =
+            this->get_parameter("oculus_init_joint_state_topic").as_string();
         std::string gripper_sub_topic =
             this->get_parameter("gripper_sub_topic").as_string();
         double fps = this->get_parameter("fps").as_double();
@@ -161,6 +170,20 @@ public:
             qos,
             std::bind(&JeRobotNode::end_pose_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] end pose: %s", end_pose_topic.c_str());
+
+        // 订阅 Oculus 控制器位姿（左右手）
+        sub_oculus_controllers_ = this->create_subscription<common::msg::OculusControllers>(
+            oculus_controllers_topic,
+            qos,
+            std::bind(&JeRobotNode::oculus_controllers_callback, this, std::placeholders::_1));
+        RCLCPP_INFO(this->get_logger(), "[SUB] oculus controllers: %s", oculus_controllers_topic.c_str());
+
+        // 订阅 Oculus 初始化关节指令（左右手）
+        sub_oculus_init_joint_ = this->create_subscription<common::msg::OculusInitJointState>(
+            oculus_init_joint_state_topic,
+            qos,
+            std::bind(&JeRobotNode::oculus_init_joint_state_callback, this, std::placeholders::_1));
+        RCLCPP_INFO(this->get_logger(), "[SUB] oculus init joint: %s", oculus_init_joint_state_topic.c_str());
 
         // 发布关节状态
         pub_joint_state_ = this->create_publisher<sensor_msgs::msg::JointState>(
@@ -300,7 +323,12 @@ private:
         }
     }
 
-    void set_robot_joint(const std::vector<double> &joint, double delta_time = 0.0)
+    const char *robot_key(int robot_index) const
+    {
+        return (robot_index == 1) ? "Robot1" : "Robot0";
+    }
+
+    void set_robot_joint(const std::vector<double> &joint, int robot_index, double delta_time = 0.0)
     {
         if (std::abs(delta_time - 0) < 1e-5)
         {
@@ -311,8 +339,9 @@ private:
             global_time_ += delta_time;
         }
         nlohmann::json data;
-        data["Robot0"]["time"] = global_time_;
-        data["Robot0"]["joint"] = joint;
+        const char *key = robot_key(robot_index);
+        data[key]["time"] = global_time_;
+        data[key]["joint"] = joint;
         if (gripper_cmd_received_)
         {
             nlohmann::json ee;
@@ -325,7 +354,7 @@ private:
             {
                 ee["preset"] = gripper_cmd_preset_;
             }
-            data["Robot0"]["end_effector"] = ee;
+            data[key]["end_effector"] = ee;
         }
 
         std::ostringstream oss;
@@ -340,13 +369,13 @@ private:
         oss << "]";
         RCLCPP_INFO_THROTTLE(
             this->get_logger(), *this->get_clock(), 500,
-            "Sending joint cmd: %s", oss.str().c_str());
+            "Sending joint cmd (%s): %s", key, oss.str().c_str());
 
         std::string payload = "Joint " + data.dump();
         publisher_.send(zmq::buffer(payload));
     }
 
-    void set_robot_cartesian(const std::vector<double> &cartesian, double delta_time = 0.0)
+    void set_robot_cartesian(const std::vector<double> &cartesian, int robot_index, double delta_time = 0.0)
     {
         if (std::abs(delta_time - 0) < 1e-5)
         {
@@ -358,8 +387,9 @@ private:
         }
         global_time_ += dt_;
         nlohmann::json data;
-        data["Robot0"]["time"] = global_time_;
-        data["Robot0"]["cartesian"] = cartesian;
+        const char *key = robot_key(robot_index);
+        data[key]["time"] = global_time_;
+        data[key]["cartesian"] = cartesian;
         if (gripper_cmd_received_)
         {
             nlohmann::json ee;
@@ -372,7 +402,7 @@ private:
             {
                 ee["preset"] = gripper_cmd_preset_;
             }
-            data["Robot0"]["end_effector"] = ee;
+            data[key]["end_effector"] = ee;
         }
         publisher_.send(zmq::buffer("Cartesian " + data.dump()));
     }
@@ -494,6 +524,68 @@ private:
 
     // ==================== ROS 回调 ====================
 
+    bool fill_joint_target(const sensor_msgs::msg::JointState &msg,
+                           std::vector<double> &target,
+                           std::string &missing_csv)
+    {
+        if (msg.name.empty() || msg.position.empty())
+        {
+            return false;
+        }
+
+        std::unordered_map<std::string, std::size_t> name_to_idx;
+        name_to_idx.reserve(msg.name.size());
+        for (std::size_t i = 0; i < msg.name.size(); ++i)
+        {
+            name_to_idx[msg.name[i]] = i;
+        }
+
+        std::vector<std::string> missing;
+        for (std::size_t i = 0; i < expected_names_.size(); ++i)
+        {
+            const auto &joint_name = expected_names_[i];
+            auto it = name_to_idx.find(joint_name);
+            if (it != name_to_idx.end() && it->second < msg.position.size())
+            {
+                target[i] = msg.position[it->second];
+            }
+            else
+            {
+                missing.push_back(joint_name);
+            }
+        }
+
+        if (!missing.empty())
+        {
+            for (std::size_t i = 0; i < missing.size(); ++i)
+            {
+                if (i > 0)
+                    missing_csv += ",";
+                missing_csv += missing[i];
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    std::vector<double> pose_to_cartesian(const geometry_msgs::msg::Pose &pose)
+    {
+        const double x = pose.position.x;
+        const double y = pose.position.y;
+        const double z = pose.position.z;
+
+        const double qx = pose.orientation.x;
+        const double qy = pose.orientation.y;
+        const double qz = pose.orientation.z;
+        const double qw = pose.orientation.w;
+
+        double roll = 0.0, pitch = 0.0, yaw = 0.0;
+        quat_to_rpy_eigen(qx, qy, qz, qw, roll, pitch, yaw);
+
+        return {x, y, z, roll, pitch, yaw};
+    }
+
     void joint_cmd_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
     {
         RCLCPP_INFO(this->get_logger(), "joint cmd callback!");
@@ -508,40 +600,12 @@ private:
             "Received JointState cmd: names=%zu positions=%zu",
             msg->name.size(), msg->position.size());
 
-        std::unordered_map<std::string, std::size_t> name_to_idx;
-        name_to_idx.reserve(msg->name.size());
-        for (std::size_t i = 0; i < msg->name.size(); ++i)
-        {
-            name_to_idx[msg->name[i]] = i;
-        }
-
         std::vector<double> target(7, 0.0);
-        std::vector<std::string> missing;
-        for (std::size_t i = 0; i < expected_names_.size(); ++i)
+        std::string missing_csv;
+        if (!fill_joint_target(*msg, target, missing_csv))
         {
-            const auto &joint_name = expected_names_[i];
-            auto it = name_to_idx.find(joint_name);
-            if (it != name_to_idx.end() && it->second < msg->position.size())
-            {
-                target[i] = msg->position[it->second];
-            }
-            else
-            {
-                missing.push_back(joint_name);
-            }
-        }
-
-        if (!missing.empty())
-        {
-            std::string s;
-            for (std::size_t i = 0; i < missing.size(); ++i)
-            {
-                if (i > 0)
-                    s += ",";
-                s += missing[i];
-            }
             RCLCPP_WARN(this->get_logger(),
-                        "Missing joints in JointState cmd: [%s]", s.c_str());
+                        "Missing joints in JointState cmd: [%s]", missing_csv.c_str());
             return;
         }
 
@@ -556,11 +620,11 @@ private:
         if (is_init)
         {
             RCLCPP_INFO(this->get_logger(), "JeRobotNode received one initial joint posi.");
-            set_robot_joint(current_cmd_joint_, dt_init_);
+            set_robot_joint(current_cmd_joint_, 0, dt_init_);
         }
         else
         {
-            set_robot_joint(current_cmd_joint_);
+            set_robot_joint(current_cmd_joint_, 0);
         }
     }
 
@@ -604,30 +668,159 @@ private:
         if (!msg)
             return;
         latest_ee_pose_ = msg;
-
-        const double x = msg->pose.position.x;
-        const double y = msg->pose.position.y;
-        const double z = msg->pose.position.z;
-
-        const double qx = msg->pose.orientation.x;
-        const double qy = msg->pose.orientation.y;
-        const double qz = msg->pose.orientation.z;
-        const double qw = msg->pose.orientation.w;
-
-        double roll = 0.0, pitch = 0.0, yaw = 0.0;
-        // quat_to_rpy(qx, qy, qz, qw, roll, pitch, yaw);
-        quat_to_rpy_eigen(qx, qy, qz, qw, roll, pitch, yaw);
-
-        std::vector<double> cartesian = {x, y, z, roll, pitch, yaw};
-        set_robot_cartesian(cartesian);
+        std::vector<double> cartesian = pose_to_cartesian(msg->pose);
+        set_robot_cartesian(cartesian, 0);
 
         static int count = 0;
         if ((++count % 50) == 0)
         {
+            const double x = msg->pose.position.x;
+            const double y = msg->pose.position.y;
+            const double z = msg->pose.position.z;
+            const double qx = msg->pose.orientation.x;
+            const double qy = msg->pose.orientation.y;
+            const double qz = msg->pose.orientation.z;
+            const double qw = msg->pose.orientation.w;
+            double roll = 0.0, pitch = 0.0, yaw = 0.0;
+            quat_to_rpy_eigen(qx, qy, qz, qw, roll, pitch, yaw);
             RCLCPP_INFO(this->get_logger(),
                         "EE pose @ %s: pos(%.3f, %.3f, %.3f) rpy(rad)(%.3f, %.3f, %.3f)",
                         msg->header.frame_id.c_str(), x, y, z, roll, pitch, yaw);
         }
+    }
+
+    void oculus_controllers_callback(const common::msg::OculusControllers::SharedPtr msg)
+    {
+        if (!msg)
+            return;
+
+        const bool left_ok = msg->left_valid;
+        const bool right_ok = msg->right_valid;
+        if (!left_ok && !right_ok)
+        {
+            return;
+        }
+
+        global_time_ += dt_;
+        nlohmann::json data;
+
+        if (left_ok)
+        {
+            data["Robot0"]["time"] = global_time_;
+            data["Robot0"]["cartesian"] = pose_to_cartesian(msg->left_pose);
+        }
+
+        if (right_ok)
+        {
+            data["Robot1"]["time"] = global_time_;
+            data["Robot1"]["cartesian"] = pose_to_cartesian(msg->right_pose);
+        }
+
+        if (gripper_cmd_received_)
+        {
+            nlohmann::json ee;
+            ee["mode"] = gripper_cmd_mode_;
+            if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_POSITION)
+            {
+                ee["position"] = gripper_cmd_position_;
+            }
+            else if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_PRESET)
+            {
+                ee["preset"] = gripper_cmd_preset_;
+            }
+            if (left_ok)
+            {
+                data["Robot0"]["end_effector"] = ee;
+            }
+            if (right_ok)
+            {
+                data["Robot1"]["end_effector"] = ee;
+            }
+        }
+
+        publisher_.send(zmq::buffer("Cartesian " + data.dump()));
+    }
+
+    void oculus_init_joint_state_callback(const common::msg::OculusInitJointState::SharedPtr msg)
+    {
+        if (!msg)
+            return;
+
+        const bool is_init = msg->init;
+        const double init_dt = is_init ? dt_init_ : 0.0;
+
+        std::vector<double> target_left(7, 0.0);
+        std::vector<double> target_right(7, 0.0);
+        std::string missing_left;
+        std::string missing_right;
+
+        const bool left_ok =
+            msg->left_valid && fill_joint_target(msg->left, target_left, missing_left);
+        if (msg->left_valid && !left_ok)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "Missing joints in Oculus left cmd: [%s]", missing_left.c_str());
+        }
+
+        const bool right_ok =
+            msg->right_valid && fill_joint_target(msg->right, target_right, missing_right);
+        if (msg->right_valid && !right_ok)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "Missing joints in Oculus right cmd: [%s]", missing_right.c_str());
+        }
+
+        if (!left_ok && !right_ok)
+        {
+            return;
+        }
+
+        const double delta_time = init_dt;
+        if (std::abs(delta_time - 0) < 1e-5)
+        {
+            global_time_ += dt_;
+        }
+        else
+        {
+            global_time_ += delta_time;
+        }
+        nlohmann::json data;
+
+        if (left_ok)
+        {
+            data["Robot0"]["time"] = global_time_;
+            data["Robot0"]["joint"] = target_left;
+        }
+
+        if (right_ok)
+        {
+            data["Robot1"]["time"] = global_time_;
+            data["Robot1"]["joint"] = target_right;
+        }
+
+        if (gripper_cmd_received_)
+        {
+            nlohmann::json ee;
+            ee["mode"] = gripper_cmd_mode_;
+            if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_POSITION)
+            {
+                ee["position"] = gripper_cmd_position_;
+            }
+            else if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_PRESET)
+            {
+                ee["preset"] = gripper_cmd_preset_;
+            }
+            if (left_ok)
+            {
+                data["Robot0"]["end_effector"] = ee;
+            }
+            if (right_ok)
+            {
+                data["Robot1"]["end_effector"] = ee;
+            }
+        }
+
+        publisher_.send(zmq::buffer("Joint " + data.dump()));
     }
 
     void publish_state_once()
@@ -690,6 +883,8 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_cmd_;
     rclcpp::Subscription<je_software::msg::EndEffectorCommand>::SharedPtr sub_gripper_cmd_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_end_pose_;
+    rclcpp::Subscription<common::msg::OculusControllers>::SharedPtr sub_oculus_controllers_;
+    rclcpp::Subscription<common::msg::OculusInitJointState>::SharedPtr sub_oculus_init_joint_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_joint_state_;
 
     std::vector<std::string> expected_names_;

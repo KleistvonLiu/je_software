@@ -77,6 +77,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(common REQUIRED)
 
 find_package(rosidl_default_generators REQUIRED)
 
@@ -136,6 +137,7 @@ ament_target_dependencies(je_robot_node
   rclcpp
   sensor_msgs
   geometry_msgs
+  common
 )
 # IMPORTANT: use plain signature consistently (ament_target_dependencies uses plain internally)
 target_link_libraries(je_robot_node
