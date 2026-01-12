@@ -1,4 +1,4 @@
-ik_node:
+ik_solver_node:
   ros__parameters:
     planning:
       # ========== 机械臂配置 ==========

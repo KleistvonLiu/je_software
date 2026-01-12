@@ -29,8 +29,20 @@ https://stack-of-tasks.github.io/pinocchio/download.html
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 run ros2_ik_cpp ik_node --ros-args --params-file src/ros2_ik_cpp/config/planning_module.yaml
+
+启动mujoco
+pip install mujoco
 ros2 launch je_software mujoco_sim.launch.py
+
+启动ik节点
+ros2 run ros2_ik_cpp ik_solver_node --ros-args --params-file src/ros2_ik_cpp/config/planning_module.yaml
+
+
+发送一个末端位值
+ros2 topic pub /target_end_pose geometry_msgs/msg/PoseStamped "{header: {frame_id: 'base_link'}, pose: {position: {x: -0.488399, y: -0.230812, z: 0.85731}, orientation: {x: 0.665206, y: 0.728268, z: -0.0997388, w: -0.131065}}}" -1
+
+delta实例
 python test/test_ik.py
 
-ros2 topic pub /target_end_pose geometry_msgs/msg/PoseStamped "{header: {frame_id: 'base_link'}, pose: {position: {x: -0.488399, y: -0.230812, z: 0.85731}, orientation: {x: 0.665206, y: 0.728268, z: -0.0997388, w: -0.131065}}}" -1
+也需要用
+sudo patchelf --replace-needed libpinocchio_default.so.3.4.0 libpinocchio_default.so.3.8.0 ./install/lib/ros2_ik_cpp/ik_solver_node
