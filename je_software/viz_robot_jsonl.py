@@ -384,7 +384,7 @@ def plot_states(t: np.ndarray, move_state: np.ndarray, power_state: np.ndarray, 
 def main():
     parser = argparse.ArgumentParser(description="Visualize robot jsonl logs.")
     parser.add_argument("jsonl", help="Path to .jsonl log file")
-    parser.add_argument("--robot-key", default="Robot0", help="Robot key in JSON, e.g., Robot0")
+    parser.add_argument("--robot-key", default="Robot1", help="Robot key in JSON, e.g., Robot0")
     parser.add_argument("--stride", type=int, default=1, help="Downsample by keeping 1 out of N lines")
     parser.add_argument("--deg", action="store_true", help="Plot roll/pitch/yaw in degrees")
     parser.add_argument("--no-xyz", action="store_true", help="Disable 3D XYZ trajectory plot")

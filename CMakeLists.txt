@@ -119,6 +119,7 @@ install(PROGRAMS
 # ----------------------------
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/EndEffectorCommand.msg"
+  "msg/EndEffectorCommandLR.msg"
   SKIP_GROUP_MEMBERSHIP_CHECK
 )
 
@@ -166,6 +167,7 @@ add_executable(end_effector_cli
 ament_target_dependencies(end_effector_cli
   rclcpp
   geometry_msgs
+  common
 )
 target_link_libraries(end_effector_cli
   ${cpp_typesupport_target}

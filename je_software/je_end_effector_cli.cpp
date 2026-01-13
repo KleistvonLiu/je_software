@@ -7,7 +7,7 @@
 21: 三指 88%
 */
 #include <rclcpp/rclcpp.hpp>
-#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/pose.hpp>
 
 #include <poll.h>
 #include <unistd.h>
@@ -21,8 +21,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
+#include <cctype>
 
 #include "je_software/msg/end_effector_command.hpp"
+#include "je_software/msg/end_effector_command_lr.hpp"
+#include "common/msg/oculus_controllers.hpp"
 
 using namespace std::chrono_literals;
 
@@ -32,7 +36,9 @@ public:
     EndEffectorCli()
         : Node("end_effector_cli")
     {
-        this->declare_parameter<std::string>("end_effector_topic", "/end_effector_cmd");
+        this->declare_parameter<std::string>("end_effector_topic", "/end_effector_cmd_lr");
+        this->declare_parameter<std::string>("hand", "left");
+        this->declare_parameter<std::string>("oculus_topic", "/oculus_controllers");
         this->declare_parameter<std::string>("pose_topic", "/end_pose");
         this->declare_parameter<std::string>("frame_id", "base_link");
         this->declare_parameter<bool>("send_init_pose_on_start", false);
@@ -42,22 +48,29 @@ public:
             "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]");
 
         end_effector_topic_ = this->get_parameter("end_effector_topic").as_string();
-        pose_topic_ = this->get_parameter("pose_topic").as_string();
+        default_hand_ = parse_hand_param(this->get_parameter("hand").as_string());
+        const std::string oculus_topic = this->get_parameter("oculus_topic").as_string();
+        const std::string pose_topic = this->get_parameter("pose_topic").as_string();
+        oculus_topic_ = oculus_topic;
+        if (oculus_topic == "/oculus_controllers" && pose_topic != "/end_pose")
+        {
+            oculus_topic_ = pose_topic;
+        }
         frame_id_ = this->get_parameter("frame_id").as_string();
         attach_init_pose_ = this->get_parameter("attach_init_pose_to_cmd").as_bool();
         init_pose_ = parse_init_pose_param(this->get_parameter("init_pose"));
 
         auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
-        pub_cmd_ = this->create_publisher<je_software::msg::EndEffectorCommand>(end_effector_topic_, qos);
-        pub_pose_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(pose_topic_, qos);
+        pub_cmd_ = this->create_publisher<je_software::msg::EndEffectorCommandLR>(end_effector_topic_, qos);
+        pub_oculus_ = this->create_publisher<common::msg::OculusControllers>(oculus_topic_, qos);
 
         RCLCPP_INFO(this->get_logger(), "[PUB] end effector cmd: %s", end_effector_topic_.c_str());
-        RCLCPP_INFO(this->get_logger(), "[PUB] init pose (optional): %s (frame_id=%s)",
-                    pose_topic_.c_str(), frame_id_.c_str());
+        RCLCPP_INFO(this->get_logger(), "[PUB] oculus controllers (init pose): %s (frame_id=%s)",
+                    oculus_topic_.c_str(), frame_id_.c_str());
 
         if (this->get_parameter("send_init_pose_on_start").as_bool())
         {
-            publish_init_pose();
+            publish_init_pose(default_hand_);
         }
 
         running_.store(true);
@@ -76,6 +89,45 @@ public:
     }
 
 private:
+    enum class Hand
+    {
+        Left,
+        Right,
+        Both
+    };
+
+    static std::string to_lower(std::string s)
+    {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    }
+
+    static bool is_hand_token(const std::string &token)
+    {
+        const std::string t = to_lower(token);
+        return (t == "l" || t == "left" || t == "r" || t == "right" || t == "b" || t == "both");
+    }
+
+    static Hand parse_hand_token(const std::string &token)
+    {
+        const std::string t = to_lower(token);
+        if (t == "r" || t == "right")
+        {
+            return Hand::Right;
+        }
+        if (t == "b" || t == "both")
+        {
+            return Hand::Both;
+        }
+        return Hand::Left;
+    }
+
+    static Hand parse_hand_param(const std::string &hand)
+    {
+        return parse_hand_token(hand);
+    }
+
     static std::array<double, 6> parse_init_pose(const std::vector<double> &vals)
     {
         std::array<double, 6> pose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
@@ -149,36 +201,48 @@ private:
     {
         std::cout << "\n=== End Effector CLI ===\n"
                   << "Commands:\n"
-                  << "  p <value>            send MODE_POSITION with position\n"
-                  << "  m <preset>           send MODE_PRESET with preset int\n"
+                  << "  [l|r|b] p <value>    send MODE_POSITION with position\n"
+                  << "  [l|r|b] m <preset>   send MODE_PRESET with preset int\n"
                   << "  pose <x y z r p y>   set init pose (rpy in radians)\n"
-                  << "  send_pose            publish init pose once\n"
+                  << "  [l|r|b] send_pose   publish init pose once\n"
                   << "  pose_on / pose_off   toggle attach init pose to each cmd\n"
                   << "  help\n"
                   << "  quit / exit\n"
                   << "Examples:\n"
                   << "  p 0.5\n"
-                  << "  m 2\n"
+                  << "  r p 0.5\n"
+                  << "  b m 2\n"
                   << "  pose 0 0 0 0 0 0\n"
                   << "  pose_on\n"
                   << "========================\n\n";
     }
 
-    void publish_init_pose()
+    static geometry_msgs::msg::Pose make_pose_from_rpy(const std::array<double, 6> &pose_rpy)
     {
-        geometry_msgs::msg::PoseStamped msg;
+        double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
+        rpy_to_quat(pose_rpy[3], pose_rpy[4], pose_rpy[5], qx, qy, qz, qw);
+
+        geometry_msgs::msg::Pose pose;
+        pose.position.x = pose_rpy[0];
+        pose.position.y = pose_rpy[1];
+        pose.position.z = pose_rpy[2];
+        pose.orientation.x = qx;
+        pose.orientation.y = qy;
+        pose.orientation.z = qz;
+        pose.orientation.w = qw;
+        return pose;
+    }
+
+    void publish_init_pose(Hand hand)
+    {
+        common::msg::OculusControllers msg;
         msg.header.stamp = this->now();
         msg.header.frame_id = frame_id_;
-        msg.pose.position.x = init_pose_[0];
-        msg.pose.position.y = init_pose_[1];
-        msg.pose.position.z = init_pose_[2];
-        double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
-        rpy_to_quat(init_pose_[3], init_pose_[4], init_pose_[5], qx, qy, qz, qw);
-        msg.pose.orientation.x = qx;
-        msg.pose.orientation.y = qy;
-        msg.pose.orientation.z = qz;
-        msg.pose.orientation.w = qw;
-        pub_pose_->publish(msg);
+        msg.left_valid = (hand == Hand::Left || hand == Hand::Both);
+        msg.right_valid = (hand == Hand::Right || hand == Hand::Both);
+        msg.left_pose = make_pose_from_rpy(init_pose_);
+        msg.right_pose = make_pose_from_rpy(init_pose_);
+        pub_oculus_->publish(msg);
 
         RCLCPP_INFO(this->get_logger(),
                     "Published init pose: pos(%.3f, %.3f, %.3f) rpy(%.3f, %.3f, %.3f)",
@@ -186,26 +250,33 @@ private:
                     init_pose_[3], init_pose_[4], init_pose_[5]);
     }
 
-    void publish_end_effector_cmd(int8_t mode, double position, int32_t preset)
+    void publish_end_effector_cmd(Hand hand, int8_t mode, double position, int32_t preset)
     {
         if (attach_init_pose_)
         {
-            publish_init_pose();
+            publish_init_pose(hand);
         }
 
-        je_software::msg::EndEffectorCommand msg;
-        msg.mode = mode;
-        msg.position = position;
-        msg.preset = preset;
+        je_software::msg::EndEffectorCommandLR msg;
+        msg.left_valid = (hand == Hand::Left || hand == Hand::Both);
+        msg.right_valid = (hand == Hand::Right || hand == Hand::Both);
+        msg.left.mode = mode;
+        msg.left.position = position;
+        msg.left.preset = preset;
+        msg.right.mode = mode;
+        msg.right.position = position;
+        msg.right.preset = preset;
         pub_cmd_->publish(msg);
 
         if (mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
         {
-            RCLCPP_INFO(this->get_logger(), "Published end effector cmd: mode=POSITION position=%.3f", position);
+            RCLCPP_INFO(this->get_logger(),
+                        "Published end effector cmd: mode=POSITION position=%.3f", position);
         }
         else
         {
-            RCLCPP_INFO(this->get_logger(), "Published end effector cmd: mode=PRESET preset=%d", preset);
+            RCLCPP_INFO(this->get_logger(),
+                        "Published end effector cmd: mode=PRESET preset=%d", preset);
         }
     }
 
@@ -238,6 +309,16 @@ private:
             std::istringstream iss(line);
             std::string cmd;
             iss >> cmd;
+            Hand hand = default_hand_;
+            if (is_hand_token(cmd))
+            {
+                hand = parse_hand_token(cmd);
+                if (!(iss >> cmd))
+                {
+                    RCLCPP_WARN(this->get_logger(), "Missing command after hand prefix.");
+                    continue;
+                }
+            }
 
             if (cmd == "help" || cmd == "h" || cmd == "?")
             {
@@ -264,7 +345,7 @@ private:
             }
             if (cmd == "send_pose")
             {
-                publish_init_pose();
+                publish_init_pose(hand);
                 continue;
             }
             if (cmd == "pose")
@@ -287,7 +368,8 @@ private:
                     RCLCPP_WARN(this->get_logger(), "Usage: p <value>");
                     continue;
                 }
-                publish_end_effector_cmd(je_software::msg::EndEffectorCommand::MODE_POSITION,
+                publish_end_effector_cmd(hand,
+                                         je_software::msg::EndEffectorCommand::MODE_POSITION,
                                          value, 0);
                 continue;
             }
@@ -299,7 +381,8 @@ private:
                     RCLCPP_WARN(this->get_logger(), "Usage: m <preset>");
                     continue;
                 }
-                publish_end_effector_cmd(je_software::msg::EndEffectorCommand::MODE_PRESET,
+                publish_end_effector_cmd(hand,
+                                         je_software::msg::EndEffectorCommand::MODE_PRESET,
                                          0.0, preset);
                 continue;
             }
@@ -310,13 +393,14 @@ private:
 
 private:
     std::string end_effector_topic_;
-    std::string pose_topic_;
+    Hand default_hand_{Hand::Left};
+    std::string oculus_topic_;
     std::string frame_id_;
     std::array<double, 6> init_pose_{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     bool attach_init_pose_{false};
 
-    rclcpp::Publisher<je_software::msg::EndEffectorCommand>::SharedPtr pub_cmd_;
-    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pub_pose_;
+    rclcpp::Publisher<je_software::msg::EndEffectorCommandLR>::SharedPtr pub_cmd_;
+    rclcpp::Publisher<common::msg::OculusControllers>::SharedPtr pub_oculus_;
 
     std::atomic_bool running_{false};
     std::thread input_thread_;

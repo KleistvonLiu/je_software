@@ -1,0 +1,4 @@
+je_software/EndEffectorCommand left
+je_software/EndEffectorCommand right
+bool left_valid
+bool right_valid

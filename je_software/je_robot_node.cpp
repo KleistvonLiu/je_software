@@ -21,6 +21,7 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "je_software/msg/end_effector_command.hpp"
+#include "je_software/msg/end_effector_command_lr.hpp"
 #include "common/msg/oculus_controllers.hpp"
 #include "common/msg/oculus_init_joint_state.hpp"
 
@@ -61,7 +62,7 @@ public:
         this->declare_parameter<double>("dt_init", 5.0);
 
         // Gripper ROS2 command topic
-        this->declare_parameter<std::string>("gripper_sub_topic", "/end_effector_cmd");
+        this->declare_parameter<std::string>("gripper_sub_topic", "/end_effector_cmd_lr");
 
         // ===== NEW: state logging parameters =====
         this->declare_parameter<bool>("state_log_enable", true);
@@ -158,7 +159,7 @@ public:
         RCLCPP_INFO(this->get_logger(), "[SUB] joint cmd: %s", joint_sub_topic.c_str());
 
         // 订阅夹爪指令（模式 + 指令值）
-        sub_gripper_cmd_ = this->create_subscription<je_software::msg::EndEffectorCommand>(
+        sub_gripper_cmd_ = this->create_subscription<je_software::msg::EndEffectorCommandLR>(
             gripper_sub_topic_,
             qos,
             std::bind(&JeRobotNode::gripper_cmd_callback, this, std::placeholders::_1));
@@ -328,6 +329,24 @@ private:
         return (robot_index == 1) ? "Robot1" : "Robot0";
     }
 
+    struct GripperCommand
+    {
+        int mode{je_software::msg::EndEffectorCommand::MODE_POSITION};
+        double position{0.0};
+        int preset{0};
+        bool received{false};
+    };
+
+    const GripperCommand &get_gripper_command(int robot_index) const
+    {
+        return (robot_index == 1) ? gripper_cmd_right_ : gripper_cmd_left_;
+    }
+
+    GripperCommand &get_gripper_command_mutable(int robot_index)
+    {
+        return (robot_index == 1) ? gripper_cmd_right_ : gripper_cmd_left_;
+    }
+
     void set_robot_joint(const std::vector<double> &joint, int robot_index, double delta_time = 0.0)
     {
         if (std::abs(delta_time - 0) < 1e-5)
@@ -342,17 +361,18 @@ private:
         const char *key = robot_key(robot_index);
         data[key]["time"] = global_time_;
         data[key]["joint"] = joint;
-        if (gripper_cmd_received_)
+        const auto &gripper_cmd = get_gripper_command(robot_index);
+        if (gripper_cmd.received)
         {
             nlohmann::json ee;
-            ee["mode"] = gripper_cmd_mode_;
-            if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_POSITION)
+            ee["mode"] = gripper_cmd.mode;
+            if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
             {
-                ee["position"] = gripper_cmd_position_;
+                ee["position"] = gripper_cmd.position;
             }
-            else if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_PRESET)
+            else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
             {
-                ee["preset"] = gripper_cmd_preset_;
+                ee["preset"] = gripper_cmd.preset;
             }
             data[key]["end_effector"] = ee;
         }
@@ -390,17 +410,18 @@ private:
         const char *key = robot_key(robot_index);
         data[key]["time"] = global_time_;
         data[key]["cartesian"] = cartesian;
-        if (gripper_cmd_received_)
+        const auto &gripper_cmd = get_gripper_command(robot_index);
+        if (gripper_cmd.received)
         {
             nlohmann::json ee;
-            ee["mode"] = gripper_cmd_mode_;
-            if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_POSITION)
+            ee["mode"] = gripper_cmd.mode;
+            if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
             {
-                ee["position"] = gripper_cmd_position_;
+                ee["position"] = gripper_cmd.position;
             }
-            else if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_PRESET)
+            else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
             {
-                ee["preset"] = gripper_cmd_preset_;
+                ee["preset"] = gripper_cmd.preset;
             }
             data[key]["end_effector"] = ee;
         }
@@ -628,38 +649,53 @@ private:
         }
     }
 
-    void gripper_cmd_callback(const je_software::msg::EndEffectorCommand::SharedPtr msg)
+    void handle_gripper_cmd(const je_software::msg::EndEffectorCommand &msg,
+                            int robot_index,
+                            const char *label)
+    {
+        if (msg.mode != je_software::msg::EndEffectorCommand::MODE_POSITION &&
+            msg.mode != je_software::msg::EndEffectorCommand::MODE_PRESET)
+        {
+            RCLCPP_WARN(this->get_logger(), "Invalid end effector mode: %d", msg.mode);
+            return;
+        }
+
+        auto &gripper_cmd = get_gripper_command_mutable(robot_index);
+        gripper_cmd.mode = msg.mode;
+        gripper_cmd.position = msg.position;
+        gripper_cmd.preset = msg.preset;
+        gripper_cmd.received = true;
+
+        if (msg.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+        {
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(), *this->get_clock(), 1000,
+                "Received end effector cmd (%s): mode=POSITION position=%.3f",
+                label, msg.position);
+        }
+        else
+        {
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(), *this->get_clock(), 1000,
+                "Received end effector cmd (%s): mode=PRESET preset=%d",
+                label, msg.preset);
+        }
+    }
+
+    void gripper_cmd_callback(const je_software::msg::EndEffectorCommandLR::SharedPtr msg)
     {
         if (!msg)
         {
             return;
         }
 
-        if (msg->mode != je_software::msg::EndEffectorCommand::MODE_POSITION &&
-            msg->mode != je_software::msg::EndEffectorCommand::MODE_PRESET)
+        if (msg->left_valid)
         {
-            RCLCPP_WARN(this->get_logger(), "Invalid end effector mode: %d", msg->mode);
-            return;
+            handle_gripper_cmd(msg->left, 0, "left");
         }
-
-        gripper_cmd_mode_ = msg->mode;
-        gripper_cmd_position_ = msg->position;
-        gripper_cmd_preset_ = msg->preset;
-        gripper_cmd_received_ = true;
-
-        if (msg->mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+        if (msg->right_valid)
         {
-            RCLCPP_INFO_THROTTLE(
-                this->get_logger(), *this->get_clock(), 1000,
-                "Received end effector cmd: mode=POSITION position=%.3f",
-                msg->position);
-        }
-        else
-        {
-            RCLCPP_INFO_THROTTLE(
-                this->get_logger(), *this->get_clock(), 1000,
-                "Received end effector cmd: mode=PRESET preset=%d",
-                msg->preset);
+            handle_gripper_cmd(msg->right, 1, "right");
         }
     }
 
@@ -716,24 +752,39 @@ private:
             data["Robot1"]["cartesian"] = pose_to_cartesian(msg->right_pose);
         }
 
-        if (gripper_cmd_received_)
+        if (left_ok)
         {
-            nlohmann::json ee;
-            ee["mode"] = gripper_cmd_mode_;
-            if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_POSITION)
+            const auto &gripper_cmd = get_gripper_command(0);
+            if (gripper_cmd.received)
             {
-                ee["position"] = gripper_cmd_position_;
-            }
-            else if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_PRESET)
-            {
-                ee["preset"] = gripper_cmd_preset_;
-            }
-            if (left_ok)
-            {
+                nlohmann::json ee;
+                ee["mode"] = gripper_cmd.mode;
+                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+                {
+                    ee["position"] = gripper_cmd.position;
+                }
+                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+                {
+                    ee["preset"] = gripper_cmd.preset;
+                }
                 data["Robot0"]["end_effector"] = ee;
             }
-            if (right_ok)
+        }
+        if (right_ok)
+        {
+            const auto &gripper_cmd = get_gripper_command(1);
+            if (gripper_cmd.received)
             {
+                nlohmann::json ee;
+                ee["mode"] = gripper_cmd.mode;
+                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+                {
+                    ee["position"] = gripper_cmd.position;
+                }
+                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+                {
+                    ee["preset"] = gripper_cmd.preset;
+                }
                 data["Robot1"]["end_effector"] = ee;
             }
         }
@@ -798,24 +849,39 @@ private:
             data["Robot1"]["joint"] = target_right;
         }
 
-        if (gripper_cmd_received_)
+        if (left_ok)
         {
-            nlohmann::json ee;
-            ee["mode"] = gripper_cmd_mode_;
-            if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_POSITION)
+            const auto &gripper_cmd = get_gripper_command(0);
+            if (gripper_cmd.received)
             {
-                ee["position"] = gripper_cmd_position_;
-            }
-            else if (gripper_cmd_mode_ == je_software::msg::EndEffectorCommand::MODE_PRESET)
-            {
-                ee["preset"] = gripper_cmd_preset_;
-            }
-            if (left_ok)
-            {
+                nlohmann::json ee;
+                ee["mode"] = gripper_cmd.mode;
+                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+                {
+                    ee["position"] = gripper_cmd.position;
+                }
+                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+                {
+                    ee["preset"] = gripper_cmd.preset;
+                }
                 data["Robot0"]["end_effector"] = ee;
             }
-            if (right_ok)
+        }
+        if (right_ok)
+        {
+            const auto &gripper_cmd = get_gripper_command(1);
+            if (gripper_cmd.received)
             {
+                nlohmann::json ee;
+                ee["mode"] = gripper_cmd.mode;
+                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+                {
+                    ee["position"] = gripper_cmd.position;
+                }
+                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+                {
+                    ee["preset"] = gripper_cmd.preset;
+                }
                 data["Robot1"]["end_effector"] = ee;
             }
         }
@@ -881,7 +947,7 @@ private:
 
     // ROS
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr sub_joint_cmd_;
-    rclcpp::Subscription<je_software::msg::EndEffectorCommand>::SharedPtr sub_gripper_cmd_;
+    rclcpp::Subscription<je_software::msg::EndEffectorCommandLR>::SharedPtr sub_gripper_cmd_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_end_pose_;
     rclcpp::Subscription<common::msg::OculusControllers>::SharedPtr sub_oculus_controllers_;
     rclcpp::Subscription<common::msg::OculusInitJointState>::SharedPtr sub_oculus_init_joint_;
@@ -899,11 +965,9 @@ private:
     nlohmann::json last_state_json_;
 
     // End-effector command cache from ROS2
-    std::string gripper_sub_topic_{"/end_effector_cmd"};
-    int gripper_cmd_mode_{je_software::msg::EndEffectorCommand::MODE_POSITION};
-    double gripper_cmd_position_{0.0};
-    int gripper_cmd_preset_{0};
-    bool gripper_cmd_received_{false};
+    std::string gripper_sub_topic_{"/end_effector_cmd_lr"};
+    GripperCommand gripper_cmd_left_{};
+    GripperCommand gripper_cmd_right_{};
 
     // 参数
     double publish_period_;
