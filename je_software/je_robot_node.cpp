@@ -794,10 +794,15 @@ private:
 
     void oculus_init_joint_state_callback(const common::msg::OculusInitJointState::SharedPtr msg)
     {
+        // RCLCPP_INFO(this->get_logger(), "Received one msg.");
         if (!msg)
             return;
 
         const bool is_init = msg->init;
+        if (is_init)
+        {
+            RCLCPP_INFO(this->get_logger(), "JeRobotNode received one initial joint posi.");
+        }
         const double init_dt = is_init ? dt_init_ : 0.0;
 
         std::vector<double> target_left(7, 0.0);

@@ -173,6 +173,16 @@ target_link_libraries(end_effector_cli
   ${cpp_typesupport_target}
 )
 
+add_executable(jsonl_replayer_node
+  je_software/jsonl_replayer_node.cpp
+)
+ament_target_dependencies(jsonl_replayer_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  common
+)
+
 # ----------------------------
 # Install
 # ----------------------------
@@ -180,6 +190,7 @@ install(TARGETS
   je_robot_node
   cli_target_publisher
   end_effector_cli
+  jsonl_replayer_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

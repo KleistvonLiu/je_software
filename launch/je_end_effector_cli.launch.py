@@ -10,9 +10,9 @@ import os
 def generate_launch_description():
     # -------------------- ROS params (可命令行覆盖) --------------------
     end_effector_topic_arg = DeclareLaunchArgument(
-        'end_effector_topic', default_value='/end_effector_cmd')
-    pose_topic_arg = DeclareLaunchArgument(
-        'pose_topic', default_value='/end_pose')
+        'end_effector_topic', default_value='/end_effector_cmd_lr')
+    oculus_topic_arg = DeclareLaunchArgument(
+        'oculus_topic', default_value='/oculus_controllers')
     frame_id_arg = DeclareLaunchArgument(
         'frame_id', default_value='base_link')
     send_init_pose_arg = DeclareLaunchArgument(
@@ -30,7 +30,7 @@ def generate_launch_description():
         parameters=[
             {
                 "end_effector_topic": LaunchConfiguration("end_effector_topic"),
-                "pose_topic": LaunchConfiguration("pose_topic"),
+                "oculus_topic": LaunchConfiguration("oculus_topic"),
                 "frame_id": LaunchConfiguration("frame_id"),
                 "send_init_pose_on_start": ParameterValue(
                     LaunchConfiguration("send_init_pose_on_start"), value_type=bool),
@@ -56,7 +56,7 @@ def generate_launch_description():
         SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', LaunchConfiguration('fastdds_profiles_file')),
 
         end_effector_topic_arg,
-        pose_topic_arg,
+        oculus_topic_arg,
         frame_id_arg,
         send_init_pose_arg,
         attach_init_pose_arg,

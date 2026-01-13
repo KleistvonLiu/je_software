@@ -11,6 +11,12 @@ def generate_launch_description():
     joint_sub_topic_arg = DeclareLaunchArgument('joint_sub_topic', default_value='/joint_cmd')
     end_pose_topic_arg  = DeclareLaunchArgument('end_pose_topic',  default_value='/end_pose')
     joint_pub_topic_arg = DeclareLaunchArgument('joint_pub_topic', default_value='/joint_states')
+    oculus_controllers_topic_arg = DeclareLaunchArgument(
+        'oculus_controllers_topic', default_value='/oculus_controllers')
+    oculus_init_joint_state_topic_arg = DeclareLaunchArgument(
+        'oculus_init_joint_state_topic', default_value='/oculus_init_joint_state')
+    gripper_sub_topic_arg = DeclareLaunchArgument(
+        'gripper_sub_topic', default_value='/end_effector_cmd_lr')
     fps_arg             = DeclareLaunchArgument('fps',             default_value='50')
     dt_arg              = DeclareLaunchArgument('dt',              default_value='0.014')
     dt_init_arg         = DeclareLaunchArgument('dt_init',         default_value='3.0')
@@ -31,6 +37,9 @@ def generate_launch_description():
                 "joint_sub_topic": LaunchConfiguration("joint_sub_topic"),
                 "end_pose_topic": LaunchConfiguration("end_pose_topic"),
                 "joint_pub_topic": LaunchConfiguration("joint_pub_topic"),
+                "oculus_controllers_topic": LaunchConfiguration("oculus_controllers_topic"),
+                "oculus_init_joint_state_topic": LaunchConfiguration("oculus_init_joint_state_topic"),
+                "gripper_sub_topic": LaunchConfiguration("gripper_sub_topic"),
                 "fps": ParameterValue(LaunchConfiguration("fps"), value_type=float),
                 "dt": ParameterValue(LaunchConfiguration("dt"), value_type=float),
                 "dt_init": ParameterValue(LaunchConfiguration("dt_init"), value_type=float),
@@ -58,6 +67,9 @@ def generate_launch_description():
         joint_sub_topic_arg,
         end_pose_topic_arg,
         joint_pub_topic_arg,
+        oculus_controllers_topic_arg,
+        oculus_init_joint_state_topic_arg,
+        gripper_sub_topic_arg,
         fps_arg,
         dt_arg,
         dt_init_arg,
