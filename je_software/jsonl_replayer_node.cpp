@@ -59,6 +59,7 @@ public:
         this->declare_parameter<std::string>("pose_field", "Cartesian"); // e.g. "Cartesian" / "TargetCartesian"
         this->declare_parameter<bool>("pose_left_valid", true);
         this->declare_parameter<bool>("pose_right_valid", true);
+        this->declare_parameter<std::string>("send_arm", "both");
 
         // JointState options: choose which JSON fields map to position/velocity/effort
         this->declare_parameter<std::vector<std::string>>(
@@ -70,7 +71,10 @@ public:
         this->declare_parameter<std::string>("joint_effort_field", "");             // e.g. "JointTorque" / "JointSensorTorque" or ""
         this->declare_parameter<bool>("joint_init_flag", false);
         this->declare_parameter<std::string>(
-            "init_joint_position",
+            "init_left_joint_position",
+            "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]");
+        this->declare_parameter<std::string>(
+            "init_right_joint_position",
             "[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]");
         this->declare_parameter<bool>("init_left_valid", true);
         this->declare_parameter<bool>("init_right_valid", true);
@@ -88,28 +92,32 @@ public:
         pose_field_ = this->get_parameter("pose_field").as_string();
         pose_left_valid_ = this->get_parameter("pose_left_valid").as_bool();
         pose_right_valid_ = this->get_parameter("pose_right_valid").as_bool();
+        send_arm_ = this->get_parameter("send_arm").as_string();
+        to_lower_inplace(send_arm_);
 
         joint_names_ = this->get_parameter("joint_names").as_string_array();
         joint_position_field_ = this->get_parameter("joint_position_field").as_string();
         joint_velocity_field_ = this->get_parameter("joint_velocity_field").as_string();
         joint_effort_field_ = this->get_parameter("joint_effort_field").as_string();
         joint_init_flag_ = this->get_parameter("joint_init_flag").as_bool();
-        init_joint_position_ = parse_double_list_param(this->get_parameter("init_joint_position"));
+        init_left_joint_position_ =
+            parse_double_list_param(this->get_parameter("init_left_joint_position"));
+        init_right_joint_position_ =
+            parse_double_list_param(this->get_parameter("init_right_joint_position"));
         init_left_valid_ = this->get_parameter("init_left_valid").as_bool();
         init_right_valid_ = this->get_parameter("init_right_valid").as_bool();
-
-        if (init_joint_position_.size() != 7)
+        if (send_arm_ == "left")
         {
-            RCLCPP_WARN(this->get_logger(),
-                        "init_joint_position size %zu != 7, will pad/trim.",
-                        init_joint_position_.size());
-            std::vector<double> normalized(7, 0.0);
-            for (size_t i = 0; i < normalized.size() && i < init_joint_position_.size(); ++i)
-            {
-                normalized[i] = init_joint_position_[i];
-            }
-            init_joint_position_ = normalized;
+            pose_right_valid_ = false;
+            init_right_valid_ = false;
         }
+        else if (send_arm_ == "right")
+        {
+            pose_left_valid_ = false;
+            init_left_valid_ = false;
+        }
+
+        normalize_init_positions();
 
         if (jsonl_path_.empty())
         {
@@ -258,6 +266,34 @@ private:
         return vals;
     }
 
+    static std::vector<double> normalize_joint_vector(const std::vector<double> &values)
+    {
+        std::vector<double> normalized(7, 0.0);
+        for (size_t i = 0; i < normalized.size() && i < values.size(); ++i)
+        {
+            normalized[i] = values[i];
+        }
+        return normalized;
+    }
+
+    void normalize_init_positions()
+    {
+        if (init_left_joint_position_.size() != 7)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "init_left_joint_position size %zu != 7, will pad/trim.",
+                        init_left_joint_position_.size());
+            init_left_joint_position_ = normalize_joint_vector(init_left_joint_position_);
+        }
+        if (init_right_joint_position_.size() != 7)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "init_right_joint_position size %zu != 7, will pad/trim.",
+                        init_right_joint_position_.size());
+            init_right_joint_position_ = normalize_joint_vector(init_right_joint_position_);
+        }
+    }
+
     static std::optional<std::vector<double>> get_vec7(const json &robot0, const std::string &field)
     {
         if (field.empty()) return std::nullopt;
@@ -337,8 +373,8 @@ private:
 
         msg.left.name = joint_names_;
         msg.right.name = joint_names_;
-        msg.left.position = init_joint_position_;
-        msg.right.position = init_joint_position_;
+        msg.left.position = init_left_joint_position_;
+        msg.right.position = init_right_joint_position_;
         msg.left_valid = init_left_valid_;
         msg.right_valid = init_right_valid_;
 
@@ -352,7 +388,7 @@ private:
         msg.header.frame_id = frame_id_;
         msg.init = joint_init_flag_;
 
-        if (obj.contains("Robot0") && obj.at("Robot0").is_object())
+        if (init_left_valid_ && obj.contains("Robot0") && obj.at("Robot0").is_object())
         {
             const auto &robot0 = obj.at("Robot0");
             if (fill_joint_state(robot0, msg.left))
@@ -361,7 +397,7 @@ private:
             }
         }
 
-        if (obj.contains("Robot1") && obj.at("Robot1").is_object())
+        if (init_right_valid_ && obj.contains("Robot1") && obj.at("Robot1").is_object())
         {
             const auto &robot1 = obj.at("Robot1");
             if (fill_joint_state(robot1, msg.right))
@@ -481,6 +517,7 @@ private:
     std::string pose_field_{"Cartesian"};
     bool pose_left_valid_{true};
     bool pose_right_valid_{true};
+    std::string send_arm_{"both"};
 
     // joint params
     std::vector<std::string> joint_names_;
@@ -488,7 +525,8 @@ private:
     std::string joint_velocity_field_{""};
     std::string joint_effort_field_{""};
     bool joint_init_flag_{false};
-    std::vector<double> init_joint_position_{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    std::vector<double> init_left_joint_position_{};
+    std::vector<double> init_right_joint_position_{};
     bool init_left_valid_{true};
     bool init_right_valid_{true};
     int init_sent_count_{0};

@@ -26,14 +26,17 @@ def generate_launch_description():
     pose_field_arg = DeclareLaunchArgument('pose_field', default_value='Cartesian')
     pose_left_valid_arg = DeclareLaunchArgument('pose_left_valid', default_value='true')
     pose_right_valid_arg = DeclareLaunchArgument('pose_right_valid', default_value='true')
+    send_arm_arg = DeclareLaunchArgument('send_arm', default_value='both')
 
     # -------------------- Joint options --------------------
     joint_position_field_arg = DeclareLaunchArgument('joint_position_field', default_value='Joint')
     joint_velocity_field_arg = DeclareLaunchArgument('joint_velocity_field', default_value='')
     joint_effort_field_arg = DeclareLaunchArgument('joint_effort_field', default_value='')
     joint_init_flag_arg = DeclareLaunchArgument('joint_init_flag', default_value='false')
-    init_joint_position_arg = DeclareLaunchArgument(
-        'init_joint_position', default_value='[0.00033555829734998476,-1.5700772733005788,-0.00021571604829641878,2.3968449810713197e-05,-2.3968449810713197e-05,7.190534943213959e-05,0.27798608090465166]')
+    init_left_joint_position_arg = DeclareLaunchArgument(
+        'init_left_joint_position', default_value='[-0.6627995426156521,-1.0077295038416256,0.0804381175647535,-0.9015732396299769,-0.8931363452966059,-0.5050631744113485,1.1892425742581567]')
+    init_right_joint_position_arg = DeclareLaunchArgument(
+        'init_right_joint_position', default_value='[-0.07940747422289282,-1.2996412540863018,-1.0468460139327096,-1.8282414462117706,-1.3567341015354206,0.5511784718471607,2.3845489290070394]')
     init_left_valid_arg = DeclareLaunchArgument('init_left_valid', default_value='true')
     init_right_valid_arg = DeclareLaunchArgument('init_right_valid', default_value='true')
 
@@ -55,12 +58,15 @@ def generate_launch_description():
                 "pose_field": LaunchConfiguration("pose_field"),
                 "pose_left_valid": ParameterValue(LaunchConfiguration("pose_left_valid"), value_type=bool),
                 "pose_right_valid": ParameterValue(LaunchConfiguration("pose_right_valid"), value_type=bool),
+                "send_arm": LaunchConfiguration("send_arm"),
                 "joint_position_field": LaunchConfiguration("joint_position_field"),
                 "joint_velocity_field": LaunchConfiguration("joint_velocity_field"),
                 "joint_effort_field": LaunchConfiguration("joint_effort_field"),
                 "joint_init_flag": ParameterValue(LaunchConfiguration("joint_init_flag"), value_type=bool),
-                "init_joint_position": ParameterValue(
-                    LaunchConfiguration("init_joint_position"), value_type=str),
+                "init_left_joint_position": ParameterValue(
+                    LaunchConfiguration("init_left_joint_position"), value_type=str),
+                "init_right_joint_position": ParameterValue(
+                    LaunchConfiguration("init_right_joint_position"), value_type=str),
                 "init_left_valid": ParameterValue(LaunchConfiguration("init_left_valid"), value_type=bool),
                 "init_right_valid": ParameterValue(LaunchConfiguration("init_right_valid"), value_type=bool),
             }
@@ -91,11 +97,13 @@ def generate_launch_description():
         pose_field_arg,
         pose_left_valid_arg,
         pose_right_valid_arg,
+        send_arm_arg,
         joint_position_field_arg,
         joint_velocity_field_arg,
         joint_effort_field_arg,
         joint_init_flag_arg,
-        init_joint_position_arg,
+        init_left_joint_position_arg,
+        init_right_joint_position_arg,
         init_left_valid_arg,
         init_right_valid_arg,
 
