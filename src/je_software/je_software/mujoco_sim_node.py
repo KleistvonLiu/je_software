@@ -203,7 +203,7 @@ class MujocoSimNode(Node):
             self._prev_ctrls = [0.0] * nact
 
         # --- New: allow setting initial joint positions at startup via parameter
-        self.declare_parameter('initial_positions', [0.947, 0.367, 0.148, 1.16, 0.148, 0.97, -0.769])
+        self.declare_parameter('initial_positions', [0.947, 0.367, 0.148, 1.16, 0.148, 0.97, -0.769, 0.947, 0.367, 0.148, 1.16, 0.148, 0.97, -0.769])
         try:
             initial_positions = list(self.get_parameter('initial_positions').get_parameter_value().double_array_value)
         except Exception:
