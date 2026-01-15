@@ -303,16 +303,11 @@ class RecorderManager(BaseManager):
         #         effort=[float(x) for x in getattr(js_msg, "effort", [])],
         #     ))
             
-        for k, item in enumerate(joint_picks):
-            if item is None:
-                continue
-            t_ns, js_msg = item
-            topic = self.joint_topics[k]
-
-            names = list(getattr(js_msg, "name", []))
-            positions = [float(x) for x in getattr(js_msg, "position", [])]
-            velocities = [float(x) for x in getattr(js_msg, "velocity", [])]
-            efforts_all = [float(x) for x in getattr(js_msg, "effort", [])]
+        def _append_joint_entry(topic_name, stamp_ns, joint_msg, side=None):
+            names = list(getattr(joint_msg, "name", []))
+            positions = [float(x) for x in getattr(joint_msg, "position", [])]
+            velocities = [float(x) for x in getattr(joint_msg, "velocity", [])]
+            efforts_all = [float(x) for x in getattr(joint_msg, "effort", [])]
 
             n_joints = len(names)
             raw_efforts = []
@@ -327,9 +322,12 @@ class RecorderManager(BaseManager):
                 raw_efforts = list(efforts_all)
                 filtered_efforts = list(efforts_all)
 
-            joints_meta.append(dict(
-                topic=topic,
-                stamp_ns=t_ns * 1e-9,
+            full_topic = topic_name
+            if side is not None:
+                full_topic = f"{topic_name}_{side}"
+            entry = dict(
+                topic=full_topic,
+                stamp_ns=stamp_ns * 1e-9,
                 name=names,
                 position=positions,
                 velocity=velocities,
@@ -337,7 +335,22 @@ class RecorderManager(BaseManager):
                 effort=raw_efforts,
                 # 新增：滤波后的力矩
                 effort_filtered=filtered_efforts,
-            ))
+            )
+            joints_meta.append(entry)
+
+        for k, item in enumerate(joint_picks):
+            if item is None:
+                continue
+            t_ns, js_msg = item
+            topic = self.joint_topics[k]
+
+            if hasattr(js_msg, "left") and hasattr(js_msg, "right") and hasattr(js_msg, "left_valid"):
+                if getattr(js_msg, "left_valid", False):
+                    _append_joint_entry(topic, t_ns, js_msg.left, side="left")
+                if getattr(js_msg, "right_valid", False):
+                    _append_joint_entry(topic, t_ns, js_msg.right, side="right")
+            else:
+                _append_joint_entry(topic, t_ns, js_msg)
             
         for k, item in enumerate(tact_picks):
             if item is None: continue
