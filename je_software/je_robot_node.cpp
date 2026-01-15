@@ -916,35 +916,59 @@ private:
             msg.header.stamp = stamp;  // 用同一个 stamp，便于和日志对齐
             msg.init = false;
 
-            if (state_json.contains("Robot0") && state_json["Robot0"].contains("Joint"))
+            auto fill_joint_fields = [&](const nlohmann::json &robot,
+                                         sensor_msgs::msg::JointState &out,
+                                         const char *label) -> bool
             {
-                auto joint_vec = state_json["Robot0"]["Joint"].get<std::vector<double>>();
-                if (joint_vec.size() >= 7)
+                if (!robot.contains("Joint"))
                 {
-                    msg.left.name = expected_names_;
-                    msg.left.position = joint_vec;
-                    msg.left_valid = true;
+                    return false;
                 }
-                else
+                auto joint_vec = robot["Joint"].get<std::vector<double>>();
+                if (joint_vec.size() < 7)
                 {
                     RCLCPP_WARN(this->get_logger(),
-                                "Robot0 joint vector size %zu < 7", joint_vec.size());
+                                "%s joint vector size %zu < 7", label, joint_vec.size());
+                    return false;
+                }
+
+                out.name = expected_names_;
+                out.position = joint_vec;
+
+                if (robot.contains("JointVelocity"))
+                {
+                    auto vel_vec = robot["JointVelocity"].get<std::vector<double>>();
+                    if (vel_vec.size() >= 7)
+                    {
+                        out.velocity = vel_vec;
+                    }
+                }
+
+                if (robot.contains("JointSensorTorque"))
+                {
+                    auto eff_vec = robot["JointSensorTorque"].get<std::vector<double>>();
+                    if (eff_vec.size() >= 7)
+                    {
+                        out.effort = eff_vec;
+                    }
+                }
+
+                return true;
+            };
+
+            if (state_json.contains("Robot0") && state_json["Robot0"].is_object())
+            {
+                if (fill_joint_fields(state_json["Robot0"], msg.left, "Robot0"))
+                {
+                    msg.left_valid = true;
                 }
             }
 
-            if (state_json.contains("Robot1") && state_json["Robot1"].contains("Joint"))
+            if (state_json.contains("Robot1") && state_json["Robot1"].is_object())
             {
-                auto joint_vec = state_json["Robot1"]["Joint"].get<std::vector<double>>();
-                if (joint_vec.size() >= 7)
+                if (fill_joint_fields(state_json["Robot1"], msg.right, "Robot1"))
                 {
-                    msg.right.name = expected_names_;
-                    msg.right.position = joint_vec;
                     msg.right_valid = true;
-                }
-                else
-                {
-                    RCLCPP_WARN(this->get_logger(),
-                                "Robot1 joint vector size %zu < 7", joint_vec.size());
                 }
             }
 
