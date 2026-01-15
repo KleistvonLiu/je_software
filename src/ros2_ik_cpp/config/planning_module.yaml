@@ -3,7 +3,8 @@ ik_solver_node:
     planning:
       # ========== 机械臂配置 ==========
       dof: 7
-      urdf_path: "/home/agx/price/issac-sim/URDF_LAST/LH_JEARM/zongzhuang2.urdf"
+      urdf_path_left: "/home/agx/price/issac-sim/URDF_LAST/LH_JEARM/zongzhuang2.urdf"
+      urdf_path_right: "/home/agx/price/issac-sim/URDF_LAST/RH_JEARM/zongzhuang2.urdf"
       tip_link: "Link7"
       gripper_offset_z: 0.35
 
@@ -67,7 +68,7 @@ ik_solver_node:
       use_numeric_jacobian: true
 
       # ========== 日志 / 诊断 ==========
-      log_to_file: true
+      log_to_file: false
       log_file: "/home/agx/price/je_software/log/ik_log.log"
       # svd_q_log_file: "/home/agx/price/je_software/log/ik_svd.log"
       # diagnostics_log_file: "/home/agx/price/je_software/log/ik_diagnostics.log"
