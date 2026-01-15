@@ -427,31 +427,60 @@ private:
       RCLCPP_DEBUG(this->get_logger(), "Ignoring ik_delta because target_end_pose is active");
       return;
     }
-    // linear deltas (assumed in world frame) scaled by parameters
-    last_target_.pose.position.x += msg->linear.x * ik_delta_linear_scale_;
-    last_target_.pose.position.y += msg->linear.y * ik_delta_linear_scale_;
-    last_target_.pose.position.z += msg->linear.z * ik_delta_linear_scale_;
+
+    // compute linear delta (world frame) and rotation delta quaternion
+    double dx = msg->linear.x * ik_delta_linear_scale_;
+    double dy = msg->linear.y * ik_delta_linear_scale_;
+    double dz = msg->linear.z * ik_delta_linear_scale_;
 
     Eigen::Vector3d ang;
     ang.x() = msg->angular.x * ik_delta_angular_scale_;
     ang.y() = msg->angular.y * ik_delta_angular_scale_;
     ang.z() = msg->angular.z * ik_delta_angular_scale_;
     double angle = ang.norm();
+    Eigen::Quaterniond q_delta = Eigen::Quaterniond::Identity();
     if (angle > 1e-12) {
       Eigen::Vector3d axis = ang / angle;
       Eigen::AngleAxisd aa(angle, axis);
-      Eigen::Quaterniond q_delta(aa);
-      Eigen::Quaterniond q_old(last_target_.pose.orientation.w,
-                               last_target_.pose.orientation.x,
-                               last_target_.pose.orientation.y,
-                               last_target_.pose.orientation.z);
-      Eigen::Quaterniond q_new = q_delta * q_old;
-      q_new.normalize();
-      last_target_.pose.orientation.x = q_new.x();
-      last_target_.pose.orientation.y = q_new.y();
-      last_target_.pose.orientation.z = q_new.z();
-      last_target_.pose.orientation.w = q_new.w();
+      q_delta = Eigen::Quaterniond(aa);
     }
+
+    auto apply_delta_to_pose = [&](geometry_msgs::msg::PoseStamped &ps) {
+      ps.pose.position.x += dx;
+      ps.pose.position.y += dy;
+      ps.pose.position.z += dz;
+      if (angle > 1e-12) {
+        Eigen::Quaterniond q_old(ps.pose.orientation.w,
+                                 ps.pose.orientation.x,
+                                 ps.pose.orientation.y,
+                                 ps.pose.orientation.z);
+        Eigen::Quaterniond q_new = q_delta * q_old;
+        q_new.normalize();
+        ps.pose.orientation.x = q_new.x();
+        ps.pose.orientation.y = q_new.y();
+        ps.pose.orientation.z = q_new.z();
+        ps.pose.orientation.w = q_new.w();
+      }
+    };
+
+    bool applied = false;
+    // If per-arm explicit targets exist, apply to them (preserve explicitness)
+    if (target_left_received_) {
+      apply_delta_to_pose(last_target_left_);
+      applied = true;
+    }
+    if (target_right_received_) {
+      apply_delta_to_pose(last_target_right_);
+      applied = true;
+    }
+    // If no per-arm explicit targets, apply to shared target
+    if (!applied) {
+      apply_delta_to_pose(last_target_);
+    }
+
+    // mark explicit pending so updated pose will be published promptly
+    explicit_target_pending_ = true;
+
     RCLCPP_DEBUG(this->get_logger(), "Applied ik_delta: linear=(%.4f,%.4f,%.4f) angular=(%.4f,%.4f,%.4f)",
                  msg->linear.x, msg->linear.y, msg->linear.z, msg->angular.x, msg->angular.y, msg->angular.z);
   }
