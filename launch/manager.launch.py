@@ -165,18 +165,21 @@ def generate_launch_description():
     # --- 颜色/深度（CSV） ---
     color_csv = DeclareLaunchArgument(
         'color_topics_csv',
-        default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,'
+        # default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,'
+        default_value=''
     )
     depth_csv = DeclareLaunchArgument(
         'depth_topics_csv',
-        default_value='/camera_01/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
+        # default_value='/camera_01/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
+        default_value=''
     )
 
     # --- joint/tactile：多路与兼容 ---
 
     joint_csv = DeclareLaunchArgument(
         'joint_state_topics_csv',
-        default_value='/joint_states_right',
+        # default_value='/joint_states_right',
+        default_value='/joint_states_double_arm',
         description='CSV: /arm_a/joint_states,/arm_b/joint_states'
     )
     joint_list = DeclareLaunchArgument(
@@ -214,7 +217,7 @@ def generate_launch_description():
     win_sec = DeclareLaunchArgument('queue_seconds', default_value='2.0')
 
     # --- 目录/控制 ---
-    dir_arg = DeclareLaunchArgument('save_dir', default_value='/home/test/jemotor/log/')
+    dir_arg = DeclareLaunchArgument('save_dir', default_value='~/jemotor/log/')
     sess_arg = DeclareLaunchArgument('session_name', default_value='')
     save_dep = DeclareLaunchArgument('save_depth', default_value='true')
     overwrite = DeclareLaunchArgument('overwrite', default_value='false')

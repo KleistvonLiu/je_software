@@ -14,7 +14,7 @@ from common_utils.base_manager import BaseManager, ensure_dir, sanitize
 
 from cv_bridge import CvBridge
 
-from utils.image_writer import AsyncImageWriter
+from .utils.image_writer import AsyncImageWriter
 
 
 def _pack_depth_u16_to_rgb8(depth_u16: np.ndarray, order: str = "HI_LO", b_fill: int = 0) -> np.ndarray:

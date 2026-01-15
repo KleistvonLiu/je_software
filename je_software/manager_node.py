@@ -19,7 +19,7 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
-from utils.image_writer import AsyncImageWriter
+from .utils.image_writer import AsyncImageWriter
 from common_utils.ros2_qos import reliable_qos
 
 # ====================== 小工具 ======================
