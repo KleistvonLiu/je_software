@@ -10,7 +10,7 @@ def generate_launch_description():
     # -------------------- ROS params (可命令行覆盖) --------------------
     joint_sub_topic_arg = DeclareLaunchArgument('joint_sub_topic', default_value='/joint_cmd')
     end_pose_topic_arg  = DeclareLaunchArgument('end_pose_topic',  default_value='/end_pose')
-    joint_pub_topic_arg = DeclareLaunchArgument('joint_pub_topic', default_value='/joint_states')
+    joint_pub_topic_arg = DeclareLaunchArgument('joint_pub_topic', default_value='/joint_states_double_arm')
     oculus_controllers_topic_arg = DeclareLaunchArgument(
         'oculus_controllers_topic', default_value='/oculus_controllers')
     oculus_init_joint_state_topic_arg = DeclareLaunchArgument(

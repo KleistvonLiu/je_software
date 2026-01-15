@@ -47,7 +47,7 @@ public:
         // ---------- 声明 & 获取参数 ----------
         this->declare_parameter<std::string>("joint_sub_topic", "/joint_cmd");
         this->declare_parameter<std::string>("end_pose_topic", "/end_pose");
-        this->declare_parameter<std::string>("joint_pub_topic", "/joint_states");
+        this->declare_parameter<std::string>("joint_pub_topic", "/joint_states_double_arm");
         this->declare_parameter<std::string>("oculus_controllers_topic", "/oculus_controllers");
         this->declare_parameter<std::string>("oculus_init_joint_state_topic", "/oculus_init_joint_state");
         this->declare_parameter<double>("fps", 50.0);
@@ -186,8 +186,8 @@ public:
             std::bind(&JeRobotNode::oculus_init_joint_state_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] oculus init joint: %s", oculus_init_joint_state_topic.c_str());
 
-        // 发布关节状态
-        pub_joint_state_ = this->create_publisher<sensor_msgs::msg::JointState>(
+        // 发布关节状态（OculusInitJointState）
+        pub_joint_state_ = this->create_publisher<common::msg::OculusInitJointState>(
             joint_pub_topic,
             qos);
         RCLCPP_INFO(this->get_logger(), "[PUB] joint state: %s", joint_pub_topic.c_str());
@@ -912,18 +912,48 @@ private:
 
         try
         {
-            auto joint_vec = state_json["Robot0"]["Joint"].get<std::vector<double>>();
-            if (joint_vec.size() < 7)
+            common::msg::OculusInitJointState msg;
+            msg.header.stamp = stamp;  // 用同一个 stamp，便于和日志对齐
+            msg.init = false;
+
+            if (state_json.contains("Robot0") && state_json["Robot0"].contains("Joint"))
             {
-                RCLCPP_WARN(this->get_logger(),
-                            "Joint vector size %zu < 7", joint_vec.size());
-                return;
+                auto joint_vec = state_json["Robot0"]["Joint"].get<std::vector<double>>();
+                if (joint_vec.size() >= 7)
+                {
+                    msg.left.name = expected_names_;
+                    msg.left.position = joint_vec;
+                    msg.left_valid = true;
+                }
+                else
+                {
+                    RCLCPP_WARN(this->get_logger(),
+                                "Robot0 joint vector size %zu < 7", joint_vec.size());
+                }
             }
 
-            sensor_msgs::msg::JointState msg;
-            msg.header.stamp = stamp;  // 用同一个 stamp，便于和日志对齐
-            msg.name = expected_names_;
-            msg.position = joint_vec;
+            if (state_json.contains("Robot1") && state_json["Robot1"].contains("Joint"))
+            {
+                auto joint_vec = state_json["Robot1"]["Joint"].get<std::vector<double>>();
+                if (joint_vec.size() >= 7)
+                {
+                    msg.right.name = expected_names_;
+                    msg.right.position = joint_vec;
+                    msg.right_valid = true;
+                }
+                else
+                {
+                    RCLCPP_WARN(this->get_logger(),
+                                "Robot1 joint vector size %zu < 7", joint_vec.size());
+                }
+            }
+
+            if (!msg.left_valid && !msg.right_valid)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "No valid joint vectors found in robot state.");
+                return;
+            }
 
             pub_joint_state_->publish(msg);
         }
@@ -956,7 +986,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_end_pose_;
     rclcpp::Subscription<common::msg::OculusControllers>::SharedPtr sub_oculus_controllers_;
     rclcpp::Subscription<common::msg::OculusInitJointState>::SharedPtr sub_oculus_init_joint_;
-    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr pub_joint_state_;
+    rclcpp::Publisher<common::msg::OculusInitJointState>::SharedPtr pub_joint_state_;
 
     std::vector<std::string> expected_names_;
     std::vector<double> current_cmd_joint_;
