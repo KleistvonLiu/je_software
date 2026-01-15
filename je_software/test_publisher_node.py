@@ -3,7 +3,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32MultiArray, Header
 from cv_bridge import CvBridge
-from .ros2_qos import reliable_qos
+from common_utils.ros2_qos import reliable_qos
 import numpy as np
 import time
 

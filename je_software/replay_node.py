@@ -10,7 +10,7 @@ import json
 import argparse
 import copy
 import os
-from .ros2_qos import reliable_qos
+from common_utils.ros2_qos import reliable_qos
 
 
 class JointStatesReplayer(Node):

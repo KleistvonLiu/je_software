@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from utils.image_writer import AsyncImageWriter
-from .ros2_qos import reliable_qos
+from common_utils.ros2_qos import reliable_qos
 
 # ====================== 小工具 ======================
 

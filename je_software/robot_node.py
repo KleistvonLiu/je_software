@@ -5,7 +5,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from piper_sdk import C_PiperInterface
 from rclpy.parameter import Parameter
-from .ros2_qos import reliable_qos, reliable_qos_shallow
+from common_utils.ros2_qos import reliable_qos, reliable_qos_shallow
 import math
 
 DEG2RAD = math.pi / 180.0

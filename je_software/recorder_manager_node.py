@@ -10,7 +10,7 @@ import numpy as np
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 
-from .base_manager import BaseManager, ensure_dir, sanitize
+from common_utils.base_manager import BaseManager, ensure_dir, sanitize
 
 from cv_bridge import CvBridge
 
