@@ -1,7 +1,11 @@
-#include "ros2_ik_cpp/ik_solver.hpp"
+#include <pinocchio/multibody/model.hpp>
+#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/jacobian.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
 #include <pinocchio/parsers/urdf.hpp>
+#include "ros2_ik_cpp/ik_solver.hpp"
 #include <chrono>
 #include <cmath>
 #include <sstream>
@@ -12,9 +16,31 @@ using namespace ros2_ik_cpp;
 using Eigen::VectorXd;
 using Eigen::MatrixXd;
 
-IkSolver::IkSolver(const pinocchio::Model &model)
-  : model_(model), data_(model_) {
-  // initialize default joint limits to empty (no clamping)
+// Helper: convert Eigen::Isometry3d (public SE3) to pinocchio::SE3
+static pinocchio::SE3 toPinocchioSE3(const SE3 &s) {
+  Eigen::Quaterniond q(s.rotation());
+  return pinocchio::SE3(q, s.translation());
+}
+
+// Helper: convert pinocchio::SE3 to Eigen::Isometry3d
+static SE3 fromPinocchioSE3(const pinocchio::SE3 &p) {
+  SE3 s = SE3::Identity();
+  s.linear() = p.rotation();
+  s.translation() = p.translation();
+  return s;
+}
+
+// Construct from URDF XML string and tip frame name
+IkSolver::IkSolver(const std::string &urdf_xml, const std::string &tip_frame_name)
+  : model_(nullptr), data_(nullptr), tip_frame_name_(tip_frame_name) {
+  try {
+    model_ = std::make_unique<pinocchio::Model>();
+    pinocchio::urdf::buildModelFromXML(urdf_xml, *model_);
+    data_ = std::make_unique<pinocchio::Data>(*model_);
+    tip_frame_id_ = model_->getFrameId(tip_frame_name_);
+  } catch (const std::exception &e) {
+    throw std::runtime_error(std::string("Failed to build Pinocchio model: ") + e.what());
+  }
 }
 
 IkSolver::~IkSolver() {}
@@ -31,7 +57,8 @@ IkSolver::Params IkSolver::getParams() const {
 
 void IkSolver::setJointLimits(const Eigen::VectorXd &lo, const Eigen::VectorXd &hi) {
   std::lock_guard<std::mutex> lk(mutex_);
-  if ((int)lo.size() == model_.nq && (int)hi.size() == model_.nq) {
+  if (!model_) return;
+  if ((int)lo.size() == model_->nq && (int)hi.size() == model_->nq) {
     params_.joint_limits_min.assign(lo.data(), lo.data() + lo.size());
     params_.joint_limits_max.assign(hi.data(), hi.data() + hi.size());
   }
@@ -42,36 +69,49 @@ void IkSolver::setIterCallback(IterCallback cb) {
   iter_cb_ = cb;
 }
 
-IkSolver::Result IkSolver::solve(const pinocchio::SE3 &target, const Eigen::VectorXd &q_init, int timeout_ms) {
+IkSolver::Result IkSolver::solve(const SE3 &target, const Eigen::VectorXd &q_init, int timeout_ms) {
   auto deadline = (timeout_ms <= 0) ? std::chrono::steady_clock::time_point::max()
                                      : std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   Eigen::VectorXd q0 = q_init;
   return solveInternal(target, q0, deadline);
 }
 
-IkSolver::Result IkSolver::step(const pinocchio::SE3 &target, const Eigen::VectorXd &q_current) {
+IkSolver::Result IkSolver::step(const SE3 &target, const Eigen::VectorXd &q_current) {
   auto dl = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
   return solveInternal(target, q_current, dl);
 }
 
 Eigen::VectorXd IkSolver::forwardKinematics(const Eigen::VectorXd &q) {
   std::lock_guard<std::mutex> lk(mutex_);
-  pinocchio::forwardKinematics(model_, data_, q);
-  pinocchio::updateFramePlacements(model_, data_);
+  if (!model_ || !data_) return Eigen::VectorXd();
+  pinocchio::forwardKinematics(*model_, *data_, q);
+  pinocchio::updateFramePlacements(*model_, *data_);
   Eigen::VectorXd out(6);
-  out.head<3>() = data_.oMf.back().translation();
-  Eigen::Quaterniond qd(data_.oMf.back().rotation());
+  out.head<3>() = data_->oMf.back().translation();
+  Eigen::Quaterniond qd(data_->oMf.back().rotation());
   out.tail<3>() = Eigen::Vector3d(qd.x(), qd.y(), qd.z());
   return out;
 }
 
+SE3 IkSolver::forwardKinematicsSE3(const Eigen::VectorXd &q) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  SE3 s = SE3::Identity();
+  if (!model_ || !data_) return s;
+  pinocchio::forwardKinematics(*model_, *data_, q);
+  pinocchio::updateFramePlacements(*model_, *data_);
+  const pinocchio::SE3 &pose = data_->oMf[tip_frame_id_];
+  s.linear() = pose.rotation();
+  s.translation() = pose.translation();
+  return s;
+}
+
 Eigen::MatrixXd IkSolver::getFrameJacobian(const Eigen::VectorXd &q) {
   std::lock_guard<std::mutex> lk(mutex_);
-  pinocchio::forwardKinematics(model_, data_, q);
-  pinocchio::updateFramePlacements(model_, data_);
-  // use last frame index as default tip frame
-  const int fid = static_cast<int>(std::max<size_t>(1, model_.nframes) - 1);
-  Eigen::MatrixXd J = pinocchio::getFrameJacobian(model_, data_, fid, pinocchio::WORLD);
+  if (!model_ || !data_) return Eigen::MatrixXd();
+  pinocchio::forwardKinematics(*model_, *data_, q);
+  pinocchio::updateFramePlacements(*model_, *data_);
+  const int fid = static_cast<int>(std::max<size_t>(1, model_->nframes) - 1);
+  Eigen::MatrixXd J = pinocchio::getFrameJacobian(*model_, *data_, fid, pinocchio::WORLD);
   return J;
 }
 
@@ -88,7 +128,7 @@ void IkSolver::clampToJointLimits(Eigen::VectorXd &q) {
   }
 }
 
-IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::VectorXd q_init, const std::chrono::steady_clock::time_point &deadline) {
+IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd q_init, const std::chrono::steady_clock::time_point &deadline) {
   Result res;
   auto tstart = std::chrono::steady_clock::now();
 
@@ -99,15 +139,21 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
     p = params_;
   }
 
-  const int nv = model_.nv;
+  if (!model_ || !data_) {
+    res.success = false; res.status = 0; res.diagnostic = "no model"; return res;
+  }
+
+  // convert public SE3 to pinocchio::SE3 for internal computations
+  pinocchio::SE3 target = toPinocchioSE3(target_se3);
+
+  const int nv = model_->nv;
   Eigen::VectorXd q_solution = q_init;
-  pinocchio::Data data_local(model_);
+  pinocchio::Data data_local(*model_);
 
   double best_error = 1e300;
   Eigen::VectorXd best_q = q_solution;
   int best_iter = -1;
 
-  // track if a precise (within p.eps) solution was found inside the loop
   bool precise_success = false;
   int precise_iter = -1;
   Eigen::VectorXd precise_q;
@@ -121,19 +167,18 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
   int consecutive_max_damping_rejections = 0;
 
   // attempt to cache joint indices for j3/j4/j5/j7 if names available
-  // model_.getJointId may throw; guard
   try {
-    int id4 = model_.getJointId("joint4"); if (id4 >= 0 && id4 < (int)model_.joints.size()) j4_q_index_ = model_.joints[id4].idx_q();
-    int id3 = model_.getJointId("joint3"); if (id3 >= 0 && id3 < (int)model_.joints.size()) j3_q_index_ = model_.joints[id3].idx_q();
-    int id5 = model_.getJointId("joint5"); if (id5 >= 0 && id5 < (int)model_.joints.size()) j5_q_index_ = model_.joints[id5].idx_q();
-    int id7 = model_.getJointId("joint7"); if (id7 >= 0 && id7 < (int)model_.joints.size()) j7_q_index_ = model_.joints[id7].idx_q();
+    int id4 = model_->getJointId("joint4"); if (id4 >= 0 && id4 < (int)model_->joints.size()) j4_q_index_ = model_->joints[id4].idx_q();
+    int id3 = model_->getJointId("joint3"); if (id3 >= 0 && id3 < (int)model_->joints.size()) j3_q_index_ = model_->joints[id3].idx_q();
+    int id5 = model_->getJointId("joint5"); if (id5 >= 0 && id5 < (int)model_->joints.size()) j5_q_index_ = model_->joints[id5].idx_q();
+    int id7 = model_->getJointId("joint7"); if (id7 >= 0 && id7 < (int)model_->joints.size()) j7_q_index_ = model_->joints[id7].idx_q();
   } catch(...) {}
 
   for (int it = 0; it < p.max_iters; ++it) {
     if (std::chrono::steady_clock::now() > deadline) { res.success=false; res.status=0; res.diagnostic="timeout"; break; }
 
-    pinocchio::forwardKinematics(model_, data_local, q_solution);
-    pinocchio::updateFramePlacements(model_, data_local);
+    pinocchio::forwardKinematics(*model_, data_local, q_solution);
+    pinocchio::updateFramePlacements(*model_, data_local);
     const pinocchio::SE3 &current_pose = data_local.oMf.back();
     Eigen::Vector3d pos_cur = current_pose.translation();
     Eigen::Vector3d pos_tgt = target.translation();
@@ -146,16 +191,13 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
     err6.head<3>() = pos_err; err6.tail<3>() = ang_err; double cur_err = err6.norm();
 
     if (cur_err < best_error) { best_error = cur_err; best_q = q_solution; best_iter = it; }
-    if (cur_err < p.eps) { 
-      // record precise solution and break; finalization will preserve it
+    if (cur_err < p.eps) {
       precise_success = true; precise_iter = it; precise_q = q_solution; precise_error = cur_err; break; }
 
-    pinocchio::computeJointJacobians(model_, data_local, q_solution);
-    // default tip frame: last frame index
-    const int fid = static_cast<int>(std::max<size_t>(1, model_.nframes) - 1);
-    MatrixXd J_world = pinocchio::getFrameJacobian(model_, data_local, fid, pinocchio::WORLD);
+    pinocchio::computeJointJacobians(*model_, data_local, q_solution);
+    const int fid = static_cast<int>(std::max<size_t>(1, model_->nframes) - 1);
+    MatrixXd J_world = pinocchio::getFrameJacobian(*model_, data_local, fid, pinocchio::WORLD);
 
-    // build numeric M
     const double eps_se3 = 1e-6;
     Eigen::Matrix<double,6,6> Mmat = Eigen::Matrix<double,6,6>::Zero();
     for (int k=0;k<6;++k) {
@@ -174,7 +216,6 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
 
     MatrixXd J_err = - Mmat * J_world;
 
-    // numeric jacobian option
     MatrixXd numJ = MatrixXd::Zero(6, nv); bool numeric_computed=false;
     if (p.use_numeric_jacobian) {
       const double eps_q = 1e-6;
@@ -182,10 +223,10 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
         Eigen::VectorXd dq = Eigen::VectorXd::Zero(nv);
         dq[j]=eps_q;
         Eigen::VectorXd q_pert(q_solution.size());
-        pinocchio::integrate(model_, q_solution, dq, q_pert);
-        pinocchio::Data data_pert(model_);
-        pinocchio::forwardKinematics(model_, data_pert, q_pert);
-        pinocchio::updateFramePlacements(model_, data_pert);
+        pinocchio::integrate(*model_, q_solution, dq, q_pert);
+        pinocchio::Data data_pert(*model_);
+        pinocchio::forwardKinematics(*model_, data_pert, q_pert);
+        pinocchio::updateFramePlacements(*model_, data_pert);
         const pinocchio::SE3 &pose_pert = data_pert.oMf.back();
         Eigen::Vector3d pos_err_pert = target.translation() - pose_pert.translation();
         Eigen::Quaterniond qcur_pert(pose_pert.rotation());
@@ -204,7 +245,6 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
 
     MatrixXd J_used = ( (p.use_numeric_jacobian && numeric_computed) || numeric_force_active) ? numJ : J_err;
 
-    // apply weights
     Eigen::Matrix<double,6,6> W = Eigen::Matrix<double,6,6>::Identity();
     for (int ri=0;ri<3;++ri) W(ri,ri)=p.pos_weight;
     for (int ri=3;ri<6;++ri) W(ri,ri)=p.ang_weight;
@@ -212,16 +252,13 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
     for (int ri=0; ri<6; ++ri) Jw.row(ri) *= W(ri,ri);
     Eigen::Matrix<double,6,1> errw = err6; errw.head<3>() *= p.pos_weight; errw.tail<3>() *= p.ang_weight;
 
-    // SVD diagnostic
     Eigen::JacobiSVD<MatrixXd> svd(Jw, Eigen::ComputeThinU | Eigen::ComputeThinV);
     Eigen::VectorXd s = svd.singularValues(); int sn = (int)s.size();
     double cond = std::numeric_limits<double>::infinity(); if (sn>0 && s(sn-1)>0) cond = s(0)/s(sn-1);
 
-    // LM style: build A, g
     MatrixXd A = Jw.transpose() * Jw;
     Eigen::VectorXd g = Jw.transpose() * errw;
 
-    // targeted null-space penalty
     double alpha_ns = 0.0;
     if (sn>0) {
       Eigen::VectorXd ns_vec = svd.matrixV().col(sn-1);
@@ -233,12 +270,10 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
       if (j4_q_index_>=0 && std::abs(q_solution[j4_q_index_]) < p.joint4_penalty_threshold && (pair_j5j7 || pair_j3j5)) {
         double smax = (s.size()>0) ? s(0) : 1.0;
         alpha_ns = p.nullspace_penalty_scale * (smax*smax);
-        // append rank-1
         A += alpha_ns * (ns_vec * ns_vec.transpose());
       }
     }
 
-    // LM damping and solve via LDLT loop
     double lambda = std::max(p.ik_svd_damping_min, std::min(p.ik_svd_damping, p.ik_svd_damping_max));
     const int lm_max_attempts = 8;
     double predicted_reduction = -1.0;
@@ -263,14 +298,11 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
       lambda *= p.ik_svd_damping_increase_factor;
       if (lambda>p.ik_svd_damping_max) { lambda=p.ik_svd_damping_max; break; }
     }
-    // commit lambda
     p.ik_svd_damping = std::max(p.ik_svd_damping_min, std::min(lambda, p.ik_svd_damping_max));
     v = v_candidate;
 
-    // compute full delta
     Eigen::VectorXd delta_full = v * p.dt;
 
-    // line-search with joint-limit aware clamping
     bool accepted = false;
     Eigen::VectorXd q_candidate = q_solution;
     double best_trial_err = cur_err;
@@ -285,9 +317,9 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
         delta_try = q_try_est - q_solution;
       }
       Eigen::VectorXd q_try(q_solution.size());
-      pinocchio::integrate(model_, q_solution, delta_try, q_try);
-      pinocchio::forwardKinematics(model_, data_local, q_try);
-      pinocchio::updateFramePlacements(model_, data_local);
+      pinocchio::integrate(*model_, q_solution, delta_try, q_try);
+      pinocchio::forwardKinematics(*model_, data_local, q_try);
+      pinocchio::updateFramePlacements(*model_, data_local);
       const pinocchio::SE3 &pose_try = data_local.oMf.back();
       Eigen::Vector3d pos_err_try = target.translation() - pose_try.translation();
       Eigen::Quaterniond qcur_try(pose_try.rotation());
@@ -350,7 +382,6 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
     if (iter_cb_) iter_cb_(it, q_solution, cur_err);
   }
 
-  // finalize: prefer a precise in-loop solution if one was found; otherwise return the best found
   double elapsed = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(std::chrono::steady_clock::now() - tstart).count();
   res.elapsed_ms = elapsed;
 
@@ -363,14 +394,17 @@ IkSolver::Result IkSolver::solveInternal(const pinocchio::SE3 &target, Eigen::Ve
     return res;
   }
 
-  // no precise solution — return best found and decide whether it's an acceptable relaxed success
   res.q = best_q;
   res.final_error = best_error;
   res.iterations = (best_iter >= 0) ? best_iter : 0;
-  // use explicit relaxed thresholds from params if available; fall back to a conservative multiplier
   double relaxed_threshold = p.eps_relaxed_6d;
   if (relaxed_threshold <= 0.0) relaxed_threshold = p.eps * 100.0;
   res.success = (best_error < relaxed_threshold);
-  res.status = res.success ? 2 : 0; // 2 = relaxed success, 0 = fail
+  res.status = res.success ? 2 : 0;
   return res;
 }
+
+int IkSolver::getTipFrameId() const { return static_cast<int>(tip_frame_id_); }
+std::string IkSolver::getTipFrameName() const { return tip_frame_name_; }
+int IkSolver::getNq() const { return model_ ? model_->nq : 0; }
+int IkSolver::getNv() const { return model_ ? model_->nv : 0; }

@@ -1,10 +1,5 @@
 #pragma once
 
-#include <pinocchio/multibody/model.hpp>
-#include <pinocchio/multibody/data.hpp>
-#include <pinocchio/algorithm/kinematics.hpp>
-#include <pinocchio/algorithm/frames.hpp>
-#include <pinocchio/algorithm/jacobian.hpp>
 #include <Eigen/Dense>
 #include <functional>
 #include <mutex>
@@ -13,8 +8,15 @@
 #include <vector>
 #include <fstream>
 #include <sstream>
+#include <memory>
+
+// Include Pinocchio forward declarations (typedefs) instead of forward-declaring class names
+#include <pinocchio/multibody/fwd.hpp>
 
 namespace ros2_ik_cpp {
+
+// Public SE3 type (pose) exposed to callers. Implementations convert to pinocchio::SE3 internally.
+using SE3 = Eigen::Isometry3d;
 
 class IkSolver {
 public:
@@ -64,8 +66,11 @@ public:
 
   using IterCallback = std::function<void(int, const Eigen::VectorXd&, double)>;
 
-  // Construct with an existing Pinocchio model (copy)
-  explicit IkSolver(const pinocchio::Model &model);
+  // Provide a class-local SE3 alias so callers can write IkSolver::SE3
+  using SE3 = ::ros2_ik_cpp::SE3;
+
+  // Construct from URDF XML string and tip frame name (builds internal Pinocchio model)
+  explicit IkSolver(const std::string &urdf_xml, const std::string &tip_frame_name);
   ~IkSolver();
 
   // Parameter access
@@ -79,14 +84,23 @@ public:
   void setIterCallback(IterCallback cb);
 
   // Synchronous solve. If timeout_ms==0 -> no timeout.
-  Result solve(const pinocchio::SE3 &target, const Eigen::VectorXd &q_init, int timeout_ms = 0);
+  Result solve(const SE3 &target, const Eigen::VectorXd &q_init, int timeout_ms = 0);
 
   // Single-step iteration (advances one internal LM iteration). Returns Result with updated q
-  Result step(const pinocchio::SE3 &target, const Eigen::VectorXd &q_current);
+  Result step(const SE3 &target, const Eigen::VectorXd &q_current);
 
   // Utility read-only queries
   Eigen::VectorXd forwardKinematics(const Eigen::VectorXd &q);
   Eigen::MatrixXd getFrameJacobian(const Eigen::VectorXd &q);
+
+  // Query model / frame info
+  int getTipFrameId() const;
+  std::string getTipFrameName() const;
+  int getNq() const;
+  int getNv() const;
+
+  // Return tip SE3 for given joint vector (uses internal data_)
+  SE3 forwardKinematicsSE3(const Eigen::VectorXd &q);
 
   // Load a simple YAML-style file (keys:value) to populate Params. Returns true on success.
   bool loadParamsFromFile(const std::string &path);
@@ -97,12 +111,16 @@ private:
   IkSolver &operator=(const IkSolver &) = delete;
 
   // internal solver (time-bounded)
-  Result solveInternal(const pinocchio::SE3 &target, Eigen::VectorXd q_init, const std::chrono::steady_clock::time_point &deadline);
+  Result solveInternal(const SE3 &target, Eigen::VectorXd q_init, const std::chrono::steady_clock::time_point &deadline);
 
   void clampToJointLimits(Eigen::VectorXd &q);
 
-  pinocchio::Model model_;
-  pinocchio::Data data_; // reused across solves
+  // Pinocchio model/data are implementation details; store via pointers to avoid exposing headers here.
+  std::unique_ptr<pinocchio::Model> model_;
+  std::unique_ptr<pinocchio::Data> data_; // reused across solves
+  // tip frame for SE3 queries
+  unsigned int tip_frame_id_{0};
+  std::string tip_frame_name_; // for informational queries
   Params params_;
   mutable std::mutex mutex_;
   IterCallback iter_cb_{nullptr};

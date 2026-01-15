@@ -4,9 +4,7 @@
 #include <geometry_msgs/msg/twist.hpp>
 
 #include "ros2_ik_cpp/ik_solver.hpp"
-#include <pinocchio/parsers/urdf.hpp>
-#include <pinocchio/algorithm/kinematics.hpp>
-#include <pinocchio/algorithm/frames.hpp>
+// pinocchio headers are encapsulated inside ik_solver.hpp / IkSolver - do not include them directly here
 
 #include <Eigen/Dense>
 #include <fstream>
@@ -20,9 +18,7 @@ using namespace std::chrono_literals;
 using ros2_ik_cpp::IkSolver;
 using Params = ros2_ik_cpp::IkSolver::Params;
 using Eigen::VectorXd;
-using pinocchio::Model;
-using pinocchio::Data;
-using pinocchio::SE3;
+// Avoid importing pinocchio symbols into this translation unit; use IkSolver APIs and fully-qualify pinocchio types if needed
 
 class IkSolverNode : public rclcpp::Node {
 public:
@@ -143,44 +139,36 @@ public:
       RCLCPP_ERROR(this->get_logger(), "Failed to read right URDF: %s", urdf_path_right.c_str());
       throw std::runtime_error("Right URDF read failed");
     }
+    // Build IkSolver instances from URDF XML (encapsulates Pinocchio inside IkSolver)
     try {
-      pinocchio::urdf::buildModelFromXML(urdf_left, model_left_);
-      pinocchio::urdf::buildModelFromXML(urdf_right, model_right_);
+      solver_left_ = std::make_shared<IkSolver>(urdf_left, tip_link_left);
+      solver_left_->setParams(p);
+      solver_right_ = std::make_shared<IkSolver>(urdf_right, tip_link_right);
+      solver_right_->setParams(p);
+      tip_frame_id_left_ = static_cast<unsigned int>(solver_left_->getTipFrameId());
+      tip_frame_id_right_ = static_cast<unsigned int>(solver_right_->getTipFrameId());
     } catch (const std::exception &e) {
-      RCLCPP_ERROR(this->get_logger(), "Pinocchio URDF parse failed: %s", e.what());
+      RCLCPP_ERROR(this->get_logger(), "Failed to build IkSolver from URDF: %s", e.what());
       throw;
     }
 
-    data_left_ = Data(model_left_);
-    data_right_ = Data(model_right_);
-    tip_frame_id_left_ = model_left_.getFrameId(tip_link_left);
-    tip_frame_id_right_ = model_right_.getFrameId(tip_link_right);
-
     // cache q indices for joints we may want to target for null-space penalty (left)
     j4_q_index_ = j5_q_index_ = j7_q_index_ = j3_q_index_ = -1;
-    try { int j4_id = model_left_.getJointId("joint4"); if (j4_id>=0) j4_q_index_ = model_left_.joints[j4_id].idx_q(); } catch(...) {}
-    try { int j3_id = model_left_.getJointId("joint3"); if (j3_id>=0) j3_q_index_ = model_left_.joints[j3_id].idx_q(); } catch(...) {}
-    try { int j5_id = model_left_.getJointId("joint5"); if (j5_id>=0) j5_q_index_ = model_left_.joints[j5_id].idx_q(); } catch(...) {}
-    try { int j7_id = model_left_.getJointId("joint7"); if (j7_id>=0) j7_q_index_ = model_left_.joints[j7_id].idx_q(); } catch(...) {}
+    // IkSolver currently does not expose joint name -> joint id/index helpers.
+    // Keep cached indices at -1. If needed, add an API to IkSolver to query joint indices by name.
 
     RCLCPP_INFO(this->get_logger(), "Pinocchio models loaded: nq_left=%d nv_left=%d nq_right=%d nv_right=%d tip_left='%s' tip_right='%s' tip_id_left=%u tip_id_right=%u",
-                static_cast<int>(model_left_.nq), static_cast<int>(model_left_.nv), static_cast<int>(model_right_.nq), static_cast<int>(model_right_.nv), tip_link_left.c_str(), tip_link_right.c_str(), tip_frame_id_left_, tip_frame_id_right_);
+                static_cast<int>(solver_left_->getNq()), static_cast<int>(solver_left_->getNv()), static_cast<int>(solver_right_->getNq()), static_cast<int>(solver_right_->getNv()), tip_link_left.c_str(), tip_link_right.c_str(), tip_frame_id_left_, tip_frame_id_right_);
 
     // Also write a textual init line into the log file (if enabled)
     {
       std::ostringstream oss;
-      oss << "Pinocchio models loaded: nq_left=" << model_left_.nq << " nv_left=" << model_left_.nv
-          << " nq_right=" << model_right_.nq << " nv_right=" << model_right_.nv
+      oss << "Pinocchio models loaded: nq_left=" << solver_left_->getNq() << " nv_left=" << solver_left_->getNv()
+          << " nq_right=" << solver_right_->getNq() << " nv_right=" << solver_right_->getNv()
           << " tip_left='" << tip_link_left << "' tip_right='" << tip_link_right << "'"
           << " tip_id_left=" << tip_frame_id_left_ << " tip_id_right=" << tip_frame_id_right_;
       appendLog(oss.str());
     }
-
-    // create solvers now that models are initialized and share Params p
-    solver_left_ = std::make_shared<IkSolver>(model_left_);
-    solver_left_->setParams(p);
-    solver_right_ = std::make_shared<IkSolver>(model_right_);
-    solver_right_->setParams(p);
 
     // open iteration log file and register iter callback if requested (use left model dims for header)
     if (p.log_to_file && !p.log_file.empty()) {
@@ -193,8 +181,8 @@ public:
           fp->seekp(0, std::ios::end);
           if (fp->tellp() == 0) {
             (*fp) << "ts_ms,iter,err";
-            for (int i = 0; i < static_cast<int>(model_left_.nq); ++i) (*fp) << ",q_left" << i;
-            for (int i = 0; i < static_cast<int>(model_right_.nq); ++i) (*fp) << ",q_right" << i;
+            for (int i = 0; i < solver_left_->getNq(); ++i) (*fp) << ",q_left" << i;
+            for (int i = 0; i < solver_right_->getNq(); ++i) (*fp) << ",q_right" << i;
             (*fp) << "\n";
             fp->flush();
             // also write a short textual header to the log file for init/summary messages
@@ -203,8 +191,8 @@ public:
           }
           iter_log_fp_ = fp;
           // initialize cached q vectors
-          last_logged_q_left_.resize(static_cast<int>(model_left_.nq)); last_logged_q_left_.setZero();
-          last_logged_q_right_.resize(static_cast<int>(model_right_.nq)); last_logged_q_right_.setZero();
+          last_logged_q_left_.resize(solver_left_->getNq()); last_logged_q_left_.setZero();
+          last_logged_q_right_.resize(solver_right_->getNq()); last_logged_q_right_.setZero();
           // left callback: update left cache and write combined row (using latest right cache)
           auto write_cb_left = [this, fp](int it, const Eigen::VectorXd &q, double err) {
             if (!fp || !fp->good()) return;
@@ -240,14 +228,16 @@ public:
       }
     }
 
-    if (!p.joint_limits_min.empty() && p.joint_limits_min.size() == model_left_.nq && !p.joint_limits_max.empty() && p.joint_limits_max.size() == model_left_.nq) {
-      VectorXd lo(model_left_.nq), hi(model_left_.nq);
-      for (int i=0;i<model_left_.nq;++i) { lo[i]=p.joint_limits_min[i]; hi[i]=p.joint_limits_max[i]; }
+    if (!p.joint_limits_min.empty() && p.joint_limits_min.size() == solver_left_->getNq() && !p.joint_limits_max.empty() && p.joint_limits_max.size() == solver_left_->getNq()) {
+      int nqL = solver_left_->getNq();
+      VectorXd lo(nqL), hi(nqL);
+      for (int i=0;i<nqL;++i) { lo[i]=p.joint_limits_min[i]; hi[i]=p.joint_limits_max[i]; }
       solver_left_->setJointLimits(lo, hi);
     }
-    if (!p.joint_limits_min.empty() && p.joint_limits_min.size() == model_right_.nq && !p.joint_limits_max.empty() && p.joint_limits_max.size() == model_right_.nq) {
-      VectorXd lo(model_right_.nq), hi(model_right_.nq);
-      for (int i=0;i<model_right_.nq;++i) { lo[i]=p.joint_limits_min[i]; hi[i]=p.joint_limits_max[i]; }
+    if (!p.joint_limits_min.empty() && p.joint_limits_min.size() == solver_right_->getNq() && !p.joint_limits_max.empty() && p.joint_limits_max.size() == solver_right_->getNq()) {
+      int nqR = solver_right_->getNq();
+      VectorXd lo(nqR), hi(nqR);
+      for (int i=0;i<nqR;++i) { lo[i]=p.joint_limits_min[i]; hi[i]=p.joint_limits_max[i]; }
       solver_right_->setJointLimits(lo, hi);
     }
 
@@ -289,16 +279,13 @@ private:
     // If we don't yet have a target pose, initialize it from current FK computed from incoming joint_states
     if (!target_received_ && !last_js_.position.empty()) {
       // build left and right q from incoming joint_states (first left then right)
-      VectorXd ql = VectorXd::Zero(model_left_.nq);
-      VectorXd qr = VectorXd::Zero(model_right_.nq);
+      VectorXd ql = VectorXd::Zero(solver_left_->getNq());
+      VectorXd qr = VectorXd::Zero(solver_right_->getNq());
       for (size_t i = 0; i < last_js_.position.size() && i < (size_t)ql.size(); ++i) ql[i] = last_js_.position[i];
       for (size_t i = 0; i + ql.size() < last_js_.position.size() && (i < (size_t)qr.size()); ++i) qr[i] = last_js_.position[i + ql.size()];
       // compute FK for left
       try {
-        pinocchio::Data data_fk_left(model_left_);
-        pinocchio::forwardKinematics(model_left_, data_fk_left, ql);
-        pinocchio::updateFramePlacements(model_left_, data_fk_left);
-        const SE3 &poseL = data_fk_left.oMf[tip_frame_id_left_];
+        auto poseL = solver_left_->forwardKinematicsSE3(ql);
         Eigen::Quaterniond eqL(poseL.rotation());
         geometry_msgs::msg::PoseStamped psl;
         psl.header.stamp = this->get_clock()->now(); psl.header.frame_id = "";
@@ -310,10 +297,7 @@ private:
       }
       // compute FK for right
       try {
-        pinocchio::Data data_fk_right(model_right_);
-        pinocchio::forwardKinematics(model_right_, data_fk_right, qr);
-        pinocchio::updateFramePlacements(model_right_, data_fk_right);
-        const SE3 &poseR = data_fk_right.oMf[tip_frame_id_right_];
+        auto poseR = solver_right_->forwardKinematicsSE3(qr);
         Eigen::Quaterniond eqR(poseR.rotation());
         geometry_msgs::msg::PoseStamped psr;
         psr.header.stamp = this->get_clock()->now(); psr.header.frame_id = "";
@@ -335,7 +319,7 @@ private:
         appendLog(ossjs.str());
 
         // also log the mapping assumption (left then right) and sizes
-        std::ostringstream ossmap; ossmap << "Assumed mapping: left_nq=" << model_left_.nq << " right_nq=" << model_right_.nq << " incoming_count=" << last_js_.position.size();
+        std::ostringstream ossmap; ossmap << "Assumed mapping: left_nq=" << solver_left_->getNq() << " right_nq=" << solver_right_->getNq() << " incoming_count=" << last_js_.position.size();
         appendLog(ossmap.str());
       }
 
@@ -390,15 +374,15 @@ private:
     std::lock_guard<std::mutex> lk(mutex_);
     if (last_js_.position.empty()) return;
     // build current q vectors
-    VectorXd q_left = VectorXd::Zero(model_left_.nq);
-    VectorXd q_right = VectorXd::Zero(model_right_.nq);
+    VectorXd q_left = VectorXd::Zero(solver_left_->getNq());
+    VectorXd q_right = VectorXd::Zero(solver_right_->getNq());
     for (size_t i=0;i<last_js_.position.size() && i<q_left.size(); ++i) q_left[i] = last_js_.position[i];
     for (size_t i=0;i+q_left.size() < last_js_.position.size() && (i < q_right.size()); ++i) q_right[i] = last_js_.position[i + q_left.size()];
     // apply deltas if provided in msg.position (supports length == left, == right, or == total)
     if (!msg->position.empty()) {
-      if (msg->position.size() == static_cast<size_t>(model_left_.nq)) {
+      if (msg->position.size() == static_cast<size_t>(solver_left_->getNq())) {
         for (size_t i=0;i<q_left.size(); ++i) q_left[i] += msg->position[i];
-      } else if (msg->position.size() == static_cast<size_t>(model_right_.nq)) {
+      } else if (msg->position.size() == static_cast<size_t>(solver_right_->getNq())) {
         for (size_t i=0;i<q_right.size(); ++i) q_right[i] += msg->position[i];
       } else if (msg->position.size() == q_left.size() + q_right.size()) {
         for (size_t i=0;i<q_left.size(); ++i) q_left[i] += msg->position[i];
@@ -484,10 +468,10 @@ private:
     if (js.position.empty()) return;
 
     // build left and right init q vectors from incoming joint_states (first left then right)
-    VectorXd q_init_left = VectorXd::Zero(model_left_.nq);
-    VectorXd q_init_right = VectorXd::Zero(model_right_.nq);
-    for (size_t i=0;i<js.position.size() && i<q_init_left.size(); ++i) q_init_left[i] = js.position[i];
-    for (size_t i=0;i+q_init_left.size() < js.position.size() && (i < q_init_right.size()); ++i) q_init_right[i] = js.position[i + q_init_left.size()];
+    VectorXd q_init_left = VectorXd::Zero(solver_left_->getNq());
+    VectorXd q_init_right = VectorXd::Zero(solver_right_->getNq());
+    for (size_t i=0;i<js.position.size() && i<static_cast<size_t>(q_init_left.size()); ++i) q_init_left[i] = js.position[i];
+    for (size_t i=0;i+q_init_left.size() < js.position.size() && (i < static_cast<size_t>(q_init_right.size())); ++i) q_init_right[i] = js.position[i + q_init_left.size()];
 
     if (!target_received_) {
       // No external target: compute FK via Pinocchio for each arm and use those poses as per-arm targets
@@ -505,13 +489,13 @@ private:
         RCLCPP_INFO(this->get_logger(), "spinOnce: %s", ossl.str().c_str());
         RCLCPP_INFO(this->get_logger(), "spinOnce: %s", ossr.str().c_str());
         RCLCPP_INFO(this->get_logger(), "spinOnce: tip_frame_id_left=%u tip_frame_id_right=%u model_left_nq=%d model_right_nq=%d",
-                    tip_frame_id_left_, tip_frame_id_right_, static_cast<int>(model_left_.nq), static_cast<int>(model_right_.nq));
+                    tip_frame_id_left_, tip_frame_id_right_, static_cast<int>(solver_left_->getNq()), static_cast<int>(solver_right_->getNq()));
         // write same init info to textual log file
         appendLog(ossl.str());
         appendLog(ossr.str());
         {
           std::ostringstream ossf; ossf << "tip_frame_id_left=" << tip_frame_id_left_ << " tip_frame_id_right=" << tip_frame_id_right_
-                                        << " model_left_nq=" << model_left_.nq << " model_right_nq=" << model_right_.nq;
+                                        << " model_left_nq=" << solver_left_->getNq() << " model_right_nq=" << solver_right_->getNq();
           appendLog(ossf.str());
         }
         // additionally log incoming joint names (mapping info)
@@ -523,9 +507,7 @@ private:
         }
       }
       try {
-        pinocchio::forwardKinematics(model_left_, data_left_, q_init_left);
-        pinocchio::updateFramePlacements(model_left_, data_left_);
-        const SE3 &poseL = data_left_.oMf[tip_frame_id_left_];
+        const auto poseL = solver_left_->forwardKinematicsSE3(q_init_left);
         Eigen::Quaterniond qrotL(poseL.rotation()); qrotL.normalize();
         cur_msg_left.pose.orientation.w = qrotL.w(); cur_msg_left.pose.orientation.x = qrotL.x(); cur_msg_left.pose.orientation.y = qrotL.y(); cur_msg_left.pose.orientation.z = qrotL.z();
         cur_msg_left.pose.position.x = poseL.translation()[0]; cur_msg_left.pose.position.y = poseL.translation()[1]; cur_msg_left.pose.position.z = poseL.translation()[2];
@@ -535,9 +517,7 @@ private:
         RCLCPP_WARN(this->get_logger(), "Left FK failed: %s", e.what());
       }
       try {
-        pinocchio::forwardKinematics(model_right_, data_right_, q_init_right);
-        pinocchio::updateFramePlacements(model_right_, data_right_);
-        const SE3 &poseR = data_right_.oMf[tip_frame_id_right_];
+        const auto poseR = solver_right_->forwardKinematicsSE3(q_init_right);
         Eigen::Quaterniond qrotR(poseR.rotation()); qrotR.normalize();
         cur_msg_right.pose.orientation.w = qrotR.w(); cur_msg_right.pose.orientation.x = qrotR.x(); cur_msg_right.pose.orientation.y = qrotR.y(); cur_msg_right.pose.orientation.z = qrotR.z();
         cur_msg_right.pose.position.x = poseR.translation()[0]; cur_msg_right.pose.position.y = poseR.translation()[1]; cur_msg_right.pose.position.z = poseR.translation()[2];
@@ -555,59 +535,72 @@ private:
     }
 
     // build per-arm SE3 targets: prefer explicit per-arm targets, else shared target, else per-arm FK
-    SE3 target_se3_left, target_se3_right;
+    IkSolver::SE3 target_se3_left = IkSolver::SE3::Identity();
+    IkSolver::SE3 target_se3_right = IkSolver::SE3::Identity();
     // Left precedence: explicit left target > shared target > per-arm FK-initialized left target
     if (target_left_received_) {
-      target_se3_left = SE3(Eigen::Quaterniond(last_target_left_.pose.orientation.w,
-                                               last_target_left_.pose.orientation.x,
-                                               last_target_left_.pose.orientation.y,
-                                               last_target_left_.pose.orientation.z),
-                             Eigen::Vector3d(last_target_left_.pose.position.x,
-                                             last_target_left_.pose.position.y,
-                                             last_target_left_.pose.position.z));
+      Eigen::Quaterniond q(last_target_left_.pose.orientation.w,
+                           last_target_left_.pose.orientation.x,
+                           last_target_left_.pose.orientation.y,
+                           last_target_left_.pose.orientation.z);
+      q.normalize();
+      target_se3_left.linear() = q.toRotationMatrix();
+      target_se3_left.translation() = Eigen::Vector3d(last_target_left_.pose.position.x,
+                                                      last_target_left_.pose.position.y,
+                                                      last_target_left_.pose.position.z);
     } else if (target_received_) {
-      target_se3_left = SE3(Eigen::Quaterniond(target.pose.orientation.w,
-                                               target.pose.orientation.x,
-                                               target.pose.orientation.y,
-                                               target.pose.orientation.z),
-                             Eigen::Vector3d(target.pose.position.x,
-                                             target.pose.position.y,
-                                             target.pose.position.z));
+      Eigen::Quaterniond q(target.pose.orientation.w,
+                           target.pose.orientation.x,
+                           target.pose.orientation.y,
+                           target.pose.orientation.z);
+      q.normalize();
+      target_se3_left.linear() = q.toRotationMatrix();
+      target_se3_left.translation() = Eigen::Vector3d(target.pose.position.x,
+                                                      target.pose.position.y,
+                                                      target.pose.position.z);
     } else {
-      target_se3_left = SE3(Eigen::Quaterniond(last_target_left_.pose.orientation.w,
-                                               last_target_left_.pose.orientation.x,
-                                               last_target_left_.pose.orientation.y,
-                                               last_target_left_.pose.orientation.z),
-                             Eigen::Vector3d(last_target_left_.pose.position.x,
-                                             last_target_left_.pose.position.y,
-                                             last_target_left_.pose.position.z));
+      Eigen::Quaterniond q(last_target_left_.pose.orientation.w,
+                           last_target_left_.pose.orientation.x,
+                           last_target_left_.pose.orientation.y,
+                           last_target_left_.pose.orientation.z);
+      q.normalize();
+      target_se3_left.linear() = q.toRotationMatrix();
+      target_se3_left.translation() = Eigen::Vector3d(last_target_left_.pose.position.x,
+                                                      last_target_left_.pose.position.y,
+                                                      last_target_left_.pose.position.z);
     }
 
     // Right precedence: explicit right target > shared target > per-arm FK-initialized right target
     if (target_right_received_) {
-      target_se3_right = SE3(Eigen::Quaterniond(last_target_right_.pose.orientation.w,
-                                                last_target_right_.pose.orientation.x,
-                                                last_target_right_.pose.orientation.y,
-                                                last_target_right_.pose.orientation.z),
-                              Eigen::Vector3d(last_target_right_.pose.position.x,
-                                              last_target_right_.pose.position.y,
-                                              last_target_right_.pose.position.z));
+      Eigen::Quaterniond q(last_target_right_.pose.orientation.w,
+                           last_target_right_.pose.orientation.x,
+                           last_target_right_.pose.orientation.y,
+                           last_target_right_.pose.orientation.z);
+      q.normalize();
+      target_se3_right.linear() = q.toRotationMatrix();
+      target_se3_right.translation() = Eigen::Vector3d(last_target_right_.pose.position.x,
+                                                       last_target_right_.pose.position.y,
+                                                       last_target_right_.pose.position.z);
     } else if (target_received_) {
-      target_se3_right = SE3(Eigen::Quaterniond(target.pose.orientation.w,
-                                                target.pose.orientation.x,
-                                                target.pose.orientation.y,
-                                                target.pose.orientation.z),
-                              Eigen::Vector3d(target.pose.position.x,
-                                              target.pose.position.y,
-                                              target.pose.position.z));
+      Eigen::Quaterniond q(target.pose.orientation.w,
+                           target.pose.orientation.x,
+                           target.pose.orientation.y,
+                           target.pose.orientation.z);
+      q.normalize();
+      target_se3_right.linear() = q.toRotationMatrix();
+      target_se3_right.translation() = Eigen::Vector3d(target.pose.position.x,
+                                                       target.pose.position.y,
+                                                       target.pose.position.z);
     } else {
-      target_se3_right = SE3(Eigen::Quaterniond(last_target_right_.pose.orientation.w,
-                                                last_target_right_.pose.orientation.x,
-                                                last_target_right_.pose.orientation.y,
-                                                last_target_right_.pose.orientation.z),
-                              Eigen::Vector3d(last_target_right_.pose.position.x,
-                                              last_target_right_.pose.position.y,
-                                              last_target_right_.pose.position.z));
+      Eigen::Quaterniond q(last_target_right_.pose.orientation.w,
+                           last_target_right_.pose.orientation.x,
+                           last_target_right_.pose.orientation.y,
+                           last_target_right_.pose.orientation.z);
+      q.normalize();
+      target_se3_right.linear() = q.toRotationMatrix();
+      target_se3_right.translation() = Eigen::Vector3d(last_target_right_.pose.position.x,
+                                                       last_target_right_.pose.position.y,
+                                                       last_target_right_.pose.position.z);
     }
 
     // Log target pose for debugging/trace
@@ -655,10 +648,8 @@ private:
     // compute FK at solver results and log error to target for each arm (translation norm and rotation angle)
     if (iter_log_fp_ && iter_log_fp_->good()) {
       try {
-        if (res_left.q.size() == static_cast<int>(model_left_.nq)) {
-          pinocchio::forwardKinematics(model_left_, data_left_, res_left.q);
-          pinocchio::updateFramePlacements(model_left_, data_left_);
-          const SE3 &pose_resL = data_left_.oMf[tip_frame_id_left_];
+        if (res_left.q.size() == solver_left_->getNq()) {
+          auto pose_resL = solver_left_->forwardKinematicsSE3(res_left.q);
           Eigen::Vector3d p_res = pose_resL.translation();
           Eigen::Matrix3d R_res = pose_resL.rotation();
           Eigen::Vector3d p_tgt = target_se3_left.translation();
@@ -675,10 +666,8 @@ private:
       } catch (const std::exception &e) { std::ostringstream oss; oss << "ResultFK left exception: " << e.what(); appendLog(oss.str()); }
 
       try {
-        if (res_right.q.size() == static_cast<int>(model_right_.nq)) {
-          pinocchio::forwardKinematics(model_right_, data_right_, res_right.q);
-          pinocchio::updateFramePlacements(model_right_, data_right_);
-          const SE3 &pose_resR = data_right_.oMf[tip_frame_id_right_];
+        if (res_right.q.size() == solver_right_->getNq()) {
+          auto pose_resR = solver_right_->forwardKinematicsSE3(res_right.q);
           Eigen::Vector3d p_res = pose_resR.translation();
           Eigen::Matrix3d R_res = pose_resR.rotation();
           Eigen::Vector3d p_tgt = target_se3_right.translation();
@@ -702,19 +691,19 @@ private:
       sensor_msgs::msg::JointState out;
       out.header.stamp = this->now();
       out.name = js.name; // expect names in same order: left then right
-      size_t total_q = static_cast<size_t>(model_left_.nq + model_right_.nq);
+      size_t total_q = static_cast<size_t>(solver_left_->getNq() + solver_right_->getNq());
       out.position.resize(total_q);
       // fill left
       if (res_left.success) {
-        for (int i=0;i<res_left.q.size() && i<(int)model_left_.nq; ++i) out.position[i] = res_left.q[i];
+        for (int i=0;i<res_left.q.size() && i<(int)solver_left_->getNq(); ++i) out.position[i] = res_left.q[i];
       } else {
-        for (int i=0;i<model_left_.nq; ++i) out.position[i] = q_init_left[i];
+        for (int i=0;i<solver_left_->getNq(); ++i) out.position[i] = q_init_left[i];
       }
       // fill right
       if (res_right.success) {
-        for (int i=0;i<res_right.q.size() && i<(int)model_right_.nq; ++i) out.position[model_left_.nq + i] = res_right.q[i];
+        for (int i=0;i<res_right.q.size() && i<(int)solver_right_->getNq(); ++i) out.position[solver_left_->getNq() + i] = res_right.q[i];
       } else {
-        for (int i=0;i<model_right_.nq; ++i) out.position[model_left_.nq + i] = q_init_right[i];
+        for (int i=0;i<solver_right_->getNq(); ++i) out.position[solver_left_->getNq() + i] = q_init_right[i];
       }
       // decide publish: explicit targets are published once (or when solution differs from last published);
       // otherwise compare desired joints to current measured joints
@@ -804,10 +793,6 @@ private:
   // when an explicit/shared target is received we mark it pending so we publish once
   bool explicit_target_pending_{false};
 
-  Model model_left_;
-  Model model_right_;
-  Data data_left_;
-  Data data_right_;
   std::shared_ptr<IkSolver> solver_left_;
   std::shared_ptr<IkSolver> solver_right_;
 
