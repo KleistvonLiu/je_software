@@ -225,6 +225,45 @@ private:
                 // fallback
             }
         }
+        if (use_file_stamp_ && obj.contains("timestamp"))
+        {
+            try
+            {
+                const double sec = obj.at("timestamp").get<double>();
+                const int64_t ns = static_cast<int64_t>(sec * 1e9);
+                return rclcpp::Time(ns, RCL_SYSTEM_TIME);
+            }
+            catch (...)
+            {
+                // fallback
+            }
+        }
+        if (use_file_stamp_ && obj.contains("joints") && obj["joints"].is_array() && !obj["joints"].empty())
+        {
+            try
+            {
+                const auto &entry = obj["joints"].front();
+                if (entry.contains("stamp_ns"))
+                {
+                    if (entry["stamp_ns"].is_number_float())
+                    {
+                        const double sec = entry["stamp_ns"].get<double>();
+                        const int64_t ns = static_cast<int64_t>(sec * 1e9);
+                        return rclcpp::Time(ns, RCL_SYSTEM_TIME);
+                    }
+                    const int64_t v = entry["stamp_ns"].get<int64_t>();
+                    if (v > 1000000000000LL)
+                    {
+                        return rclcpp::Time(v, RCL_SYSTEM_TIME);
+                    }
+                    return rclcpp::Time(static_cast<int64_t>(static_cast<double>(v) * 1e9), RCL_SYSTEM_TIME);
+                }
+            }
+            catch (...)
+            {
+                // fallback
+            }
+        }
         return this->get_clock()->now();
     }
 
@@ -308,6 +347,91 @@ private:
         return v;
     }
 
+    static bool is_left_topic(const std::string &topic)
+    {
+        return topic.find("left") != std::string::npos;
+    }
+
+    static bool is_right_topic(const std::string &topic)
+    {
+        return topic.find("right") != std::string::npos;
+    }
+
+    static bool fill_joint_from_meta_entry(const json &entry,
+                                           sensor_msgs::msg::JointState &out,
+                                           bool use_effort_filtered)
+    {
+        if (!entry.contains("position") || !entry["position"].is_array())
+        {
+            return false;
+        }
+
+        out.name.clear();
+        out.position.clear();
+        out.velocity.clear();
+        out.effort.clear();
+
+        if (entry.contains("name") && entry["name"].is_array())
+        {
+            out.name = entry["name"].get<std::vector<std::string>>();
+        }
+
+        out.position = entry["position"].get<std::vector<double>>();
+        if (entry.contains("velocity") && entry["velocity"].is_array())
+        {
+            out.velocity = entry["velocity"].get<std::vector<double>>();
+        }
+        if (use_effort_filtered && entry.contains("effort_filtered") && entry["effort_filtered"].is_array())
+        {
+            out.effort = entry["effort_filtered"].get<std::vector<double>>();
+        }
+        else if (entry.contains("effort") && entry["effort"].is_array())
+        {
+            out.effort = entry["effort"].get<std::vector<double>>();
+        }
+
+        return !out.position.empty();
+    }
+
+    bool fill_from_meta_joints(const json &obj,
+                               common::msg::OculusInitJointState &msg)
+    {
+        if (!obj.contains("joints") || !obj["joints"].is_array())
+        {
+            return false;
+        }
+
+        for (const auto &entry : obj["joints"])
+        {
+            if (!entry.is_object())
+            {
+                continue;
+            }
+            std::string topic;
+            if (entry.contains("topic") && entry["topic"].is_string())
+            {
+                topic = entry["topic"].get<std::string>();
+            }
+
+            if (is_left_topic(topic))
+            {
+                if (fill_joint_from_meta_entry(entry, msg.left, false))
+                {
+                    msg.left_valid = true;
+                }
+            }
+            else if (is_right_topic(topic))
+            {
+                if (fill_joint_from_meta_entry(entry, msg.right, false))
+                {
+                    msg.right_valid = true;
+                }
+            }
+        }
+
+        return msg.left_valid || msg.right_valid;
+    }
+
     static std::optional<std::array<double,6>> get_cart6(const json &robot0, const std::string &field)
     {
         if (field.empty()) return std::nullopt;
@@ -387,6 +511,12 @@ private:
         msg.header.stamp = to_builtin_time(make_stamp(obj));
         msg.header.frame_id = frame_id_;
         msg.init = joint_init_flag_;
+
+        if (fill_from_meta_joints(obj, msg))
+        {
+            pub_oculus_joint_->publish(msg);
+            return;
+        }
 
         if (init_left_valid_ && obj.contains("Robot0") && obj.at("Robot0").is_object())
         {
