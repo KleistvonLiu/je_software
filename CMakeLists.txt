@@ -107,6 +107,7 @@ install(DIRECTORY ${PROJECT_NAME}
 install(PROGRAMS
   scripts/agilex_robot
   scripts/camera_node
+  scripts/dynamixel_init_joint_state
   scripts/manager_node
   scripts/replay_node
   scripts/tactile_sensor
