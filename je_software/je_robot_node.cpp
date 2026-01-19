@@ -70,6 +70,8 @@ public:
         this->declare_parameter<std::string>("state_log_dir", "./je_robot_logs");
         this->declare_parameter<std::string>("state_log_prefix", "robot_state");
         this->declare_parameter<int>("state_log_flush_every_n", 10);
+        // per-solve IK console logging
+        this->declare_parameter<bool>("ik_log", false);
         // ========================================
 
         std::string joint_sub_topic =
@@ -255,6 +257,7 @@ public:
         log_prefix_ = this->get_parameter("state_log_prefix").as_string();
         flush_every_n_ = this->get_parameter("state_log_flush_every_n").as_int();
         if (flush_every_n_ <= 0) flush_every_n_ = 1;
+        ik_log_ = this->get_parameter("ik_log").as_bool();
         // ==================================
 
         if (fps <= 0.0)
@@ -921,6 +924,37 @@ private:
                 try { r = ik_solver_left_->solve(target, q_init, ik_left_timeout_ms_); }
                 catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK left threw: %s", e.what()); }
 
+                if (ik_log_) {
+                    // compute init FK and initial error
+                    auto init_fk = ik_solver_left_->forwardKinematicsSE3(q_init);
+                    // compute error between init_fk and target
+                    Eigen::Vector3d pos_init = init_fk.translation();
+                    Eigen::Vector3d pos_tgt = target.translation();
+                    Eigen::Vector3d pos_err = pos_tgt - pos_init;
+                    Eigen::Quaterniond qinit(init_fk.rotation());
+                    Eigen::Quaterniond qtgt(target.rotation());
+                    Eigen::Quaterniond qerr = qtgt * qinit.conjugate(); qerr.normalize();
+                    Eigen::AngleAxisd aa(qerr); Eigen::Vector3d ang_err = Eigen::Vector3d::Zero();
+                    double angle = aa.angle(); if (std::isfinite(angle) && std::abs(angle) > 1e-12) ang_err = aa.axis() * angle;
+                    double init_err = (Eigen::Matrix<double,6,1>() << pos_err, ang_err).finished().norm();
+                    // stringify poses
+                    double r_init=0,p_init=0,y_init=0; quat_to_rpy_eigen(qinit.x(), qinit.y(), qinit.z(), qinit.w(), r_init, p_init, y_init);
+                    double r_t=0,p_t=0,y_t=0; quat_to_rpy_eigen(qtgt.x(), qtgt.y(), qtgt.z(), qtgt.w(), r_t, p_t, y_t);
+                    std::ostringstream oss_init, oss_tgt;
+                    oss_init.setf(std::ios::fixed); oss_init<<std::setprecision(6)
+                        <<"pos("<<pos_init.x()<<","<<pos_init.y()<<","<<pos_init.z()<<") rpy("<<r_init<<","<<p_init<<","<<y_init<<")";
+                    oss_tgt.setf(std::ios::fixed); oss_tgt<<std::setprecision(6)
+                        <<"pos("<<pos_tgt.x()<<","<<pos_tgt.y()<<","<<pos_tgt.z()<<") rpy("<<r_t<<","<<p_t<<","<<y_t<<")";
+                    // after solve, print summary
+                    RCLCPP_INFO(this->get_logger(), "[IK LEFT] init_err=%.6f init_fk=%s target=%s", init_err, oss_init.str().c_str(), oss_tgt.str().c_str());
+                    RCLCPP_INFO(this->get_logger(), "[IK LEFT] result: time_ms=%.3f success=%d iters=%d final_err=%.6f",
+                        r.elapsed_ms, (int)r.success, r.iterations, r.final_error);
+                    if (r.success && r.q.size()>0) {
+                        std::ostringstream oss_q; oss_q<<"["; for (int i=0;i<r.q.size();++i){ if(i) oss_q<<", "; oss_q<<std::fixed<<std::setprecision(6)<<r.q[i]; } oss_q<<"]";
+                        RCLCPP_INFO(this->get_logger(), "[IK LEFT] published joints: %s", oss_q.str().c_str());
+                    }
+                }
+
                 if (r.success && r.q.size() > 0) {
                     std::vector<double> joints(r.q.size());
                     for (int i = 0; i < r.q.size(); ++i) joints[i] = r.q[i];
@@ -950,6 +984,33 @@ private:
                 ros2_ik_cpp::IkSolver::Result r;
                 try { r = ik_solver_right_->solve(target, q_init, ik_right_timeout_ms_); }
                 catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK right threw: %s", e.what()); }
+
+                if (ik_log_) {
+                    auto init_fk = ik_solver_right_->forwardKinematicsSE3(q_init);
+                    Eigen::Vector3d pos_init = init_fk.translation();
+                    Eigen::Vector3d pos_tgt = target.translation();
+                    Eigen::Vector3d pos_err = pos_tgt - pos_init;
+                    Eigen::Quaterniond qinit(init_fk.rotation());
+                    Eigen::Quaterniond qtgt(target.rotation());
+                    Eigen::Quaterniond qerr = qtgt * qinit.conjugate(); qerr.normalize();
+                    Eigen::AngleAxisd aa(qerr); Eigen::Vector3d ang_err = Eigen::Vector3d::Zero();
+                    double angle = aa.angle(); if (std::isfinite(angle) && std::abs(angle) > 1e-12) ang_err = aa.axis() * angle;
+                    double init_err = (Eigen::Matrix<double,6,1>() << pos_err, ang_err).finished().norm();
+                    double r_init=0,p_init=0,y_init=0; quat_to_rpy_eigen(qinit.x(), qinit.y(), qinit.z(), qinit.w(), r_init, p_init, y_init);
+                    double r_t=0,p_t=0,y_t=0; quat_to_rpy_eigen(qtgt.x(), qtgt.y(), qtgt.z(), qtgt.w(), r_t, p_t, y_t);
+                    std::ostringstream oss_init, oss_tgt;
+                    oss_init.setf(std::ios::fixed); oss_init<<std::setprecision(6)
+                        <<"pos("<<pos_init.x()<<","<<pos_init.y()<<","<<pos_init.z()<<") rpy("<<r_init<<","<<p_init<<","<<y_init<<")";
+                    oss_tgt.setf(std::ios::fixed); oss_tgt<<std::setprecision(6)
+                        <<"pos("<<pos_tgt.x()<<","<<pos_tgt.y()<<","<<pos_tgt.z()<<") rpy("<<r_t<<","<<p_t<<","<<y_t<<")";
+                    RCLCPP_INFO(this->get_logger(), "[IK RIGHT] init_err=%.6f init_fk=%s target=%s", init_err, oss_init.str().c_str(), oss_tgt.str().c_str());
+                    RCLCPP_INFO(this->get_logger(), "[IK RIGHT] result: time_ms=%.3f success=%d iters=%d final_err=%.6f",
+                        r.elapsed_ms, (int)r.success, r.iterations, r.final_error);
+                    if (r.success && r.q.size()>0) {
+                        std::ostringstream oss_q; oss_q<<"["; for (int i=0;i<r.q.size();++i){ if(i) oss_q<<", "; oss_q<<std::fixed<<std::setprecision(6)<<r.q[i]; } oss_q<<"]";
+                        RCLCPP_INFO(this->get_logger(), "[IK RIGHT] published joints: %s", oss_q.str().c_str());
+                    }
+                }
 
                 if (r.success && r.q.size() > 0) {
                     std::vector<double> joints(r.q.size());
@@ -1191,6 +1252,7 @@ private:
     int flush_every_n_{10};
     std::ofstream state_log_;
     size_t log_count_{0};
+    bool ik_log_{false};
     // ==============================
     std::unique_ptr<ros2_ik_cpp::IkSolver> ik_solver_left_;
     std::unique_ptr<ros2_ik_cpp::IkSolver> ik_solver_right_;

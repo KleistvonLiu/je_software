@@ -20,6 +20,8 @@ def generate_launch_description():
     fps_arg             = DeclareLaunchArgument('fps',             default_value='50')
     dt_arg              = DeclareLaunchArgument('dt',              default_value='0.014')
     dt_init_arg         = DeclareLaunchArgument('dt_init',         default_value='3.0')
+    # per-solve IK console logging
+    ik_log_arg = DeclareLaunchArgument('ik_log', default_value='true')
 
     # -------------------- ZMQ params --------------------
     robot_ip_arg  = DeclareLaunchArgument('robot_ip',  default_value='192.168.0.99')
@@ -139,6 +141,7 @@ def generate_launch_description():
                 "robot_ip": LaunchConfiguration("robot_ip"),
                 "pub_port": LaunchConfiguration("pub_port"),
                 "sub_port": LaunchConfiguration("sub_port"),
+                "ik_log": ParameterValue(LaunchConfiguration("ik_log"), value_type=bool),
 
                 # IK parameters (LEFT grouped)
                 "robot_description_left": LaunchConfiguration("robot_description_left"),
@@ -222,6 +225,7 @@ def generate_launch_description():
         fps_arg,
         dt_arg,
         dt_init_arg,
+        ik_log_arg,
         robot_ip_arg,
         pub_port_arg,
         sub_port_arg,
@@ -231,7 +235,6 @@ def generate_launch_description():
         ik_right_tip_frame_arg,
         ik_left_max_iters_arg,
         ik_left_eps_arg,
-        ik_left_eps_relaxed_3d_arg,
         ik_left_eps_relaxed_6d_arg,
         ik_left_use_svd_damped_arg,
         ik_left_ik_svd_damping_min_arg,
@@ -253,7 +256,6 @@ def generate_launch_description():
         ik_left_step_size_arg,
         ik_right_max_iters_arg,
         ik_right_eps_arg,
-        ik_right_eps_relaxed_3d_arg,
         ik_right_eps_relaxed_6d_arg,
         ik_right_use_svd_damped_arg,
         ik_right_ik_svd_damping_min_arg,
