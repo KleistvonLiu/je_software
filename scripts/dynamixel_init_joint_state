@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+import sys
+
+from je_software.dynamixel_init_joint_state_node import main
+
+
+if __name__ == "__main__":
+    sys.exit(main())
