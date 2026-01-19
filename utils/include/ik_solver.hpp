@@ -25,7 +25,7 @@ public:
     double eps = 1e-4;
     double eps_relaxed_3d = 5e-3;
     double eps_relaxed_6d = 1e-2;
-    double dt = 0.1; // step scale
+    double ik_step_size = 1.0; // step scale (formerly dt)
     bool use_svd_damped = true;
     double ik_svd_damping = 1e-6;
     double ik_svd_damping_min = 1e-12;
@@ -156,6 +156,7 @@ inline bool IkSolver::loadParamsFromFile(const std::string &path) {
     else if (key=="pos_weight") p.pos_weight = std::stod(val);
     else if (key=="ang_weight") p.ang_weight = std::stod(val);
     else if (key=="use_numeric_jacobian") p.use_numeric_jacobian = (val.find("true")!=std::string::npos);
+    else if (key=="ik_step_size") p.ik_step_size = std::stod(val);
     else if (key=="ik_max_iterations") p.max_iters = std::stoi(val);
     else if (key=="ik_epsilon") p.eps = std::stod(val);
     else if (key=="nullspace_penalty_scale") p.nullspace_penalty_scale = std::stod(val);

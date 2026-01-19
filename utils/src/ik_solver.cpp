@@ -301,7 +301,7 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
     p.ik_svd_damping = std::max(p.ik_svd_damping_min, std::min(lambda, p.ik_svd_damping_max));
     v = v_candidate;
 
-    Eigen::VectorXd delta_full = v * p.dt;
+    Eigen::VectorXd delta_full = v * p.ik_step_size;
 
     bool accepted = false;
     Eigen::VectorXd q_candidate = q_solution;

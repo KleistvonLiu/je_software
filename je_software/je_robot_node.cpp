@@ -103,28 +103,56 @@ public:
         // solver tuning (left)
         this->declare_parameter<int>("ik_left_max_iters", 200);
         this->declare_parameter<double>("ik_left_eps", 1e-4);
+        this->declare_parameter<double>("ik_left_eps_relaxed_6d", 1e-2);
         this->declare_parameter<double>("ik_left_pos_weight", 1.0);
         this->declare_parameter<double>("ik_left_ang_weight", 1.0);
-        this->declare_parameter<bool>("ik_left_use_numeric_jacobian", false);
+        this->declare_parameter<bool>("ik_left_use_numeric_jacobian", true);
+
+        this->declare_parameter<bool>("ik_left_use_svd_damped", true);
         this->declare_parameter<double>("ik_left_ik_svd_damping", 1e-6);
+        this->declare_parameter<double>("ik_left_ik_svd_damping_min", 1e-12);
+        this->declare_parameter<double>("ik_left_ik_svd_damping_max", 1e6);
+        this->declare_parameter<double>("ik_left_ik_svd_damping_reduce_factor", 0.1);
+        this->declare_parameter<double>("ik_left_ik_svd_damping_increase_factor", 10.0);
+        this->declare_parameter<double>("ik_left_ik_svd_trunc_tol", 1e-6);
+        this->declare_parameter<double>("ik_left_ik_svd_min_rel_reduction", 1e-8);
         this->declare_parameter<double>("ik_left_max_delta", 0.03);
+        this->declare_parameter<double>("ik_left_max_delta_min", 1e-6);
         this->declare_parameter<double>("ik_left_nullspace_penalty_scale", 1e-4);
+        this->declare_parameter<double>("ik_left_joint4_penalty_threshold", 0.05);
+        this->declare_parameter<int>("ik_left_numeric_fallback_after_rejects", 3);
+        this->declare_parameter<int>("ik_left_numeric_fallback_duration", 10);
         this->declare_parameter<std::vector<double>>("ik_left_joint_limits_min", std::vector<double>());
         this->declare_parameter<std::vector<double>>("ik_left_joint_limits_max", std::vector<double>());
         this->declare_parameter<int>("ik_left_timeout_ms", 100);
+        this->declare_parameter<double>("ik_left_step_size", 1.0);
 
         // solver tuning (right)
         this->declare_parameter<int>("ik_right_max_iters", 200);
         this->declare_parameter<double>("ik_right_eps", 1e-4);
+        this->declare_parameter<double>("ik_right_eps_relaxed_6d", 1e-2);
         this->declare_parameter<double>("ik_right_pos_weight", 1.0);
         this->declare_parameter<double>("ik_right_ang_weight", 1.0);
-        this->declare_parameter<bool>("ik_right_use_numeric_jacobian", false);
+        this->declare_parameter<bool>("ik_right_use_numeric_jacobian", true);
+
+        this->declare_parameter<bool>("ik_right_use_svd_damped", true);
         this->declare_parameter<double>("ik_right_ik_svd_damping", 1e-6);
+        this->declare_parameter<double>("ik_right_ik_svd_damping_min", 1e-12);
+        this->declare_parameter<double>("ik_right_ik_svd_damping_max", 1e6);
+        this->declare_parameter<double>("ik_right_ik_svd_damping_reduce_factor", 0.1);
+        this->declare_parameter<double>("ik_right_ik_svd_damping_increase_factor", 10.0);
+        this->declare_parameter<double>("ik_right_ik_svd_trunc_tol", 1e-6);
+        this->declare_parameter<double>("ik_right_ik_svd_min_rel_reduction", 1e-8);
         this->declare_parameter<double>("ik_right_max_delta", 0.03);
+        this->declare_parameter<double>("ik_right_max_delta_min", 1e-6);
         this->declare_parameter<double>("ik_right_nullspace_penalty_scale", 1e-4);
+        this->declare_parameter<double>("ik_right_joint4_penalty_threshold", 0.05);
+        this->declare_parameter<int>("ik_right_numeric_fallback_after_rejects", 3);
+        this->declare_parameter<int>("ik_right_numeric_fallback_duration", 10);
         this->declare_parameter<std::vector<double>>("ik_right_joint_limits_min", std::vector<double>());
         this->declare_parameter<std::vector<double>>("ik_right_joint_limits_max", std::vector<double>());
         this->declare_parameter<int>("ik_right_timeout_ms", 100);
+        this->declare_parameter<double>("ik_right_step_size", 1.0);
 
         std::string urdf_left = this->get_parameter("robot_left_urdf").as_string();
         std::string urdf_right = this->get_parameter("robot_right_urdf").as_string();
@@ -138,12 +166,26 @@ public:
             ros2_ik_cpp::IkSolver::Params p = ik_solver_left_->getParams();
             p.max_iters = this->get_parameter("ik_left_max_iters").as_int();
             p.eps = this->get_parameter("ik_left_eps").as_double();
+            p.eps_relaxed_3d = this->get_parameter("ik_left_eps_relaxed_3d").as_double();
+            p.eps_relaxed_6d = this->get_parameter("ik_left_eps_relaxed_6d").as_double();
             p.pos_weight = this->get_parameter("ik_left_pos_weight").as_double();
             p.ang_weight = this->get_parameter("ik_left_ang_weight").as_double();
             p.use_numeric_jacobian = this->get_parameter("ik_left_use_numeric_jacobian").as_bool();
+            p.use_svd_damped = this->get_parameter("ik_left_use_svd_damped").as_bool();
             p.ik_svd_damping = this->get_parameter("ik_left_ik_svd_damping").as_double();
+            p.ik_svd_damping_min = this->get_parameter("ik_left_ik_svd_damping_min").as_double();
+            p.ik_svd_damping_max = this->get_parameter("ik_left_ik_svd_damping_max").as_double();
+            p.ik_svd_damping_reduce_factor = this->get_parameter("ik_left_ik_svd_damping_reduce_factor").as_double();
+            p.ik_svd_damping_increase_factor = this->get_parameter("ik_left_ik_svd_damping_increase_factor").as_double();
+            p.ik_svd_trunc_tol = this->get_parameter("ik_left_ik_svd_trunc_tol").as_double();
+            p.ik_svd_min_rel_reduction = this->get_parameter("ik_left_ik_svd_min_rel_reduction").as_double();
             p.max_delta = this->get_parameter("ik_left_max_delta").as_double();
+            p.max_delta_min = this->get_parameter("ik_left_max_delta_min").as_double();
             p.nullspace_penalty_scale = this->get_parameter("ik_left_nullspace_penalty_scale").as_double();
+            p.joint4_penalty_threshold = this->get_parameter("ik_left_joint4_penalty_threshold").as_double();
+            p.numeric_fallback_after_rejects = this->get_parameter("ik_left_numeric_fallback_after_rejects").as_int();
+            p.numeric_fallback_duration = this->get_parameter("ik_left_numeric_fallback_duration").as_int();
+            p.ik_step_size = this->get_parameter("ik_left_step_size").as_double();
             ik_solver_left_->setParams(p);
             // optional joint limits
             std::vector<double> jlmin, jlmax;
@@ -169,12 +211,26 @@ public:
             ros2_ik_cpp::IkSolver::Params p = ik_solver_right_->getParams();
             p.max_iters = this->get_parameter("ik_right_max_iters").as_int();
             p.eps = this->get_parameter("ik_right_eps").as_double();
+            p.eps_relaxed_3d = this->get_parameter("ik_right_eps_relaxed_3d").as_double();
+            p.eps_relaxed_6d = this->get_parameter("ik_right_eps_relaxed_6d").as_double();
             p.pos_weight = this->get_parameter("ik_right_pos_weight").as_double();
             p.ang_weight = this->get_parameter("ik_right_ang_weight").as_double();
             p.use_numeric_jacobian = this->get_parameter("ik_right_use_numeric_jacobian").as_bool();
+            p.use_svd_damped = this->get_parameter("ik_right_use_svd_damped").as_bool();
             p.ik_svd_damping = this->get_parameter("ik_right_ik_svd_damping").as_double();
+            p.ik_svd_damping_min = this->get_parameter("ik_right_ik_svd_damping_min").as_double();
+            p.ik_svd_damping_max = this->get_parameter("ik_right_ik_svd_damping_max").as_double();
+            p.ik_svd_damping_reduce_factor = this->get_parameter("ik_right_ik_svd_damping_reduce_factor").as_double();
+            p.ik_svd_damping_increase_factor = this->get_parameter("ik_right_ik_svd_damping_increase_factor").as_double();
+            p.ik_svd_trunc_tol = this->get_parameter("ik_right_ik_svd_trunc_tol").as_double();
+            p.ik_svd_min_rel_reduction = this->get_parameter("ik_right_ik_svd_min_rel_reduction").as_double();
             p.max_delta = this->get_parameter("ik_right_max_delta").as_double();
+            p.max_delta_min = this->get_parameter("ik_right_max_delta_min").as_double();
             p.nullspace_penalty_scale = this->get_parameter("ik_right_nullspace_penalty_scale").as_double();
+            p.joint4_penalty_threshold = this->get_parameter("ik_right_joint4_penalty_threshold").as_double();
+            p.numeric_fallback_after_rejects = this->get_parameter("ik_right_numeric_fallback_after_rejects").as_int();
+            p.numeric_fallback_duration = this->get_parameter("ik_right_numeric_fallback_duration").as_int();
+            p.ik_step_size = this->get_parameter("ik_right_step_size").as_double();
             ik_solver_right_->setParams(p);
             std::vector<double> jlmin, jlmax;
             if (this->get_parameter("ik_right_joint_limits_min", jlmin) && this->get_parameter("ik_right_joint_limits_max", jlmax)) {
