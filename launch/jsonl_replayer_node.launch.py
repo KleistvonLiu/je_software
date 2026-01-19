@@ -33,10 +33,6 @@ def generate_launch_description():
     joint_velocity_field_arg = DeclareLaunchArgument('joint_velocity_field', default_value='')
     joint_effort_field_arg = DeclareLaunchArgument('joint_effort_field', default_value='')
     joint_init_flag_arg = DeclareLaunchArgument('joint_init_flag', default_value='false')
-    init_left_joint_position_arg = DeclareLaunchArgument(
-        'init_left_joint_position', default_value='[-0.6627995426156521,-1.0077295038416256,0.0804381175647535,-0.9015732396299769,-0.8931363452966059,-0.5050631744113485,1.1892425742581567]')
-    init_right_joint_position_arg = DeclareLaunchArgument(
-        'init_right_joint_position', default_value='[-0.07940747422289282,-1.2996412540863018,-1.0468460139327096,-1.8282414462117706,-1.3567341015354206,0.5511784718471607,2.3845489290070394]')
     init_left_valid_arg = DeclareLaunchArgument('init_left_valid', default_value='true')
     init_right_valid_arg = DeclareLaunchArgument('init_right_valid', default_value='true')
 
@@ -63,10 +59,6 @@ def generate_launch_description():
                 "joint_velocity_field": LaunchConfiguration("joint_velocity_field"),
                 "joint_effort_field": LaunchConfiguration("joint_effort_field"),
                 "joint_init_flag": ParameterValue(LaunchConfiguration("joint_init_flag"), value_type=bool),
-                "init_left_joint_position": ParameterValue(
-                    LaunchConfiguration("init_left_joint_position"), value_type=str),
-                "init_right_joint_position": ParameterValue(
-                    LaunchConfiguration("init_right_joint_position"), value_type=str),
                 "init_left_valid": ParameterValue(LaunchConfiguration("init_left_valid"), value_type=bool),
                 "init_right_valid": ParameterValue(LaunchConfiguration("init_right_valid"), value_type=bool),
             }
@@ -102,8 +94,6 @@ def generate_launch_description():
         joint_velocity_field_arg,
         joint_effort_field_arg,
         joint_init_flag_arg,
-        init_left_joint_position_arg,
-        init_right_joint_position_arg,
         init_left_valid_arg,
         init_right_valid_arg,
 
