@@ -28,8 +28,8 @@ def generate_launch_description():
 
     # -------------------- IK / solver parameters (per-arm) ----------------------------------------------------
     # URDF / tip names
-    robot_description_left_arg = DeclareLaunchArgument('robot_description_left', default_value='')
-    robot_description_right_arg = DeclareLaunchArgument('robot_description_right', default_value='')
+    robot_description_left_arg = DeclareLaunchArgument('robot_description_left', default_value='./urdf/LH_JEARM/zongzhuang2.urdf')
+    robot_description_right_arg = DeclareLaunchArgument('robot_description_right', default_value='./urdf/LR_JEARM/zongzhuang2.urdf')
     ik_left_tip_frame_arg = DeclareLaunchArgument('ik_left_tip_frame', default_value='left_ee_link')
     ik_right_tip_frame_arg = DeclareLaunchArgument('ik_right_tip_frame', default_value='right_ee_link')
 
