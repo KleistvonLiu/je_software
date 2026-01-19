@@ -24,6 +24,7 @@
 #include "je_software/msg/end_effector_command_lr.hpp"
 #include "common/msg/oculus_controllers.hpp"
 #include "common/msg/oculus_init_joint_state.hpp"
+#include "ik_solver.hpp"
 
 #include <zmq.hpp>
 #include "nlohmann/json.hpp"
@@ -92,6 +93,105 @@ public:
         dt_init_ = this->get_parameter("dt_init").as_double();
 
         gripper_sub_topic_ = gripper_sub_topic;
+
+        // IK solver parameters (per-arm, optional)
+        this->declare_parameter<std::string>("robot_left_urdf", "");
+        this->declare_parameter<std::string>("robot_right_urdf", "");
+        this->declare_parameter<std::string>("ik_left_tip_frame", "left_ee_link");
+        this->declare_parameter<std::string>("ik_right_tip_frame", "right_ee_link");
+
+        // solver tuning (left)
+        this->declare_parameter<int>("ik_left_max_iters", 200);
+        this->declare_parameter<double>("ik_left_eps", 1e-4);
+        this->declare_parameter<double>("ik_left_pos_weight", 1.0);
+        this->declare_parameter<double>("ik_left_ang_weight", 1.0);
+        this->declare_parameter<bool>("ik_left_use_numeric_jacobian", false);
+        this->declare_parameter<double>("ik_left_ik_svd_damping", 1e-6);
+        this->declare_parameter<double>("ik_left_max_delta", 0.03);
+        this->declare_parameter<double>("ik_left_nullspace_penalty_scale", 1e-4);
+        this->declare_parameter<std::vector<double>>("ik_left_joint_limits_min", std::vector<double>());
+        this->declare_parameter<std::vector<double>>("ik_left_joint_limits_max", std::vector<double>());
+        this->declare_parameter<int>("ik_left_timeout_ms", 100);
+
+        // solver tuning (right)
+        this->declare_parameter<int>("ik_right_max_iters", 200);
+        this->declare_parameter<double>("ik_right_eps", 1e-4);
+        this->declare_parameter<double>("ik_right_pos_weight", 1.0);
+        this->declare_parameter<double>("ik_right_ang_weight", 1.0);
+        this->declare_parameter<bool>("ik_right_use_numeric_jacobian", false);
+        this->declare_parameter<double>("ik_right_ik_svd_damping", 1e-6);
+        this->declare_parameter<double>("ik_right_max_delta", 0.03);
+        this->declare_parameter<double>("ik_right_nullspace_penalty_scale", 1e-4);
+        this->declare_parameter<std::vector<double>>("ik_right_joint_limits_min", std::vector<double>());
+        this->declare_parameter<std::vector<double>>("ik_right_joint_limits_max", std::vector<double>());
+        this->declare_parameter<int>("ik_right_timeout_ms", 100);
+
+        std::string urdf_left = this->get_parameter("robot_left_urdf").as_string();
+        std::string urdf_right = this->get_parameter("robot_right_urdf").as_string();
+        std::string ik_left_tip = this->get_parameter("ik_left_tip_frame").as_string();
+        std::string ik_right_tip = this->get_parameter("ik_right_tip_frame").as_string();
+
+        if (!urdf_left.empty()) {
+          try {
+            ik_solver_left_ = std::make_unique<ros2_ik_cpp::IkSolver>(urdf_left, ik_left_tip);
+            // apply left solver params
+            ros2_ik_cpp::IkSolver::Params p = ik_solver_left_->getParams();
+            p.max_iters = this->get_parameter("ik_left_max_iters").as_int();
+            p.eps = this->get_parameter("ik_left_eps").as_double();
+            p.pos_weight = this->get_parameter("ik_left_pos_weight").as_double();
+            p.ang_weight = this->get_parameter("ik_left_ang_weight").as_double();
+            p.use_numeric_jacobian = this->get_parameter("ik_left_use_numeric_jacobian").as_bool();
+            p.ik_svd_damping = this->get_parameter("ik_left_ik_svd_damping").as_double();
+            p.max_delta = this->get_parameter("ik_left_max_delta").as_double();
+            p.nullspace_penalty_scale = this->get_parameter("ik_left_nullspace_penalty_scale").as_double();
+            ik_solver_left_->setParams(p);
+            // optional joint limits
+            std::vector<double> jlmin, jlmax;
+            if (this->get_parameter("ik_left_joint_limits_min", jlmin) && this->get_parameter("ik_left_joint_limits_max", jlmax)) {
+              if (jlmin.size() == jlmax.size() && jlmin.size() > 0) {
+                Eigen::VectorXd lo(jlmin.size()), hi(jlmax.size());
+                for (size_t i=0;i<jlmin.size();++i) { lo[i]=jlmin[i]; hi[i]=jlmax[i]; }
+                ik_solver_left_->setJointLimits(lo, hi);
+              }
+            }
+            RCLCPP_INFO(this->get_logger(), "IkSolver left initialized (tip:'%s')", ik_left_tip.c_str());
+            ik_left_timeout_ms_ = this->get_parameter("ik_left_timeout_ms").as_int();
+          } catch (const std::exception &e) {
+            RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver left: %s", e.what());
+          }
+        } else {
+          RCLCPP_INFO(this->get_logger(), "No robot_description_left provided; left IK disabled.");
+        }
+
+        if (!urdf_right.empty()) {
+          try {
+            ik_solver_right_ = std::make_unique<ros2_ik_cpp::IkSolver>(urdf_right, ik_right_tip);
+            ros2_ik_cpp::IkSolver::Params p = ik_solver_right_->getParams();
+            p.max_iters = this->get_parameter("ik_right_max_iters").as_int();
+            p.eps = this->get_parameter("ik_right_eps").as_double();
+            p.pos_weight = this->get_parameter("ik_right_pos_weight").as_double();
+            p.ang_weight = this->get_parameter("ik_right_ang_weight").as_double();
+            p.use_numeric_jacobian = this->get_parameter("ik_right_use_numeric_jacobian").as_bool();
+            p.ik_svd_damping = this->get_parameter("ik_right_ik_svd_damping").as_double();
+            p.max_delta = this->get_parameter("ik_right_max_delta").as_double();
+            p.nullspace_penalty_scale = this->get_parameter("ik_right_nullspace_penalty_scale").as_double();
+            ik_solver_right_->setParams(p);
+            std::vector<double> jlmin, jlmax;
+            if (this->get_parameter("ik_right_joint_limits_min", jlmin) && this->get_parameter("ik_right_joint_limits_max", jlmax)) {
+              if (jlmin.size() == jlmax.size() && jlmin.size() > 0) {
+                Eigen::VectorXd lo(jlmin.size()), hi(jlmax.size());
+                for (size_t i=0;i<jlmin.size();++i) { lo[i]=jlmin[i]; hi[i]=jlmax[i]; }
+                ik_solver_right_->setJointLimits(lo, hi);
+              }
+            }
+            RCLCPP_INFO(this->get_logger(), "IkSolver right initialized (tip:'%s')", ik_right_tip.c_str());
+            ik_right_timeout_ms_ = this->get_parameter("ik_right_timeout_ms").as_int();
+          } catch (const std::exception &e) {
+            RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver right: %s", e.what());
+          }
+        } else {
+          RCLCPP_INFO(this->get_logger(), "No robot_description_right provided; right IK disabled.");
+        }
 
         // ===== NEW: read logging params =====
         log_enabled_ = this->get_parameter("state_log_enable").as_bool();
@@ -727,70 +827,86 @@ private:
 
     void oculus_controllers_callback(const common::msg::OculusControllers::SharedPtr msg)
     {
-        if (!msg)
-            return;
+        if (!msg) return;
 
         const bool left_ok = msg->left_valid;
         const bool right_ok = msg->right_valid;
-        if (!left_ok && !right_ok)
-        {
-            return;
-        }
+        if (!left_ok && !right_ok) return;
 
         global_time_ += dt_;
-        nlohmann::json data;
 
-        if (left_ok)
-        {
-            data["Robot0"]["time"] = global_time_;
-            data["Robot0"]["cartesian"] = pose_to_cartesian(msg->left_pose);
-        }
+        // Helper to build SE3 from geometry pose
+        auto make_se3 = [&](const geometry_msgs::msg::Pose &p) {
+            ros2_ik_cpp::IkSolver::SE3 se3 = ros2_ik_cpp::IkSolver::SE3::Identity();
+            Eigen::Quaterniond q(p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z);
+            se3.linear() = q.toRotationMatrix();
+            se3.translation() = Eigen::Vector3d(p.position.x, p.position.y, p.position.z);
+            return se3;
+        };
 
-        if (right_ok)
-        {
-            data["Robot1"]["time"] = global_time_;
-            data["Robot1"]["cartesian"] = pose_to_cartesian(msg->right_pose);
-        }
+        // Local snapshot of last_state_json_
+        nlohmann::json state_snapshot = last_state_json_;
 
-        if (left_ok)
-        {
-            const auto &gripper_cmd = get_gripper_command(0);
-            if (gripper_cmd.received)
-            {
-                nlohmann::json ee;
-                ee["mode"] = gripper_cmd.mode;
-                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-                {
-                    ee["position"] = gripper_cmd.position;
+        // Process left
+        if (left_ok) {
+            if (ik_solver_left_) {
+                auto target = make_se3(msg->left_pose);
+                Eigen::VectorXd q_init = Eigen::VectorXd::Zero(ik_solver_left_->getNq());
+                // try to seed with last reported robot joints if available
+                try {
+                    if (state_snapshot.contains("Robot0") && state_snapshot["Robot0"].contains("Joint")) {
+                        auto arr = state_snapshot["Robot0"]["Joint"];
+                        int limit = std::min(static_cast<int>(arr.size()), static_cast<int>(q_init.size()));
+                        for (int i = 0; i < limit; ++i) q_init[i] = arr[i].get<double>();
+                    }
+                } catch(...) {}
+
+                ros2_ik_cpp::IkSolver::Result r;
+                try { r = ik_solver_left_->solve(target, q_init, ik_left_timeout_ms_); }
+                catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK left threw: %s", e.what()); }
+
+                if (r.success && r.q.size() > 0) {
+                    std::vector<double> joints(r.q.size());
+                    for (int i = 0; i < r.q.size(); ++i) joints[i] = r.q[i];
+                    set_robot_joint(joints, 0);
+                } else {
+                    // fallback: send cartesian
+                    set_robot_cartesian(pose_to_cartesian(msg->left_pose), 0);
                 }
-                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-                {
-                    ee["preset"] = gripper_cmd.preset;
-                }
-                data["Robot0"]["end_effector"] = ee;
-            }
-        }
-        if (right_ok)
-        {
-            const auto &gripper_cmd = get_gripper_command(1);
-            if (gripper_cmd.received)
-            {
-                nlohmann::json ee;
-                ee["mode"] = gripper_cmd.mode;
-                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-                {
-                    ee["position"] = gripper_cmd.position;
-                }
-                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-                {
-                    ee["preset"] = gripper_cmd.preset;
-                }
-                data["Robot1"]["end_effector"] = ee;
+            } else {
+                set_robot_cartesian(pose_to_cartesian(msg->left_pose), 0);
             }
         }
 
-        publisher_.send(zmq::buffer("Cartesian " + data.dump()));
-    }
+        // Process right
+        if (right_ok) {
+            if (ik_solver_right_) {
+                auto target = make_se3(msg->right_pose);
+                Eigen::VectorXd q_init = Eigen::VectorXd::Zero(ik_solver_right_->getNq());
+                try {
+                    if (state_snapshot.contains("Robot1") && state_snapshot["Robot1"].contains("Joint")) {
+                        auto arr = state_snapshot["Robot1"]["Joint"];
+                        int limit = std::min(static_cast<int>(arr.size()), static_cast<int>(q_init.size()));
+                        for (int i = 0; i < limit; ++i) q_init[i] = arr[i].get<double>();
+                    }
+                } catch(...) {}
+
+                ros2_ik_cpp::IkSolver::Result r;
+                try { r = ik_solver_right_->solve(target, q_init, ik_right_timeout_ms_); }
+                catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK right threw: %s", e.what()); }
+
+                if (r.success && r.q.size() > 0) {
+                    std::vector<double> joints(r.q.size());
+                    for (int i = 0; i < r.q.size(); ++i) joints[i] = r.q[i];
+                    set_robot_joint(joints, 1);
+                } else {
+                    set_robot_cartesian(pose_to_cartesian(msg->right_pose), 1);
+                }
+            } else {
+                set_robot_cartesian(pose_to_cartesian(msg->right_pose), 1);
+            }
+        }
+     }
 
     void oculus_init_joint_state_callback(const common::msg::OculusInitJointState::SharedPtr msg)
     {
@@ -1020,6 +1136,13 @@ private:
     std::ofstream state_log_;
     size_t log_count_{0};
     // ==============================
+    std::unique_ptr<ros2_ik_cpp::IkSolver> ik_solver_left_;
+    std::unique_ptr<ros2_ik_cpp::IkSolver> ik_solver_right_;
+
+    // ===== NEW: IK timeout parameters =====
+    int ik_left_timeout_ms_{100};
+    int ik_right_timeout_ms_{100};
+    // ====================================
 };
 
 int main(int argc, char *argv[])

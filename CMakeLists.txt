@@ -86,6 +86,7 @@ pkg_check_modules(ZMQ REQUIRED IMPORTED_TARGET libzmq)
 
 find_package(nlohmann_json REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(pinocchio REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 # ----------------------------
@@ -145,6 +146,7 @@ target_link_libraries(je_robot_node
   PkgConfig::ZMQ
   nlohmann_json::nlohmann_json
   Eigen3::Eigen
+  ik_solver
   ${cpp_typesupport_target}
 )
 
@@ -182,6 +184,28 @@ ament_target_dependencies(jsonl_replayer_node
   geometry_msgs
   common
 )
+
+# ik_solver library (from utils)
+add_library(ik_solver STATIC
+  utils/src/ik_solver.cpp
+)
+
+target_include_directories(ik_solver
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/utils/include
+)
+
+target_compile_features(ik_solver PUBLIC cxx_std_17)
+
+# Link Pinocchio and Eigen (support both modern imported target and legacy variable)
+if (TARGET pinocchio::pinocchio)
+  target_link_libraries(ik_solver PUBLIC pinocchio::pinocchio Eigen3::Eigen)
+else()
+  target_link_libraries(ik_solver PUBLIC ${pinocchio_LIBRARIES} Eigen3::Eigen)
+endif()
+
+# Install library and headers so local builds can find them
+install(TARGETS ik_solver ARCHIVE DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/utils/include/ DESTINATION include)
 
 # ----------------------------
 # Install
