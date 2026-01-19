@@ -11,6 +11,7 @@
 #include <sstream>
 #include <fstream>
 #include <algorithm>
+#include <stdexcept>
 
 using namespace ros2_ik_cpp;
 using Eigen::VectorXd;
@@ -30,12 +31,32 @@ static SE3 fromPinocchioSE3(const pinocchio::SE3 &p) {
   return s;
 }
 
+static std::string load_urdf_xml(const std::string &urdf_xml_or_path) {
+  if (urdf_xml_or_path.find("<robot") != std::string::npos ||
+      urdf_xml_or_path.find("<?xml") != std::string::npos) {
+    return urdf_xml_or_path;
+  }
+
+  std::ifstream ifs(urdf_xml_or_path);
+  if (!ifs) {
+    throw std::runtime_error("Failed to open URDF file: " + urdf_xml_or_path);
+  }
+  std::ostringstream oss;
+  oss << ifs.rdbuf();
+  std::string xml = oss.str();
+  if (xml.empty()) {
+    throw std::runtime_error("URDF file is empty: " + urdf_xml_or_path);
+  }
+  return xml;
+}
+
 // Construct from URDF XML string and tip frame name
 IkSolver::IkSolver(const std::string &urdf_xml, const std::string &tip_frame_name)
   : model_(nullptr), data_(nullptr), tip_frame_name_(tip_frame_name) {
   try {
     model_ = std::make_unique<pinocchio::Model>();
-    pinocchio::urdf::buildModelFromXML(urdf_xml, *model_);
+    const std::string xml = load_urdf_xml(urdf_xml);
+    pinocchio::urdf::buildModelFromXML(xml, *model_);
     data_ = std::make_unique<pinocchio::Data>(*model_);
     tip_frame_id_ = model_->getFrameId(tip_frame_name_);
   } catch (const std::exception &e) {

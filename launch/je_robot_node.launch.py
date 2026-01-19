@@ -30,10 +30,10 @@ def generate_launch_description():
 
     # -------------------- IK / solver parameters (per-arm) ----------------------------------------------------
     # URDF / tip names
-    robot_description_left_arg = DeclareLaunchArgument('robot_description_left', default_value='./urdf/LH_JEARM/zongzhuang2.urdf')
-    robot_description_right_arg = DeclareLaunchArgument('robot_description_right', default_value='./urdf/LR_JEARM/zongzhuang2.urdf')
-    ik_left_tip_frame_arg = DeclareLaunchArgument('ik_left_tip_frame', default_value='left_ee_link')
-    ik_right_tip_frame_arg = DeclareLaunchArgument('ik_right_tip_frame', default_value='right_ee_link')
+    robot_left_urdf_arg = DeclareLaunchArgument('robot_left_urdf', default_value='/home/kleist/ros2_ws/src/je_software/je_software/urdf/LH_JEARM/zongzhuang2.urdf')
+    robot_right_urdf_arg = DeclareLaunchArgument('robot_right_urdf', default_value='/home/kleist/ros2_ws/src/je_software/je_software/urdf/RH_JEARM/zongzhuang2.urdf')
+    ik_left_tip_frame_arg = DeclareLaunchArgument('ik_left_tip_frame', default_value='Link7')
+    ik_right_tip_frame_arg = DeclareLaunchArgument('ik_right_tip_frame', default_value='Link7')
 
     # ===== Left arm parameters (grouped by functionality) =====
     # convergence / iterations
@@ -70,9 +70,9 @@ def generate_launch_description():
     ik_left_numeric_fallback_after_rejects_arg = DeclareLaunchArgument('ik_left_numeric_fallback_after_rejects', default_value='3')
     ik_left_numeric_fallback_duration_arg = DeclareLaunchArgument('ik_left_numeric_fallback_duration', default_value='10')
 
-    # joint limits (optional)
-    ik_left_joint_limits_min_arg = DeclareLaunchArgument('ik_left_joint_limits_min', default_value='[]')
-    ik_left_joint_limits_max_arg = DeclareLaunchArgument('ik_left_joint_limits_max', default_value='[]')
+    # joint limits (optional): set [] to disable
+    ik_left_joint_limits_min = [-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83]
+    ik_left_joint_limits_max = [2.96, 2.18, 2.96, 3.13, 2.96, 1.83, 1.83]
 
     # per-iteration step scale and timeout
     ik_left_step_size_arg = DeclareLaunchArgument('ik_left_step_size', default_value='1.0')
@@ -80,7 +80,7 @@ def generate_launch_description():
 
     # ===== Right arm parameters (grouped same as left) =====
     # convergence / iterations
-    ik_right_max_iters_arg = DeclareLaunchArgument('ik_right_max_iters', default_value='200')
+    ik_right_max_iters_arg = DeclareLaunchArgument('ik_right_max_iters', default_value='2000')
     ik_right_eps_arg = DeclareLaunchArgument('ik_right_eps', default_value='1e-4')
     ik_right_eps_relaxed_6d_arg = DeclareLaunchArgument('ik_right_eps_relaxed_6d', default_value='1e-2')
 
@@ -113,9 +113,9 @@ def generate_launch_description():
     ik_right_numeric_fallback_after_rejects_arg = DeclareLaunchArgument('ik_right_numeric_fallback_after_rejects', default_value='3')
     ik_right_numeric_fallback_duration_arg = DeclareLaunchArgument('ik_right_numeric_fallback_duration', default_value='10')
 
-    # joint limits (optional)
-    ik_right_joint_limits_min_arg = DeclareLaunchArgument('ik_right_joint_limits_min', default_value='[]')
-    ik_right_joint_limits_max_arg = DeclareLaunchArgument('ik_right_joint_limits_max', default_value='[]')
+    # joint limits (optional): set [] to disable
+    ik_right_joint_limits_min = [-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83]
+    ik_right_joint_limits_max = [2.96, 2.18, 2.96, 3.13, 2.96, 1.83, 1.83]
 
     # per-iteration step scale and timeout
     ik_right_step_size_arg = DeclareLaunchArgument('ik_right_step_size', default_value='1.0')
@@ -144,7 +144,7 @@ def generate_launch_description():
                 "ik_log": ParameterValue(LaunchConfiguration("ik_log"), value_type=bool),
 
                 # IK parameters (LEFT grouped)
-                "robot_description_left": LaunchConfiguration("robot_description_left"),
+                "robot_left_urdf": LaunchConfiguration("robot_left_urdf"),
                 "ik_left_tip_frame": LaunchConfiguration("ik_left_tip_frame"),
                 "ik_left_max_iters": ParameterValue(LaunchConfiguration("ik_left_max_iters"), value_type=int),
                 "ik_left_eps": ParameterValue(LaunchConfiguration("ik_left_eps"), value_type=float),
@@ -166,13 +166,13 @@ def generate_launch_description():
                 "ik_left_joint4_penalty_threshold": ParameterValue(LaunchConfiguration("ik_left_joint4_penalty_threshold"), value_type=float),
                 "ik_left_numeric_fallback_after_rejects": ParameterValue(LaunchConfiguration("ik_left_numeric_fallback_after_rejects"), value_type=int),
                 "ik_left_numeric_fallback_duration": ParameterValue(LaunchConfiguration("ik_left_numeric_fallback_duration"), value_type=int),
-                "ik_left_joint_limits_min": LaunchConfiguration("ik_left_joint_limits_min"),
-                "ik_left_joint_limits_max": LaunchConfiguration("ik_left_joint_limits_max"),
+                "ik_left_joint_limits_min": ik_left_joint_limits_min,
+                "ik_left_joint_limits_max": ik_left_joint_limits_max,
                 "ik_left_step_size": ParameterValue(LaunchConfiguration("ik_left_step_size"), value_type=float),
                 "ik_left_timeout_ms": ParameterValue(LaunchConfiguration("ik_left_timeout_ms"), value_type=int),
 
                 # IK parameters (RIGHT grouped)
-                "robot_description_right": LaunchConfiguration("robot_description_right"),
+                "robot_right_urdf": LaunchConfiguration("robot_right_urdf"),
                 "ik_right_tip_frame": LaunchConfiguration("ik_right_tip_frame"),
                 "ik_right_max_iters": ParameterValue(LaunchConfiguration("ik_right_max_iters"), value_type=int),
                 "ik_right_eps": ParameterValue(LaunchConfiguration("ik_right_eps"), value_type=float),
@@ -194,8 +194,8 @@ def generate_launch_description():
                 "ik_right_joint4_penalty_threshold": ParameterValue(LaunchConfiguration("ik_right_joint4_penalty_threshold"), value_type=float),
                 "ik_right_numeric_fallback_after_rejects": ParameterValue(LaunchConfiguration("ik_right_numeric_fallback_after_rejects"), value_type=int),
                 "ik_right_numeric_fallback_duration": ParameterValue(LaunchConfiguration("ik_right_numeric_fallback_duration"), value_type=int),
-                "ik_right_joint_limits_min": LaunchConfiguration("ik_right_joint_limits_min"),
-                "ik_right_joint_limits_max": LaunchConfiguration("ik_right_joint_limits_max"),
+                "ik_right_joint_limits_min": ik_right_joint_limits_min,
+                "ik_right_joint_limits_max": ik_right_joint_limits_max,
                 "ik_right_step_size": ParameterValue(LaunchConfiguration("ik_right_step_size"), value_type=float),
                 "ik_right_timeout_ms": ParameterValue(LaunchConfiguration("ik_right_timeout_ms"), value_type=int),
             }
@@ -229,8 +229,8 @@ def generate_launch_description():
         robot_ip_arg,
         pub_port_arg,
         sub_port_arg,
-        robot_description_left_arg,
-        robot_description_right_arg,
+        robot_left_urdf_arg,
+        robot_right_urdf_arg,
         ik_left_tip_frame_arg,
         ik_right_tip_frame_arg,
         ik_left_max_iters_arg,

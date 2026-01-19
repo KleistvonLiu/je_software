@@ -7,6 +7,7 @@
 #include <array>
 #include <iostream>
 #include <atomic>
+#include <mutex>
 #include <cerrno>
 #include <cmath>
 #include <iomanip>
@@ -161,14 +162,35 @@ public:
         std::string ik_left_tip = this->get_parameter("ik_left_tip_frame").as_string();
         std::string ik_right_tip = this->get_parameter("ik_right_tip_frame").as_string();
 
+        auto summarize_urdf = [](const std::string &value) -> std::string {
+            if (value.empty())
+            {
+                return "<empty>";
+            }
+            if (value.find("<robot") != std::string::npos || value.find("<?xml") != std::string::npos)
+            {
+                return "<urdf_xml len=" + std::to_string(value.size()) + ">";
+            }
+            return value;
+        };
+        
+        const std::string left_urdf_summary = summarize_urdf(urdf_left);
+        const std::string right_urdf_summary = summarize_urdf(urdf_right);
+        RCLCPP_INFO(this->get_logger(),
+                    "IK params: left_urdf=%s right_urdf=%s left_tip='%s' right_tip='%s'",
+                    left_urdf_summary.c_str(), right_urdf_summary.c_str(),
+                    ik_left_tip.c_str(), ik_right_tip.c_str());
+
         if (!urdf_left.empty()) {
           try {
             ik_solver_left_ = std::make_unique<ros2_ik_cpp::IkSolver>(urdf_left, ik_left_tip);
+            RCLCPP_INFO(this->get_logger(),
+                        "IkSolver left created from URDF: %s (tip:'%s')",
+                        left_urdf_summary.c_str(), ik_left_tip.c_str());
             // apply left solver params
             ros2_ik_cpp::IkSolver::Params p = ik_solver_left_->getParams();
             p.max_iters = this->get_parameter("ik_left_max_iters").as_int();
             p.eps = this->get_parameter("ik_left_eps").as_double();
-            p.eps_relaxed_3d = this->get_parameter("ik_left_eps_relaxed_3d").as_double();
             p.eps_relaxed_6d = this->get_parameter("ik_left_eps_relaxed_6d").as_double();
             p.pos_weight = this->get_parameter("ik_left_pos_weight").as_double();
             p.ang_weight = this->get_parameter("ik_left_ang_weight").as_double();
@@ -204,16 +226,18 @@ public:
             RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver left: %s", e.what());
           }
         } else {
-          RCLCPP_INFO(this->get_logger(), "No robot_description_left provided; left IK disabled.");
+          RCLCPP_WARN(this->get_logger(), "No robot_left_urdf provided; left IK disabled.");
         }
 
         if (!urdf_right.empty()) {
           try {
             ik_solver_right_ = std::make_unique<ros2_ik_cpp::IkSolver>(urdf_right, ik_right_tip);
+            RCLCPP_INFO(this->get_logger(),
+                        "IkSolver right created from URDF: %s (tip:'%s')",
+                        right_urdf_summary.c_str(), ik_right_tip.c_str());
             ros2_ik_cpp::IkSolver::Params p = ik_solver_right_->getParams();
             p.max_iters = this->get_parameter("ik_right_max_iters").as_int();
             p.eps = this->get_parameter("ik_right_eps").as_double();
-            p.eps_relaxed_3d = this->get_parameter("ik_right_eps_relaxed_3d").as_double();
             p.eps_relaxed_6d = this->get_parameter("ik_right_eps_relaxed_6d").as_double();
             p.pos_weight = this->get_parameter("ik_right_pos_weight").as_double();
             p.ang_weight = this->get_parameter("ik_right_ang_weight").as_double();
@@ -248,7 +272,7 @@ public:
             RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver right: %s", e.what());
           }
         } else {
-          RCLCPP_INFO(this->get_logger(), "No robot_description_right provided; right IK disabled.");
+          RCLCPP_WARN(this->get_logger(), "No robot_right_urdf provided; right IK disabled.");
         }
 
         // ===== NEW: read logging params =====
@@ -287,8 +311,12 @@ public:
         std::this_thread::sleep_for(500ms);
 
         // 先拉一次状态，得到初始关节/位姿
-        last_state_json_ = get_robot_state_blocking();
-        if (last_state_json_.is_null())
+        nlohmann::json initial_state = get_robot_state_blocking();
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            last_state_json_ = initial_state;
+        }
+        if (initial_state.is_null())
         {
             RCLCPP_WARN(this->get_logger(),
                         "Failed to get initial robot state (timeout or invalid).");
@@ -904,7 +932,11 @@ private:
         };
 
         // Local snapshot of last_state_json_
-        nlohmann::json state_snapshot = last_state_json_;
+        nlohmann::json state_snapshot;
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            state_snapshot = last_state_json_;
+        }
 
         // Process left
         if (left_ok) {
@@ -1138,6 +1170,11 @@ private:
             return;
         }
 
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            last_state_json_ = state_json;
+        }
+
         // ===== NEW: log raw state (with stamp) =====
         const rclcpp::Time stamp = this->get_clock()->now();
         write_state_to_disk(state_json, stamp);
@@ -1230,6 +1267,7 @@ private:
     zmq::context_t context_;
     zmq::socket_t publisher_;
     zmq::socket_t subscriber_;
+    std::mutex state_mutex_;
     nlohmann::json last_state_json_;
 
     // End-effector command cache from ROS2

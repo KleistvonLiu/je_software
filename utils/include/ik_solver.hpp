@@ -69,7 +69,7 @@ public:
   // Provide a class-local SE3 alias so callers can write IkSolver::SE3
   using SE3 = ::ros2_ik_cpp::SE3;
 
-  // Construct from URDF XML string and tip frame name (builds internal Pinocchio model)
+  // Construct from URDF XML string or URDF file path and tip frame name (builds internal Pinocchio model)
   explicit IkSolver(const std::string &urdf_xml, const std::string &tip_frame_name);
   ~IkSolver();
 
