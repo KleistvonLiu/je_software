@@ -34,6 +34,10 @@ using namespace std::chrono_literals;
 
 using json = nlohmann::json; // 默认 std::map
 
+#ifndef JE_ENABLE_PUBLISH_STATE_FREQ_LOG
+#define JE_ENABLE_PUBLISH_STATE_FREQ_LOG 1
+#endif
+
 class JeRobotNode : public rclcpp::Node
 {
 public:
@@ -897,6 +901,8 @@ private:
 
     void publish_state_once()
     {
+#if JE_ENABLE_PUBLISH_STATE_FREQ_LOG
+        // log frequency
         const rclcpp::Time now = this->get_clock()->now();
         if (pub_state_window_start_.nanoseconds() == 0)
         {
@@ -913,6 +919,7 @@ private:
             pub_state_window_start_ = now;
             pub_state_window_count_ = 0;
         }
+#endif
 
         nlohmann::json state_json = get_robot_state_blocking();
         if (state_json.is_null())
@@ -1035,8 +1042,10 @@ private:
     bool joint_cmd_received_;
     geometry_msgs::msg::PoseStamped::SharedPtr latest_ee_pose_;
 
+#if JE_ENABLE_PUBLISH_STATE_FREQ_LOG
     rclcpp::Time pub_state_window_start_{0, 0, RCL_SYSTEM_TIME};
     size_t pub_state_window_count_{0};
+#endif
 
     // ZMQ
     zmq::context_t context_;
