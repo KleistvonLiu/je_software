@@ -31,9 +31,7 @@ def generate_launch_description():
     zero_on_start_arg = DeclareLaunchArgument("zero_on_start", default_value="false")
     zero_file_arg = DeclareLaunchArgument(
         "zero_file",
-        default_value=os.path.join(
-            os.path.dirname(__file__), "..", "config", "dynamixel_zero_offsets.json"
-        ),
+        default_value="/home/kleist/ros2_ws/src/common/config/dynamixel_zero_offsets.json"
     )
     print_positions_arg = DeclareLaunchArgument(
         "print_positions", default_value="true"

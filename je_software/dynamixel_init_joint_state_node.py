@@ -95,7 +95,7 @@ class DynamixelInitJointStateNode(Node):
 
         self._left_signs = self._resolve_signs(self._left_signs, "left_signs")
         self._right_signs = self._resolve_signs(self._right_signs, "right_signs")
-        self._load_zero_file()
+        self._load_zero_file(allow_missing=self._zero_on_start)
 
         self._left_bus = self._init_bus(
             self._left_port,
@@ -113,6 +113,9 @@ class DynamixelInitJointStateNode(Node):
             self._right_enabled,
             "right",
         )
+
+        if self._zero_on_start:
+            self._ensure_zero_file_exists()
 
         self._publisher = self.create_publisher(OculusInitJointState, self._topic, 10)
         self.get_logger().info(
@@ -191,18 +194,31 @@ class DynamixelInitJointStateNode(Node):
             return [1.0] * 8
         return signs
 
-    def _load_zero_file(self) -> None:
+    def _load_zero_file(self, allow_missing: bool = False) -> None:
         self._zero_offsets = {"left": {}, "right": {}}
         if not self._zero_file:
-            return
+            msg = "zero_file parameter is empty; cannot load dynamixel_zero_offsets.json"
+            if allow_missing:
+                self.get_logger().warn(f"{msg}. Will check after zero_on_start.")
+                return
+            self.get_logger().error(msg)
+            raise RuntimeError(msg)
         try:
             with open(self._zero_file, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except FileNotFoundError:
-            return
+            if allow_missing:
+                self.get_logger().warn(
+                    f"Zero offset file not found: '{self._zero_file}'. Will check after zero_on_start."
+                )
+                return
+            msg = f"Zero offset file not found: '{self._zero_file}'"
+            self.get_logger().error(msg)
+            raise RuntimeError(msg)
         except (OSError, json.JSONDecodeError) as exc:
-            self.get_logger().warn(f"Failed to read zero file '{self._zero_file}': {exc}")
-            return
+            msg = f"Failed to read zero file '{self._zero_file}': {exc}"
+            self.get_logger().error(msg)
+            raise RuntimeError(msg)
 
         for label in ("left", "right"):
             value = data.get(label)
@@ -213,6 +229,12 @@ class DynamixelInitJointStateNode(Node):
 
         self._left_offsets = self._zero_offsets["left"]
         self._right_offsets = self._zero_offsets["right"]
+
+    def _ensure_zero_file_exists(self) -> None:
+        if not self._zero_file or not os.path.isfile(self._zero_file):
+            msg = f"Zero offset file not found after zero_on_start: '{self._zero_file}'"
+            self.get_logger().error(msg)
+            raise RuntimeError(msg)
 
     def _save_zero_file(self) -> None:
         if not self._zero_file:
