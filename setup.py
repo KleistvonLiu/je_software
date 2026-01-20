@@ -39,6 +39,7 @@ setup(
             'manager_node = je_software.recorder_manager_node:main',
             'test_publisher = je_software.test_publisher_node:main',
             'replay_node = je_software.replay_node:main',
+            'joint_rate_monitor = je_software.joint_rate_monitor_node:main',
         ],
     },
 )

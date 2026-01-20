@@ -15,6 +15,7 @@
 
 #include "common/msg/oculus_controllers.hpp"
 #include "common/msg/oculus_init_joint_state.hpp"
+#include "ros2_qos.hpp"
 
 using json = nlohmann::json;
 
@@ -128,7 +129,7 @@ public:
         prepare_init_from_first_record();
 
         // -------------------- Create publisher --------------------
-        auto qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
+        auto qos = common_utils::reliable_qos_shallow();
         pub_oculus_joint_ = this->create_publisher<common::msg::OculusInitJointState>(
             oculus_init_joint_state_topic_, qos);
         if (output_type_ == "oculus_joint")

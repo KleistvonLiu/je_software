@@ -24,6 +24,7 @@
 #include "je_software/msg/end_effector_command_lr.hpp"
 #include "common/msg/oculus_controllers.hpp"
 #include "common/msg/oculus_init_joint_state.hpp"
+#include "ros2_qos.hpp"
 
 #include <zmq.hpp>
 #include "nlohmann/json.hpp"
@@ -148,48 +149,48 @@ public:
         current_cmd_joint_.assign(7, 0.0);
 
         // ---------- ROS 订阅/发布 ----------
-        auto qos = rclcpp::QoS(rclcpp::KeepLast(1));
-        qos.reliable();
+        auto reliable_qos_shallow = common_utils::reliable_qos_shallow();
+        auto reliable_qos = common_utils::reliable_qos();
 
         // 订阅关节目标
         sub_joint_cmd_ = this->create_subscription<sensor_msgs::msg::JointState>(
             joint_sub_topic,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::joint_cmd_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] joint cmd: %s", joint_sub_topic.c_str());
 
         // 订阅夹爪指令（模式 + 指令值）
         sub_gripper_cmd_ = this->create_subscription<je_software::msg::EndEffectorCommandLR>(
             gripper_sub_topic_,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::gripper_cmd_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] gripper cmd: %s", gripper_sub_topic_.c_str());
 
         // 订阅末端位姿（暂只缓存，不控制）
         sub_end_pose_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
             end_pose_topic,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::end_pose_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] end pose: %s", end_pose_topic.c_str());
 
         // 订阅 Oculus 控制器位姿（左右手）
         sub_oculus_controllers_ = this->create_subscription<common::msg::OculusControllers>(
             oculus_controllers_topic,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::oculus_controllers_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] oculus controllers: %s", oculus_controllers_topic.c_str());
 
         // 订阅 Oculus 初始化关节指令（左右手）
         sub_oculus_init_joint_ = this->create_subscription<common::msg::OculusInitJointState>(
             oculus_init_joint_state_topic,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::oculus_init_joint_state_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] oculus init joint: %s", oculus_init_joint_state_topic.c_str());
 
         // 发布关节状态（OculusInitJointState）
         pub_joint_state_ = this->create_publisher<common::msg::OculusInitJointState>(
             joint_pub_topic,
-            qos);
+            reliable_qos);
         RCLCPP_INFO(this->get_logger(), "[PUB] joint state: %s", joint_pub_topic.c_str());
 
         // ===== NEW: open log file once (optional) =====
@@ -896,6 +897,23 @@ private:
 
     void publish_state_once()
     {
+        const rclcpp::Time now = this->get_clock()->now();
+        if (pub_state_window_start_.nanoseconds() == 0)
+        {
+            pub_state_window_start_ = now;
+        }
+        ++pub_state_window_count_;
+        const double elapsed = (now - pub_state_window_start_).seconds();
+        if (elapsed >= 1.0)
+        {
+            const double hz = pub_state_window_count_ / elapsed;
+            RCLCPP_INFO(this->get_logger(),
+                        "publish_state_once rate: %.2f Hz (%zu calls / %.2fs)",
+                        hz, pub_state_window_count_, elapsed);
+            pub_state_window_start_ = now;
+            pub_state_window_count_ = 0;
+        }
+
         nlohmann::json state_json = get_robot_state_blocking();
         if (state_json.is_null())
         {
@@ -1016,6 +1034,9 @@ private:
     std::vector<double> current_cmd_joint_;
     bool joint_cmd_received_;
     geometry_msgs::msg::PoseStamped::SharedPtr latest_ee_pose_;
+
+    rclcpp::Time pub_state_window_start_{0, 0, RCL_SYSTEM_TIME};
+    size_t pub_state_window_count_{0};
 
     // ZMQ
     zmq::context_t context_;

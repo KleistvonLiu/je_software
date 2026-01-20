@@ -108,6 +108,7 @@ install(PROGRAMS
   scripts/agilex_robot
   scripts/camera_node
   scripts/dynamixel_init_joint_state
+  scripts/joint_rate_monitor
   scripts/manager_node
   scripts/replay_node
   scripts/tactile_sensor
