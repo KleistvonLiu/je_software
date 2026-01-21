@@ -68,6 +68,8 @@ public:
         this->declare_parameter<double>("dt", 0.014);
         this->declare_parameter<double>("dt_init", 5.0);
         this->declare_parameter<double>("oculus_joint_jump_threshold", 1.0);
+        this->declare_parameter<double>("oculus_pose_jump_threshold_pos", 0.5);
+        this->declare_parameter<double>("oculus_pose_jump_threshold_rpy", 0.5);
 
         // Gripper ROS2 command topic
         this->declare_parameter<std::string>("gripper_sub_topic", "/end_effector_cmd_lr");
@@ -99,6 +101,10 @@ public:
         dt_ = this->get_parameter("dt").as_double();
         dt_init_ = this->get_parameter("dt_init").as_double();
         joint_jump_threshold_ = this->get_parameter("oculus_joint_jump_threshold").as_double();
+        pose_jump_threshold_pos_ =
+            this->get_parameter("oculus_pose_jump_threshold_pos").as_double();
+        pose_jump_threshold_rpy_ =
+            this->get_parameter("oculus_pose_jump_threshold_rpy").as_double();
 
         gripper_sub_topic_ = gripper_sub_topic;
 
@@ -752,13 +758,31 @@ private:
         if (left_ok)
         {
             data["Robot0"]["time"] = global_time_;
-            data["Robot0"]["cartesian"] = pose_to_cartesian(msg->left_pose);
+            const auto cartesian = pose_to_cartesian(msg->left_pose);
+            if (pose_jump_threshold_pos_ > 0.0 || pose_jump_threshold_rpy_ > 0.0)
+            {
+                check_and_update_pose_jump(
+                    "Left",
+                    cartesian,
+                    prev_cart_left_,
+                    prev_left_pose_valid_);
+            }
+            data["Robot0"]["cartesian"] = cartesian;
         }
 
         if (right_ok)
         {
             data["Robot1"]["time"] = global_time_;
-            data["Robot1"]["cartesian"] = pose_to_cartesian(msg->right_pose);
+            const auto cartesian = pose_to_cartesian(msg->right_pose);
+            if (pose_jump_threshold_pos_ > 0.0 || pose_jump_threshold_rpy_ > 0.0)
+            {
+                check_and_update_pose_jump(
+                    "Right",
+                    cartesian,
+                    prev_cart_right_,
+                    prev_right_pose_valid_);
+            }
+            data["Robot1"]["cartesian"] = cartesian;
         }
 
         if (left_ok)
@@ -1088,6 +1112,69 @@ private:
         prev_valid = true;
     }
 
+    void check_and_update_pose_jump(const char *label,
+                                    const std::vector<double> &current,
+                                    std::vector<double> &prev,
+                                    bool &prev_valid)
+    {
+        if (prev_valid)
+        {
+            size_t max_pos_idx = 0;
+            double max_pos_delta = 0.0;
+            for (size_t i = 0; i < 3; ++i)
+            {
+                const double d = std::abs(current[i] - prev[i]);
+                if (d > max_pos_delta)
+                {
+                    max_pos_delta = d;
+                    max_pos_idx = i;
+                }
+            }
+
+            size_t max_rpy_idx = 3;
+            double max_rpy_delta = 0.0;
+            for (size_t i = 3; i < 6; ++i)
+            {
+                const double d = std::abs(current[i] - prev[i]);
+                if (d > max_rpy_delta)
+                {
+                    max_rpy_delta = d;
+                    max_rpy_idx = i;
+                }
+            }
+
+            if (pose_jump_threshold_pos_ > 0.0 && max_pos_delta > pose_jump_threshold_pos_)
+            {
+                RCLCPP_ERROR(this->get_logger(),
+                             "%s pose position jump at idx%zu: prev=%.6f curr=%.6f delta=%.6f threshold=%.6f. Shutting down.",
+                             label,
+                             max_pos_idx,
+                             prev[max_pos_idx],
+                             current[max_pos_idx],
+                             max_pos_delta,
+                             pose_jump_threshold_pos_);
+                rclcpp::shutdown();
+                std::exit(1);
+            }
+
+            if (pose_jump_threshold_rpy_ > 0.0 && max_rpy_delta > pose_jump_threshold_rpy_)
+            {
+                RCLCPP_ERROR(this->get_logger(),
+                             "%s pose rpy jump at idx%zu: prev=%.6f curr=%.6f delta=%.6f threshold=%.6f. Shutting down.",
+                             label,
+                             max_rpy_idx,
+                             prev[max_rpy_idx],
+                             current[max_rpy_idx],
+                             max_rpy_delta,
+                             pose_jump_threshold_rpy_);
+                rclcpp::shutdown();
+                std::exit(1);
+            }
+        }
+        prev = current;
+        prev_valid = true;
+    }
+
     // global time
     double global_time_ = 0.0;
     double dt_ = 0.014;   // 72hz
@@ -1125,11 +1212,18 @@ private:
     // 参数
     double publish_period_;
     double joint_jump_threshold_{0.0};
+    double pose_jump_threshold_pos_{0.0};
+    double pose_jump_threshold_rpy_{0.0};
 
     std::vector<double> prev_target_left_;
     std::vector<double> prev_target_right_;
     bool prev_left_valid_{false};
     bool prev_right_valid_{false};
+
+    std::vector<double> prev_cart_left_;
+    std::vector<double> prev_cart_right_;
+    bool prev_left_pose_valid_{false};
+    bool prev_right_pose_valid_{false};
 
     // 线程
     std::atomic_bool state_thread_running_;

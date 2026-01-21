@@ -21,6 +21,8 @@ def generate_launch_description():
     dt_arg              = DeclareLaunchArgument('dt',              default_value='0.014')
     dt_init_arg         = DeclareLaunchArgument('dt_init',         default_value='3.0')
     jump_thr_arg        = DeclareLaunchArgument('oculus_joint_jump_threshold', default_value='0.0174') # 1 deg --> 1 / 180 * 3.14 rad
+    pose_jump_pos_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_pos', default_value='0.02') # 0.02 m
+    pose_jump_rpy_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_rpy', default_value='0.0348') # 2 deg --> 2 / 180 * 3.14 rad
 
     # -------------------- ZMQ params --------------------
     robot_ip_arg  = DeclareLaunchArgument('robot_ip',  default_value='192.168.0.99')
@@ -46,6 +48,10 @@ def generate_launch_description():
                 "dt_init": ParameterValue(LaunchConfiguration("dt_init"), value_type=float),
                 "oculus_joint_jump_threshold": ParameterValue(
                     LaunchConfiguration("oculus_joint_jump_threshold"), value_type=float),
+                "oculus_pose_jump_threshold_pos": ParameterValue(
+                    LaunchConfiguration("oculus_pose_jump_threshold_pos"), value_type=float),
+                "oculus_pose_jump_threshold_rpy": ParameterValue(
+                    LaunchConfiguration("oculus_pose_jump_threshold_rpy"), value_type=float),
                 "robot_ip": LaunchConfiguration("robot_ip"),
                 "pub_port": LaunchConfiguration("pub_port"),
                 "sub_port": LaunchConfiguration("sub_port"),
@@ -77,6 +83,8 @@ def generate_launch_description():
         dt_arg,
         dt_init_arg,
         jump_thr_arg,
+        pose_jump_pos_arg,
+        pose_jump_rpy_arg,
         robot_ip_arg,
         pub_port_arg,
         sub_port_arg,
