@@ -5,10 +5,12 @@
 #include <vector>
 #include <unordered_map>
 #include <array>
+#include <algorithm>
 #include <iostream>
 #include <atomic>
 #include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <sstream>
 
@@ -65,6 +67,7 @@ public:
         // 下发关节指令时的插补时间（秒）
         this->declare_parameter<double>("dt", 0.014);
         this->declare_parameter<double>("dt_init", 5.0);
+        this->declare_parameter<double>("oculus_joint_jump_threshold", 1.0);
 
         // Gripper ROS2 command topic
         this->declare_parameter<std::string>("gripper_sub_topic", "/end_effector_cmd_lr");
@@ -95,6 +98,7 @@ public:
         int sub_port = this->get_parameter("sub_port").as_int();
         dt_ = this->get_parameter("dt").as_double();
         dt_init_ = this->get_parameter("dt_init").as_double();
+        joint_jump_threshold_ = this->get_parameter("oculus_joint_jump_threshold").as_double();
 
         gripper_sub_topic_ = gripper_sub_topic;
 
@@ -836,6 +840,28 @@ private:
             return;
         }
 
+        if (joint_jump_threshold_ > 0.0)
+        {
+            if (left_ok)
+            {
+                check_and_update_joint_jump(
+                    "Left",
+                    target_left,
+                    is_init,
+                    prev_target_left_,
+                    prev_left_valid_);
+            }
+            if (right_ok)
+            {
+                check_and_update_joint_jump(
+                    "Right",
+                    target_right,
+                    is_init,
+                    prev_target_right_,
+                    prev_right_valid_);
+            }
+        }
+
         const double delta_time = init_dt;
         if (std::abs(delta_time - 0) < 1e-5)
         {
@@ -1024,6 +1050,44 @@ private:
     }
 
 private:
+    void check_and_update_joint_jump(const char *label,
+                                     const std::vector<double> &current,
+                                     bool is_init,
+                                     std::vector<double> &prev,
+                                     bool &prev_valid)
+    {
+        if (prev_valid && !is_init)
+        {
+            const size_t n = std::min(current.size(), prev.size());
+            size_t max_idx = 0;
+            double max_delta = 0.0;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const double d = std::abs(current[i] - prev[i]);
+                if (d > max_delta)
+                {
+                    max_delta = d;
+                    max_idx = i;
+                }
+            }
+            if (max_delta > joint_jump_threshold_)
+            {
+                RCLCPP_ERROR(this->get_logger(),
+                             "%s target jump detected at joint%zu: prev=%.6f curr=%.6f delta=%.6f threshold=%.6f. Shutting down.",
+                             label,
+                             max_idx + 1,
+                             prev[max_idx],
+                             current[max_idx],
+                             max_delta,
+                             joint_jump_threshold_);
+                rclcpp::shutdown();
+                std::exit(1);
+            }
+        }
+        prev = current;
+        prev_valid = true;
+    }
+
     // global time
     double global_time_ = 0.0;
     double dt_ = 0.014;   // 72hz
@@ -1060,6 +1124,12 @@ private:
 
     // 参数
     double publish_period_;
+    double joint_jump_threshold_{0.0};
+
+    std::vector<double> prev_target_left_;
+    std::vector<double> prev_target_right_;
+    bool prev_left_valid_{false};
+    bool prev_right_valid_{false};
 
     // 线程
     std::atomic_bool state_thread_running_;
