@@ -21,7 +21,7 @@ def generate_launch_description():
     fps_arg             = DeclareLaunchArgument('fps',             default_value='50')
     dt_arg              = DeclareLaunchArgument('dt',              default_value='0.014')
     dt_init_arg         = DeclareLaunchArgument('dt_init',         default_value='3.0')
-    jump_thr_arg        = DeclareLaunchArgument('oculus_joint_jump_threshold', default_value='0.0870') # 5 deg --> 5 / 180 * 3.14 rad
+    jump_thr_arg        = DeclareLaunchArgument('oculus_joint_jump_threshold', default_value='0.174') # 5 deg --> 5 / 180 * 3.14 rad
     pose_jump_pos_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_pos', default_value='0.02') # 0.02 m
     pose_jump_rpy_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_rpy', default_value='0.0348') # 2 deg --> 2 / 180 * 3.14 rad
 

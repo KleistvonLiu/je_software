@@ -469,9 +469,9 @@ class DynamixelInitJointStateNode(Node):
             self._format_positions_line(
                 "left", self._left_enabled, left_valid, left_positions, left_gripper
             ),
-            # self._format_positions_line(
-            #     "right", self._right_enabled, right_valid, right_positions, right_gripper
-            # ),
+            self._format_positions_line(
+                "right", self._right_enabled, right_valid, right_positions, right_gripper
+            ),
         ]
 
         for line in lines:
