@@ -17,10 +17,11 @@ def generate_launch_description():
         'oculus_init_joint_state_topic', default_value='/oculus_init_joint_state')
     gripper_sub_topic_arg = DeclareLaunchArgument(
         'gripper_sub_topic', default_value='/end_effector_cmd_lr')
+    end_effector_mode_arg   = DeclareLaunchArgument('end_effector_mode', default_value='msg') # msg or commnad
     fps_arg             = DeclareLaunchArgument('fps',             default_value='50')
     dt_arg              = DeclareLaunchArgument('dt',              default_value='0.014')
     dt_init_arg         = DeclareLaunchArgument('dt_init',         default_value='3.0')
-    jump_thr_arg        = DeclareLaunchArgument('oculus_joint_jump_threshold', default_value='0.0174') # 1 deg --> 1 / 180 * 3.14 rad
+    jump_thr_arg        = DeclareLaunchArgument('oculus_joint_jump_threshold', default_value='0.0870') # 5 deg --> 5 / 180 * 3.14 rad
     pose_jump_pos_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_pos', default_value='0.02') # 0.02 m
     pose_jump_rpy_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_rpy', default_value='0.0348') # 2 deg --> 2 / 180 * 3.14 rad
 
@@ -43,6 +44,7 @@ def generate_launch_description():
                 "oculus_controllers_topic": LaunchConfiguration("oculus_controllers_topic"),
                 "oculus_init_joint_state_topic": LaunchConfiguration("oculus_init_joint_state_topic"),
                 "gripper_sub_topic": LaunchConfiguration("gripper_sub_topic"),
+                "end_effector_mode": LaunchConfiguration("end_effector_mode"),
                 "fps": ParameterValue(LaunchConfiguration("fps"), value_type=float),
                 "dt": ParameterValue(LaunchConfiguration("dt"), value_type=float),
                 "dt_init": ParameterValue(LaunchConfiguration("dt_init"), value_type=float),
@@ -79,6 +81,7 @@ def generate_launch_description():
         oculus_controllers_topic_arg,
         oculus_init_joint_state_topic_arg,
         gripper_sub_topic_arg,
+        end_effector_mode_arg,
         fps_arg,
         dt_arg,
         dt_init_arg,

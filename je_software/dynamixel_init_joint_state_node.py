@@ -38,6 +38,10 @@ class DynamixelInitJointStateNode(Node):
         self.declare_parameter("left_models", '["xl330-m077"]')
         self.declare_parameter("right_models", '["xl330-m077"]')
         self.declare_parameter("position_scale", 0.087890625)
+        self.declare_parameter("left_gripper_min", 0.0)
+        self.declare_parameter("left_gripper_max", 1.0)
+        self.declare_parameter("right_gripper_min", 0.0)
+        self.declare_parameter("right_gripper_max", 1.0)
         self.declare_parameter("zero_on_start", False)
         self.declare_parameter(
             "zero_file",
@@ -79,6 +83,10 @@ class DynamixelInitJointStateNode(Node):
             self.get_parameter("right_models").value, "right_models"
         )
         self._position_scale = float(self.get_parameter("position_scale").value)
+        self._left_gripper_min = float(self.get_parameter("left_gripper_min").value)
+        self._left_gripper_max = float(self.get_parameter("left_gripper_max").value)
+        self._right_gripper_min = float(self.get_parameter("right_gripper_min").value)
+        self._right_gripper_max = float(self.get_parameter("right_gripper_max").value)
         self._zero_on_start = bool(self.get_parameter("zero_on_start").value)
         self._zero_file = os.path.expanduser(
             str(self.get_parameter("zero_file").value)
@@ -398,7 +406,29 @@ class DynamixelInitJointStateNode(Node):
             for idx, pos in enumerate(positions)
         ]
         gripper = gripper * self._position_scale * signs[7]
+        gripper = self._normalize_gripper(label, gripper)
         return positions, gripper, valid
+
+    def _normalize_gripper(self, label: str, value: float) -> float:
+        if label == "left":
+            min_val = self._left_gripper_min
+            max_val = self._left_gripper_max
+        else:
+            min_val = self._right_gripper_min
+            max_val = self._right_gripper_max
+
+        if max_val <= min_val:
+            self.get_logger().warn(
+                f"{label} gripper min/max invalid: min={min_val} max={max_val}"
+            )
+            return value
+
+        norm = (value - min_val) / (max_val - min_val)
+        if norm < 0.0:
+            return 0.0
+        if norm > 1.0:
+            return 1.0
+        return norm
 
     def _format_positions_line(
         self,
@@ -484,6 +514,8 @@ class DynamixelInitJointStateNode(Node):
             msg.right_valid = valid
 
         msg.left = left
+        msg.left_gripper = left_gripper
+        msg.right_gripper = right_gripper
         msg.right = right
         msg.init = self._first_publish
         self._maybe_print_positions(

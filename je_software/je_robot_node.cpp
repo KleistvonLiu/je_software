@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <iomanip>
 #include <sstream>
@@ -37,7 +38,7 @@ using namespace std::chrono_literals;
 using json = nlohmann::json; // 默认 std::map
 
 #ifndef JE_ENABLE_PUBLISH_STATE_FREQ_LOG
-#define JE_ENABLE_PUBLISH_STATE_FREQ_LOG 1
+#define JE_ENABLE_PUBLISH_STATE_FREQ_LOG 0
 #endif
 
 class JeRobotNode : public rclcpp::Node
@@ -73,6 +74,7 @@ public:
 
         // Gripper ROS2 command topic
         this->declare_parameter<std::string>("gripper_sub_topic", "/end_effector_cmd_lr");
+        this->declare_parameter<std::string>("end_effector_mode", "external");
 
         // ===== NEW: state logging parameters =====
         this->declare_parameter<bool>("state_log_enable", true);
@@ -93,6 +95,8 @@ public:
             this->get_parameter("oculus_init_joint_state_topic").as_string();
         std::string gripper_sub_topic =
             this->get_parameter("gripper_sub_topic").as_string();
+        std::string end_effector_mode =
+            this->get_parameter("end_effector_mode").as_string();
         double fps = this->get_parameter("fps").as_double();
 
         std::string robot_ip = this->get_parameter("robot_ip").as_string();
@@ -107,6 +111,25 @@ public:
             this->get_parameter("oculus_pose_jump_threshold_rpy").as_double();
 
         gripper_sub_topic_ = gripper_sub_topic;
+        {
+            std::transform(end_effector_mode.begin(),
+                           end_effector_mode.end(),
+                           end_effector_mode.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (end_effector_mode == "msg" || end_effector_mode == "message")
+            {
+                oculus_init_use_msg_gripper_ = true;
+            }
+            else if (!end_effector_mode.empty() &&
+                     end_effector_mode != "external" &&
+                     end_effector_mode != "command")
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "Unknown end_effector_mode '%s', fallback to 'external'.",
+                            end_effector_mode.c_str());
+                oculus_init_use_msg_gripper_ = false;
+            }
+        }
 
         // ===== NEW: read logging params =====
         log_enabled_ = this->get_parameter("state_log_enable").as_bool();
@@ -362,6 +385,47 @@ private:
         return (robot_index == 1) ? gripper_cmd_right_ : gripper_cmd_left_;
     }
 
+    void append_gripper_from_command(nlohmann::json &data, int robot_index)
+    {
+        const auto &gripper_cmd = get_gripper_command(robot_index);
+        if (!gripper_cmd.received)
+        {
+            return;
+        }
+        nlohmann::json ee;
+        ee["mode"] = gripper_cmd.mode;
+        if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+        {
+            ee["position"] = gripper_cmd.position;
+        }
+        else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+        {
+            ee["preset"] = gripper_cmd.preset;
+        }
+        data[robot_key(robot_index)]["end_effector"] = ee;
+    }
+
+    void append_gripper_from_position(nlohmann::json &data, int robot_index, double position)
+    {
+        nlohmann::json ee;
+        ee["mode"] = je_software::msg::EndEffectorCommand::MODE_POSITION;
+        ee["position"] = position;
+        // std::cout << "Here: published postion: " << robot_index << ", " << position << std::endl;
+        data[robot_key(robot_index)]["end_effector"] = ee;
+    }
+
+    void append_oculus_init_gripper(nlohmann::json &data, int robot_index, double position)
+    {
+        if (oculus_init_use_msg_gripper_)
+        {
+            append_gripper_from_position(data, robot_index, position);
+        }
+        else
+        {
+            append_gripper_from_command(data, robot_index);
+        }
+    }
+
     void set_robot_joint(const std::vector<double> &joint, int robot_index, double delta_time = 0.0)
     {
         if (std::abs(delta_time - 0) < 1e-5)
@@ -376,21 +440,7 @@ private:
         const char *key = robot_key(robot_index);
         data[key]["time"] = global_time_;
         data[key]["joint"] = joint;
-        const auto &gripper_cmd = get_gripper_command(robot_index);
-        if (gripper_cmd.received)
-        {
-            nlohmann::json ee;
-            ee["mode"] = gripper_cmd.mode;
-            if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-            {
-                ee["position"] = gripper_cmd.position;
-            }
-            else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-            {
-                ee["preset"] = gripper_cmd.preset;
-            }
-            data[key]["end_effector"] = ee;
-        }
+        append_gripper_from_command(data, robot_index);
 
         std::ostringstream oss;
         oss.setf(std::ios::fixed);
@@ -425,21 +475,7 @@ private:
         const char *key = robot_key(robot_index);
         data[key]["time"] = global_time_;
         data[key]["cartesian"] = cartesian;
-        const auto &gripper_cmd = get_gripper_command(robot_index);
-        if (gripper_cmd.received)
-        {
-            nlohmann::json ee;
-            ee["mode"] = gripper_cmd.mode;
-            if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-            {
-                ee["position"] = gripper_cmd.position;
-            }
-            else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-            {
-                ee["preset"] = gripper_cmd.preset;
-            }
-            data[key]["end_effector"] = ee;
-        }
+        append_gripper_from_command(data, robot_index);
         publisher_.send(zmq::buffer("Cartesian " + data.dump()));
     }
 
@@ -787,39 +823,11 @@ private:
 
         if (left_ok)
         {
-            const auto &gripper_cmd = get_gripper_command(0);
-            if (gripper_cmd.received)
-            {
-                nlohmann::json ee;
-                ee["mode"] = gripper_cmd.mode;
-                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-                {
-                    ee["position"] = gripper_cmd.position;
-                }
-                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-                {
-                    ee["preset"] = gripper_cmd.preset;
-                }
-                data["Robot0"]["end_effector"] = ee;
-            }
+            append_gripper_from_command(data, 0);
         }
         if (right_ok)
         {
-            const auto &gripper_cmd = get_gripper_command(1);
-            if (gripper_cmd.received)
-            {
-                nlohmann::json ee;
-                ee["mode"] = gripper_cmd.mode;
-                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-                {
-                    ee["position"] = gripper_cmd.position;
-                }
-                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-                {
-                    ee["preset"] = gripper_cmd.preset;
-                }
-                data["Robot1"]["end_effector"] = ee;
-            }
+            append_gripper_from_command(data, 1);
         }
 
         publisher_.send(zmq::buffer("Cartesian " + data.dump()));
@@ -911,41 +919,13 @@ private:
 
         if (left_ok)
         {
-            const auto &gripper_cmd = get_gripper_command(0);
-            if (gripper_cmd.received)
-            {
-                nlohmann::json ee;
-                ee["mode"] = gripper_cmd.mode;
-                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-                {
-                    ee["position"] = gripper_cmd.position;
-                }
-                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-                {
-                    ee["preset"] = gripper_cmd.preset;
-                }
-                data["Robot0"]["end_effector"] = ee;
-            }
+            append_oculus_init_gripper(data, 0, msg->left_gripper);
         }
         if (right_ok)
         {
-            const auto &gripper_cmd = get_gripper_command(1);
-            if (gripper_cmd.received)
-            {
-                nlohmann::json ee;
-                ee["mode"] = gripper_cmd.mode;
-                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-                {
-                    ee["position"] = gripper_cmd.position;
-                }
-                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-                {
-                    ee["preset"] = gripper_cmd.preset;
-                }
-                data["Robot1"]["end_effector"] = ee;
-            }
+            append_oculus_init_gripper(data, 1, msg->right_gripper);
         }
-
+        // std::cout << "Publish data: " << data << std::endl;
         publisher_.send(zmq::buffer("Joint " + data.dump()));
     }
 
@@ -1208,6 +1188,7 @@ private:
     std::string gripper_sub_topic_{"/end_effector_cmd_lr"};
     GripperCommand gripper_cmd_left_{};
     GripperCommand gripper_cmd_right_{};
+    bool oculus_init_use_msg_gripper_{false};
 
     // 参数
     double publish_period_;

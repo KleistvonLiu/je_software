@@ -37,7 +37,7 @@ public:
         : Node("end_effector_cli")
     {
         this->declare_parameter<std::string>("end_effector_topic", "/end_effector_cmd_lr");
-        this->declare_parameter<std::string>("hand", "left");
+        this->declare_parameter<std::string>("hand", "both");
         this->declare_parameter<std::string>("oculus_topic", "/oculus_controllers");
         this->declare_parameter<std::string>("pose_topic", "/end_pose");
         this->declare_parameter<std::string>("frame_id", "base_link");
@@ -67,6 +67,7 @@ public:
         RCLCPP_INFO(this->get_logger(), "[PUB] end effector cmd: %s", end_effector_topic_.c_str());
         RCLCPP_INFO(this->get_logger(), "[PUB] oculus controllers (init pose): %s (frame_id=%s)",
                     oculus_topic_.c_str(), frame_id_.c_str());
+        RCLCPP_INFO(this->get_logger(), "[PUB] oculus controllers mode: %s", hand_to_string(default_hand_));
 
         if (this->get_parameter("send_init_pose_on_start").as_bool())
         {
@@ -101,6 +102,21 @@ private:
         std::transform(s.begin(), s.end(), s.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return s;
+    }
+
+    static const char *hand_to_string(Hand hand)
+    {
+        switch (hand)
+        {
+        case Hand::Left:
+            return "left";
+        case Hand::Right:
+            return "right";
+        case Hand::Both:
+            return "both";
+        default:
+            return "unknown";
+        }
     }
 
     static bool is_hand_token(const std::string &token)

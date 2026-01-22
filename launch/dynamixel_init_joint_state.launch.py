@@ -42,7 +42,7 @@ def generate_launch_description():
         default_value='["joint1","joint2","joint3","joint4","joint5","joint6","joint7"]',
     )
     motor_model_arg = DeclareLaunchArgument("motor_model", default_value="xl330-m077")
-    fps_arg = DeclareLaunchArgument("fps", default_value="30.0")
+    fps_arg = DeclareLaunchArgument("fps", default_value="60.0")
     publish_topic_arg = DeclareLaunchArgument(
         "publish_topic", default_value="/oculus_init_joint_state"
     )
