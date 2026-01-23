@@ -1141,6 +1141,7 @@ class MotorsBus(abc.ABC):
     ) -> tuple[dict[int, int], int]:
         self._setup_sync_reader(motor_ids, addr, length)
         for n_try in range(1 + num_retry):
+            # comm = self.sync_reader.fastSyncRead()
             comm = self.sync_reader.txRxPacket()
             if self._is_comm_success(comm):
                 break

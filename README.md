@@ -25,6 +25,7 @@ ros2 run orbbec_camera list_devices_node
 ros2 launch je_software manager.launch.py overwrite:=false episode_idx:=1
 
 
+# 机器人的节点
 ros2 launch je_software agilex_robot.launch.py joint_pub_topic:=/joint_states_right can_port:=can_right
 ros2 launch je_software agilex_robot.launch.py joint_pub_topic:=/joint_states_left can_port:=can_left
 ros2 launch orbbec_camera 3_cameras.launch.py
@@ -44,6 +45,13 @@ ros2 launch je_software jsonl_replayer_node.launch.py \
   pose_field:=Cartesian \
   joint_position_field:=Joint \
   joint_init_flag:=false
+
+# 设置串口低延迟模式
+sudo apt install setserial
+sudo setserial /dev/serial/by-path/pci-0000:00:14.0-usb-0:6:1.0-port0 low_latency
+
+# 确认 low_latency 已生效
+setserial -g /dev/serial/by-path/pci-0000:00:14.0-usb-0:6:1.0-port0
 # 只启用左臂
 ros2 launch je_software dynamixel_init_joint_state.launch.py   \
 left_port:=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0   \
@@ -63,4 +71,12 @@ left_models:='["xl330-m288","xl330-m288","xl330-m288","xl330-m077","xl330-m288",
 right_models:='["xl330-m077","xl330-m077","xl330-m077","xl330-m077","xl330-m077","xl330-m077","xl330-m077","xl330-m077"]'   \
 left_signs:="[1,-1,1,-1,1,1,1,1]"   \
 right_signs:="[-1,1,-1,-1,-1,1,-1,1]" \
+positions_log_path:=/home/kleist/jemotor/log/dynamixel_positions.log \
 zero_on_start:=false
+#plot
+ros2 run je_software plot_dynamixel_positions --log /home/kleist/jemotor/log/dynamixel_positions.log --arm right --joint 7
+
+ros2 run je_software joint_rate_monitor --ros-args \
+  -p topic:=/oculus_init_joint_state \
+  -p msg_type:=oculus_init_joint_state \
+  -p log_period_s:=1.0
