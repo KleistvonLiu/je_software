@@ -34,9 +34,12 @@ def generate_launch_description():
         default_value="/home/kleist/ros2_ws/src/common/config/dynamixel_zero_offsets.json"
     )
     print_positions_arg = DeclareLaunchArgument(
-        "print_positions", default_value="true"
+        "print_positions", default_value="false"
     )
     print_period_arg = DeclareLaunchArgument("print_period", default_value="0.1")
+    positions_log_path_arg = DeclareLaunchArgument(
+        "positions_log_path", default_value=""
+    )
     joint_names_arg = DeclareLaunchArgument(
         "joint_names",
         default_value='["joint1","joint2","joint3","joint4","joint5","joint6","joint7"]',
@@ -100,6 +103,7 @@ def generate_launch_description():
                 "print_period": ParameterValue(
                     LaunchConfiguration("print_period"), value_type=float
                 ),
+                "positions_log_path": LaunchConfiguration("positions_log_path"),
                 "joint_names": ParameterValue(
                     LaunchConfiguration("joint_names"), value_type=str
                 ),
@@ -143,6 +147,7 @@ def generate_launch_description():
             zero_file_arg,
             print_positions_arg,
             print_period_arg,
+            positions_log_path_arg,
             joint_names_arg,
             motor_model_arg,
             fps_arg,

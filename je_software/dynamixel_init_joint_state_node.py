@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ast
+import datetime
 import json
 import os
 import sys
@@ -54,6 +55,7 @@ class DynamixelInitJointStateNode(Node):
         )
         self.declare_parameter("print_positions", False)
         self.declare_parameter("print_period", 0.1)
+        self.declare_parameter("positions_log_path", "")
         self.declare_parameter("fps", 30.0)
         self.declare_parameter("publish_topic", "/oculus_init_joint_state")
         self.declare_parameter("frame_id", "")
@@ -93,6 +95,10 @@ class DynamixelInitJointStateNode(Node):
         )
         self._print_positions = bool(self.get_parameter("print_positions").value)
         self._print_period = max(0.0, float(self.get_parameter("print_period").value))
+        self._positions_log_path = os.path.expanduser(
+            str(self.get_parameter("positions_log_path").value)
+        )
+        self._positions_log = None
         self._period_s = 1.0 / max(1.0, float(self.get_parameter("fps").value))
         self._topic = str(self.get_parameter("publish_topic").value)
         self._frame_id = str(self.get_parameter("frame_id").value)
@@ -477,6 +483,31 @@ class DynamixelInitJointStateNode(Node):
         for line in lines:
             print(line, flush=True)
 
+        if self._positions_log is None:
+            path = self._positions_log_path
+            if not path:
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                path = os.path.join(
+                    os.path.expanduser("~/.ros"),
+                    f"dynamixel_positions_{ts}.log",
+                )
+                self._positions_log_path = path
+            folder = os.path.dirname(path)
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+            try:
+                self._positions_log = open(path, "a", encoding="utf-8")
+                self.get_logger().info(f"Positions log: {path}")
+            except OSError as exc:
+                self.get_logger().warn(f"Failed to open positions log '{path}': {exc}")
+                self._positions_log = None
+
+        if self._positions_log is not None:
+            ts = time.time()
+            for line in lines:
+                self._positions_log.write(f"{ts:.6f} {line}\n")
+            self._positions_log.flush()
+
     def _publish_action(self) -> None:
         msg = OculusInitJointState()
         now = self.get_clock().now().to_msg()
@@ -543,6 +574,13 @@ class DynamixelInitJointStateNode(Node):
                     self.get_logger().info(f"{label} arm disconnected.")
                 except Exception as exc:
                     self.get_logger().warn(f"{label} disconnect failed: {exc}")
+
+        if self._positions_log is not None:
+            try:
+                self._positions_log.flush()
+                self._positions_log.close()
+            except Exception:
+                pass
 
         return super().destroy_node()
 
