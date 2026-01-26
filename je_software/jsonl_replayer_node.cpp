@@ -331,6 +331,26 @@ private:
         return !out.position.empty();
     }
 
+    static bool parse_gripper_value(const json &entry, float &out)
+    {
+        if (!entry.contains("gripper"))
+        {
+            return false;
+        }
+        const auto &grip = entry["gripper"];
+        if (grip.is_number())
+        {
+            out = static_cast<float>(grip.get<double>());
+            return true;
+        }
+        if (grip.is_array() && !grip.empty() && grip[0].is_number())
+        {
+            out = static_cast<float>(grip[0].get<double>());
+            return true;
+        }
+        return false;
+    }
+
     bool fill_from_meta_joints(const json &obj,
                                common::msg::OculusInitJointState &msg)
     {
@@ -357,6 +377,7 @@ private:
                 {
                     msg.left_valid = true;
                 }
+                parse_gripper_value(entry, msg.left_gripper);
             }
             else if (is_right_topic(topic))
             {
@@ -364,6 +385,7 @@ private:
                 {
                     msg.right_valid = true;
                 }
+                parse_gripper_value(entry, msg.right_gripper);
             }
         }
 

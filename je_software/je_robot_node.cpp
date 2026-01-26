@@ -402,7 +402,7 @@ private:
         {
             ee["preset"] = gripper_cmd.preset;
         }
-        data[robot_key(robot_index)]["end_effector"] = ee;
+        data[robot_key(robot_index)]["EndEffector"] = ee;
     }
 
     void append_gripper_from_position(nlohmann::json &data, int robot_index, double position)
@@ -410,8 +410,8 @@ private:
         nlohmann::json ee;
         ee["mode"] = je_software::msg::EndEffectorCommand::MODE_POSITION;
         ee["position"] = position;
-        // std::cout << "Here: published postion: " << robot_index << ", " << position << std::endl;
-        data[robot_key(robot_index)]["end_effector"] = ee;
+        std::cout << "Here: published postion: " << robot_index << ", " << position << std::endl;
+        data[robot_key(robot_index)]["EndEffector"] = ee;
     }
 
     void append_oculus_init_gripper(nlohmann::json &data, int robot_index, double position)
@@ -1011,12 +1011,48 @@ private:
                 return true;
             };
 
+            auto fill_gripper_field = [&](const nlohmann::json &robot,
+                                          const char *label,
+                                          float &out) -> bool
+            {
+                if (!robot.contains("EndEffector") || !robot["EndEffector"].is_object())
+                {
+                    return false;
+                }
+                const auto &ee = robot["EndEffector"];
+                if (ee.contains("Valid"))
+                {
+                    const bool valid = ee["Valid"].get<bool>();
+                    if (!valid)
+                    {
+                        return false;
+                    }
+                }
+                if (!ee.contains("CurrentPosition"))
+                {
+                    return false;
+                }
+                try
+                {
+                    out = static_cast<float>(ee["CurrentPosition"].get<double>());
+                    return true;
+                }
+                catch (const std::exception &e)
+                {
+                    RCLCPP_WARN(this->get_logger(),
+                                "%s EndEffector CurrentPosition parse failed: %s",
+                                label, e.what());
+                    return false;
+                }
+            };
+
             if (state_json.contains("Robot0") && state_json["Robot0"].is_object())
             {
                 if (fill_joint_fields(state_json["Robot0"], msg.left, "Robot0"))
                 {
                     msg.left_valid = true;
                 }
+                fill_gripper_field(state_json["Robot0"], "Robot0", msg.left_gripper);
             }
 
             if (state_json.contains("Robot1") && state_json["Robot1"].is_object())
@@ -1025,6 +1061,7 @@ private:
                 {
                     msg.right_valid = true;
                 }
+                fill_gripper_field(state_json["Robot1"], "Robot1", msg.right_gripper);
             }
 
             if (!msg.left_valid && !msg.right_valid)
