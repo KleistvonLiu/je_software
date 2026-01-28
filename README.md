@@ -80,3 +80,6 @@ ros2 run je_software joint_rate_monitor --ros-args \
   -p topic:=/oculus_init_joint_state \
   -p msg_type:=oculus_init_joint_state \
   -p log_period_s:=1.0
+
+orbbec需要在conda环境之外build
+colcon build --event-handlers console_direct+ --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-up-to orbbec_camera
