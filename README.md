@@ -49,6 +49,8 @@ ros2 launch je_software jsonl_replayer_node.launch.py \
 # 设置串口低延迟模式
 sudo apt install setserial
 sudo setserial /dev/serial/by-path/pci-0000:00:14.0-usb-0:6:1.0-port0 low_latency
+# 取消设置
+sudo setserial /dev/serial/by-path/pci-0000:00:14.0-usb-0:6:1.0-port0 ^low_latency
 
 # 确认 low_latency 已生效
 setserial -g /dev/serial/by-path/pci-0000:00:14.0-usb-0:6:1.0-port0
