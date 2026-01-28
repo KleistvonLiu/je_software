@@ -141,7 +141,11 @@ public:
 
         if (fps <= 0.0)
         {
-            fps = 50.0;
+            fps = 30.0;
+        }
+        if (fps > 0.0)
+        {
+            dt_ = 1.0 / fps;
         }
 
         // ---------- 初始化 ZMQ 通讯 ----------
@@ -410,7 +414,7 @@ private:
         nlohmann::json ee;
         ee["mode"] = je_software::msg::EndEffectorCommand::MODE_POSITION;
         ee["position"] = position;
-        std::cout << "Here: published postion: " << robot_index << ", " << position << std::endl;
+        // std::cout << "Here: published postion: " << robot_index << ", " << position << std::endl;
         data[robot_key(robot_index)]["EndEffector"] = ee;
     }
 

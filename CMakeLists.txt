@@ -143,6 +143,10 @@ ament_target_dependencies(je_robot_node
   geometry_msgs
   common
 )
+target_include_directories(je_robot_node
+  PRIVATE
+    ${common_INCLUDE_DIRS}
+)
 # IMPORTANT: use plain signature consistently (ament_target_dependencies uses plain internally)
 target_link_libraries(je_robot_node
   PkgConfig::ZMQ
@@ -184,6 +188,10 @@ ament_target_dependencies(jsonl_replayer_node
   sensor_msgs
   geometry_msgs
   common
+)
+target_include_directories(jsonl_replayer_node
+  PRIVATE
+    ${common_INCLUDE_DIRS}
 )
 
 # ----------------------------
