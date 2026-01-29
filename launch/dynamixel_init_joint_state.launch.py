@@ -31,10 +31,10 @@ def generate_launch_description():
     zero_on_start_arg = DeclareLaunchArgument("zero_on_start", default_value="false")
     zero_file_arg = DeclareLaunchArgument(
         "zero_file",
-        default_value="/home/kleist/ros2_ws/src/common/config/dynamixel_zero_offsets.json"
+        default_value="/home/test/ros2_ws/src/je_common/config/dynamixel_zero_offsets.json"
     )
     print_positions_arg = DeclareLaunchArgument(
-        "print_positions", default_value="false"
+        "print_positions", default_value="true"
     )
     print_period_arg = DeclareLaunchArgument("print_period", default_value="0.1")
     positions_log_path_arg = DeclareLaunchArgument(
@@ -47,7 +47,7 @@ def generate_launch_description():
     motor_model_arg = DeclareLaunchArgument("motor_model", default_value="xl330-m077")
     fps_arg = DeclareLaunchArgument("fps", default_value="60.0")
     publish_topic_arg = DeclareLaunchArgument(
-        "publish_topic", default_value="/oculus_init_joint_state"
+        "publish_topic", default_value="/joint_cmd_double_arm"
     )
     frame_id_arg = DeclareLaunchArgument("frame_id", default_value="")
 

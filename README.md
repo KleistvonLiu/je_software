@@ -31,20 +31,17 @@ ros2 launch je_software agilex_robot.launch.py joint_pub_topic:=/joint_states_le
 ros2 launch orbbec_camera 3_cameras.launch.py
 ros2 launch je_software tactile_sensor.launch.py
 ros2 launch je_software manager.launch.py save_dir:=/home/kleist/jemotor/log
-ros2 launch je_software je_robot_node.launch.py
+ros2 launch je_software je_robot_node.launch.py \
+fps:=30 \
+dt_init:=5
 ros2 run je_software end_effector_cli --ros-args -p hand:=left
-ros2 launch je_software jsonl_replayer_node.launch.py \
-  jsonl_path:=/home/kleist/jemotor/log/episode_000000/meta.jsonl \
-  rate_hz:=50.0 \
-  loop:=false \
-  output_type:=oculus_joint \
-  use_file_stamp:=true \
-  oculus_controllers_topic:=/oculus_controllers \
-  oculus_init_joint_state_topic:=/oculus_init_joint_state \
-  frame_id:=base_link \
-  pose_field:=Cartesian \
-  joint_position_field:=Joint \
-  joint_init_flag:=false
+ros2 launch je_software jsonl_replayer_node.launch.py\
+  jsonl_path:=/home/test/jemotor/0127_log/episode_000000/meta.jsonl\
+  rate_hz:=30.0\
+  loop:=false     \
+  joint_init_flag:=true \
+  send_arm:=left \
+  dt_init:=5
 
 # 设置串口低延迟模式
 sudo apt install setserial
@@ -79,7 +76,7 @@ zero_on_start:=false
 ros2 run je_software plot_dynamixel_positions --log /home/kleist/jemotor/log/dynamixel_positions.log --arm right --joint 7
 
 ros2 run je_software joint_rate_monitor --ros-args \
-  -p topic:=/oculus_init_joint_state \
+  -p topic:=/joint_cmd_double_arm \
   -p msg_type:=oculus_init_joint_state \
   -p log_period_s:=1.0
 

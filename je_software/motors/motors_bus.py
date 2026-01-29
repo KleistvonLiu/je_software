@@ -21,6 +21,7 @@
 
 import abc
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -1118,9 +1119,12 @@ class MotorsBus(abc.ABC):
         addr, length = get_address(self.model_ctrl_table, model, data_name)
 
         err_msg = f"Failed to sync read '{data_name}' on {ids=} after {num_retry + 1} tries."
+        # start_time = time.perf_counter()
         ids_values, _ = self._sync_read(
             addr, length, ids, num_retry=num_retry, raise_on_error=True, err_msg=err_msg
         )
+        # elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        # print("sync_read '%s' %d motors took %.3f ms" % (data_name, len(ids), elapsed_ms))
 
         ids_values = self._decode_sign(data_name, ids_values)
 
@@ -1141,8 +1145,8 @@ class MotorsBus(abc.ABC):
     ) -> tuple[dict[int, int], int]:
         self._setup_sync_reader(motor_ids, addr, length)
         for n_try in range(1 + num_retry):
-            # comm = self.sync_reader.fastSyncRead()
-            comm = self.sync_reader.txRxPacket()
+            comm = self.sync_reader.fastSyncRead()
+            # comm = self.sync_reader.txRxPacket()
             if self._is_comm_success(comm):
                 break
             logger.debug(

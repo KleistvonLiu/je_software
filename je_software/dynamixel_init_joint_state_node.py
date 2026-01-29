@@ -57,7 +57,7 @@ class DynamixelInitJointStateNode(Node):
         self.declare_parameter("print_period", 0.1)
         self.declare_parameter("positions_log_path", "")
         self.declare_parameter("fps", 30.0)
-        self.declare_parameter("publish_topic", "/oculus_init_joint_state")
+        self.declare_parameter("publish_topic", "/joint_cmd_double_arm")
         self.declare_parameter("frame_id", "")
 
         self._left_port = str(self.get_parameter("left_port").value)
@@ -381,7 +381,12 @@ class DynamixelInitJointStateNode(Node):
         positions = []
         valid = True
         try:
+            # start_time = time.perf_counter()
             action = bus.sync_read("Present_Position", normalize=False)
+            # elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            # print(
+                # f"{label} sync_read took {elapsed_ms:.3f} ms"
+            # )
         except Exception as exc:
             self.get_logger().warn(f"{label} sync_read failed: {exc}")
             return [0.0] * len(self._joint_names), 0.0, False
@@ -528,6 +533,8 @@ class DynamixelInitJointStateNode(Node):
         left_gripper = 0.0
         right_gripper = 0.0
 
+        # read_start_time = time.perf_counter()
+
         if self._left_bus:
             left_positions, left_gripper, valid = self._read_positions(
                 self._left_bus, "left"
@@ -543,6 +550,11 @@ class DynamixelInitJointStateNode(Node):
             right.name = self._joint_names
             right.position = right_positions
             msg.right_valid = valid
+
+        # read_elapsed_ms = (time.perf_counter() - read_start_time) * 1000.0
+        # print(
+        #     f"_publish_action read positions took {read_elapsed_ms:.3f} ms"
+        # )
 
         msg.left = left
         msg.left_gripper = left_gripper

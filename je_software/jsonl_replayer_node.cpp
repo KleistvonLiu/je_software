@@ -53,6 +53,7 @@ public:
 
         // use file stamp
         this->declare_parameter<bool>("use_file_stamp", true);
+    this->declare_parameter<double>("dt_init", 5.0);
 
         // Pose options
         this->declare_parameter<std::string>("frame_id", "base_link");
@@ -87,6 +88,7 @@ public:
         oculus_controllers_topic_ = this->get_parameter("oculus_controllers_topic").as_string();
         oculus_init_joint_state_topic_ = this->get_parameter("oculus_init_joint_state_topic").as_string();
         use_file_stamp_ = this->get_parameter("use_file_stamp").as_bool();
+        init_delay_sec_ = this->get_parameter("dt_init").as_double();
         to_lower_inplace(output_type_);
 
         frame_id_ = this->get_parameter("frame_id").as_string();
@@ -122,6 +124,11 @@ public:
         {
             RCLCPP_WARN(this->get_logger(), "rate_hz <= 0, fallback to 50.0");
             rate_hz_ = 50.0;
+        }
+        if (init_delay_sec_ < 0.0)
+        {
+            RCLCPP_WARN(this->get_logger(), "dt_init < 0, fallback to 5.0");
+            init_delay_sec_ = 5.0;
         }
 
         // -------------------- Open file --------------------
@@ -777,7 +784,7 @@ private:
     int init_sent_count_{0};
     int init_repeat_count_{10};
     rclcpp::Time init_sent_time_{0, 0, RCL_SYSTEM_TIME};
-    const double init_delay_sec_{5.0};
+    double init_delay_sec_{5.0};
 
     // io
     std::ifstream ifs_;

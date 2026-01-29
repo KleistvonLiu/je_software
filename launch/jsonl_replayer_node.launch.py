@@ -14,12 +14,13 @@ def generate_launch_description():
     loop_arg = DeclareLaunchArgument('loop', default_value='false')
     output_type_arg = DeclareLaunchArgument('output_type', default_value='oculus_joint')
     use_file_stamp_arg = DeclareLaunchArgument('use_file_stamp', default_value='true')
+    dt_init_arg = DeclareLaunchArgument('dt_init', default_value='5.0')
 
     # -------------------- Topics --------------------
     oculus_controllers_topic_arg = DeclareLaunchArgument(
         'oculus_controllers_topic', default_value='/oculus_controllers')
     oculus_init_joint_state_topic_arg = DeclareLaunchArgument(
-        'oculus_init_joint_state_topic', default_value='/oculus_init_joint_state')
+        'oculus_init_joint_state_topic', default_value='/joint_cmd_double_arm')
 
     # -------------------- Pose options --------------------
     frame_id_arg = DeclareLaunchArgument('frame_id', default_value='base_link')
@@ -48,6 +49,7 @@ def generate_launch_description():
                 "loop": ParameterValue(LaunchConfiguration("loop"), value_type=bool),
                 "output_type": LaunchConfiguration("output_type"),
                 "use_file_stamp": ParameterValue(LaunchConfiguration("use_file_stamp"), value_type=bool),
+                "dt_init": ParameterValue(LaunchConfiguration("dt_init"), value_type=float),
                 "oculus_controllers_topic": LaunchConfiguration("oculus_controllers_topic"),
                 "oculus_init_joint_state_topic": LaunchConfiguration("oculus_init_joint_state_topic"),
                 "frame_id": LaunchConfiguration("frame_id"),
@@ -83,6 +85,7 @@ def generate_launch_description():
         loop_arg,
         output_type_arg,
         use_file_stamp_arg,
+    dt_init_arg,
         oculus_controllers_topic_arg,
         oculus_init_joint_state_topic_arg,
         frame_id_arg,
