@@ -15,6 +15,7 @@ def generate_launch_description():
     output_type_arg = DeclareLaunchArgument('output_type', default_value='oculus_joint')
     use_file_stamp_arg = DeclareLaunchArgument('use_file_stamp', default_value='true')
     dt_init_arg = DeclareLaunchArgument('dt_init', default_value='5.0')
+    init_repeat_count_arg = DeclareLaunchArgument('init_repeat_count', default_value='10')
 
     # -------------------- Topics --------------------
     oculus_controllers_topic_arg = DeclareLaunchArgument(
@@ -49,6 +50,9 @@ def generate_launch_description():
                 "output_type": LaunchConfiguration("output_type"),
                 "use_file_stamp": ParameterValue(LaunchConfiguration("use_file_stamp"), value_type=bool),
                 "dt_init": ParameterValue(LaunchConfiguration("dt_init"), value_type=float),
+                "init_repeat_count": ParameterValue(
+                    LaunchConfiguration("init_repeat_count"), value_type=int
+                ),
                 "oculus_controllers_topic": LaunchConfiguration("oculus_controllers_topic"),
                 "oculus_init_joint_state_topic": LaunchConfiguration("oculus_init_joint_state_topic"),
                 "frame_id": LaunchConfiguration("frame_id"),
@@ -84,6 +88,7 @@ def generate_launch_description():
         output_type_arg,
         use_file_stamp_arg,
     dt_init_arg,
+    init_repeat_count_arg,
         oculus_controllers_topic_arg,
         oculus_init_joint_state_topic_arg,
         frame_id_arg,

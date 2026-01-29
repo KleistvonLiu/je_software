@@ -63,8 +63,11 @@ zero_on_start:=true
 ros2 launch je_software dynamixel_init_joint_state.launch.py   \
 left_port:=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0   \
 right_port:=/dev/serial/by-path/pci-0000:00:14.0-usb-0:6:1.0-port0   \
+or
+left_port:=/dev/serial/by-path/pci-0000:00:14.0-usb-0:8:1.0-port0  \
+right_port:=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0   \
 left_enabled:=true \
-right_enabled:=true   \
+right_enabled:=false   \
 left_models:='["xl330-m288","xl330-m288","xl330-m288","xl330-m077","xl330-m288","xl330-m288","xl330-m288","xl330-m288"]'   \
 right_models:='["xl330-m077","xl330-m077","xl330-m077","xl330-m077","xl330-m077","xl330-m077","xl330-m077","xl330-m077"]'   \
 left_signs:="[1,-1,1,-1,1,1,1,1]"   \
