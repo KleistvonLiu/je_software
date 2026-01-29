@@ -33,7 +33,6 @@ def generate_launch_description():
     joint_position_field_arg = DeclareLaunchArgument('joint_position_field', default_value='Joint')
     joint_velocity_field_arg = DeclareLaunchArgument('joint_velocity_field', default_value='')
     joint_effort_field_arg = DeclareLaunchArgument('joint_effort_field', default_value='')
-    joint_init_flag_arg = DeclareLaunchArgument('joint_init_flag', default_value='false')
     init_left_valid_arg = DeclareLaunchArgument('init_left_valid', default_value='true')
     init_right_valid_arg = DeclareLaunchArgument('init_right_valid', default_value='true')
 
@@ -60,7 +59,6 @@ def generate_launch_description():
                 "joint_position_field": LaunchConfiguration("joint_position_field"),
                 "joint_velocity_field": LaunchConfiguration("joint_velocity_field"),
                 "joint_effort_field": LaunchConfiguration("joint_effort_field"),
-                "joint_init_flag": ParameterValue(LaunchConfiguration("joint_init_flag"), value_type=bool),
                 "init_left_valid": ParameterValue(LaunchConfiguration("init_left_valid"), value_type=bool),
                 "init_right_valid": ParameterValue(LaunchConfiguration("init_right_valid"), value_type=bool),
             }
@@ -96,7 +94,6 @@ def generate_launch_description():
         joint_position_field_arg,
         joint_velocity_field_arg,
         joint_effort_field_arg,
-        joint_init_flag_arg,
         init_left_valid_arg,
         init_right_valid_arg,
 

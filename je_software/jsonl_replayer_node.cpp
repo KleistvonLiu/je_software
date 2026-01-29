@@ -104,7 +104,6 @@ public:
         joint_position_field_ = this->get_parameter("joint_position_field").as_string();
         joint_velocity_field_ = this->get_parameter("joint_velocity_field").as_string();
         joint_effort_field_ = this->get_parameter("joint_effort_field").as_string();
-        joint_init_flag_ = this->get_parameter("joint_init_flag").as_bool();
         init_left_valid_ = this->get_parameter("init_left_valid").as_bool();
         init_right_valid_ = this->get_parameter("init_right_valid").as_bool();
         if (send_arm_ == "left")
@@ -621,7 +620,7 @@ private:
         common::msg::OculusInitJointState msg;
         msg.header.stamp = to_builtin_time(make_stamp(obj));
         msg.header.frame_id = frame_id_;
-        msg.init = joint_init_flag_;
+        msg.init = false;
 
         if (fill_from_meta_joints(obj, msg))
         {
@@ -781,7 +780,6 @@ private:
     std::string joint_position_field_{"Joint"};
     std::string joint_velocity_field_{""};
     std::string joint_effort_field_{""};
-    bool joint_init_flag_{false};
     bool init_left_valid_{true};
     bool init_right_valid_{true};
     bool init_use_pose_{false};

@@ -36,10 +36,9 @@ fps:=30 \
 dt_init:=5
 ros2 run je_software end_effector_cli --ros-args -p hand:=left
 ros2 launch je_software jsonl_replayer_node.launch.py\
-  jsonl_path:=/home/test/jemotor/0127_log/episode_000000/meta.jsonl\
+  jsonl_path:=/home/kleist/Documents/temp/meta.jsonl\
   rate_hz:=30.0\
   loop:=false     \
-  joint_init_flag:=true \
   send_arm:=left \
   dt_init:=5
 
