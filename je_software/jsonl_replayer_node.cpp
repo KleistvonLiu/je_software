@@ -53,7 +53,8 @@ public:
 
         // use file stamp
         this->declare_parameter<bool>("use_file_stamp", true);
-    this->declare_parameter<double>("dt_init", 5.0);
+        this->declare_parameter<double>("dt_init", 5.0);
+        this->declare_parameter<int>("init_repeat_count", 10);
 
         // Pose options
         this->declare_parameter<std::string>("frame_id", "base_link");
@@ -89,6 +90,7 @@ public:
         oculus_init_joint_state_topic_ = this->get_parameter("oculus_init_joint_state_topic").as_string();
         use_file_stamp_ = this->get_parameter("use_file_stamp").as_bool();
         init_delay_sec_ = this->get_parameter("dt_init").as_double();
+    init_repeat_count_ = this->get_parameter("init_repeat_count").as_int();
         to_lower_inplace(output_type_);
 
         frame_id_ = this->get_parameter("frame_id").as_string();
@@ -129,6 +131,11 @@ public:
         {
             RCLCPP_WARN(this->get_logger(), "dt_init < 0, fallback to 5.0");
             init_delay_sec_ = 5.0;
+        }
+        if (init_repeat_count_ <= 0)
+        {
+            RCLCPP_WARN(this->get_logger(), "init_repeat_count <= 0, fallback to 10");
+            init_repeat_count_ = 10;
         }
 
         // -------------------- Open file --------------------

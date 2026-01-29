@@ -21,6 +21,7 @@ class JointRateMonitor(Node):
         msg_type = str(self.get_parameter("msg_type").value).strip().lower()
         log_period_s = float(self.get_parameter("log_period_s").value)
         self._log_period_s = max(0.1, log_period_s)
+        self._topic = topic
 
         if msg_type in ("oculus", "oculus_init_joint_state", "oculusinitjointstate"):
             msg_cls = OculusInitJointState
@@ -48,7 +49,9 @@ class JointRateMonitor(Node):
         if self._last_msg_time is not None:
             self._last_interval = now - self._last_msg_time
         self._last_msg_time = now
-
+        self.get_logger().info (
+                        f"topic={self._topic} time={now:.6f} "
+        )
         if now - self._last_log_time >= self._log_period_s:
             dt = now - self._last_log_time
             delta = self._count - self._last_count
