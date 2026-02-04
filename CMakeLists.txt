@@ -84,6 +84,17 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ZMQ REQUIRED IMPORTED_TARGET libzmq)
 
+find_path(JE_CPPZMQ_INCLUDE_DIR zmq.hpp
+  PATH_SUFFIXES include
+  PATHS ${CMAKE_PREFIX_PATH} /usr
+)
+
+set(JE_ZMQ_INCLUDE_DIRS "${ZMQ_INCLUDE_DIRS}" "${JE_CPPZMQ_INCLUDE_DIR}")
+if(DEFINED ENV{CONDA_PREFIX})
+  list(APPEND JE_ZMQ_INCLUDE_DIRS "$ENV{CONDA_PREFIX}/include")
+endif()
+list(REMOVE_DUPLICATES JE_ZMQ_INCLUDE_DIRS)
+
 find_package(nlohmann_json REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -146,7 +157,15 @@ ament_target_dependencies(je_robot_node
 target_include_directories(je_robot_node
   PRIVATE
     ${common_INCLUDE_DIRS}
+    ${JE_ZMQ_INCLUDE_DIRS}
 )
+if(JE_ZMQ_INCLUDE_DIRS)
+  set(_je_zmq_flags "")
+  foreach(_je_dir IN LISTS JE_ZMQ_INCLUDE_DIRS)
+    list(APPEND _je_zmq_flags "-I${_je_dir}")
+  endforeach()
+  target_compile_options(je_robot_node PRIVATE ${_je_zmq_flags})
+endif()
 # IMPORTANT: use plain signature consistently (ament_target_dependencies uses plain internally)
 target_link_libraries(je_robot_node
   PkgConfig::ZMQ
