@@ -42,6 +42,7 @@ endif()
 # ----------------------------
 option(JE_ENABLE_LTO    "Enable -flto for Release/RelWithDebInfo" OFF)
 option(JE_ENABLE_NATIVE "Enable -march=native/-mtune=native for Release/RelWithDebInfo" OFF)
+option(JE_USE_CONDA_INCLUDES "Append CONDA_PREFIX/include to extra include dirs" OFF)
 
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2 -g -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE        "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG")
@@ -84,10 +85,72 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ZMQ REQUIRED IMPORTED_TARGET libzmq)
 
+find_path(JE_CPPZMQ_INCLUDE_DIR zmq.hpp
+  PATH_SUFFIXES include
+  PATHS ${CMAKE_PREFIX_PATH} /usr
+)
+
 find_package(nlohmann_json REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+# Prefer system spdlog/fmt to match ROS rcl_logging_spdlog and avoid ABI conflicts
+set(_JE_SYSTEM_SPDLOG_DIR "/usr/lib/x86_64-linux-gnu/cmake/spdlog")
+set(_JE_SYSTEM_FMT_DIR "/usr/lib/x86_64-linux-gnu/cmake/fmt")
+if(EXISTS "${_JE_SYSTEM_SPDLOG_DIR}/spdlogConfig.cmake")
+  find_package(fmt REQUIRED CONFIG PATHS "${_JE_SYSTEM_FMT_DIR}" NO_DEFAULT_PATH)
+  find_package(spdlog REQUIRED CONFIG PATHS "${_JE_SYSTEM_SPDLOG_DIR}" NO_DEFAULT_PATH)
+else()
+  find_package(fmt REQUIRED)
+  find_package(spdlog REQUIRED)
+endif()
+
+set(JE_EXTRA_INCLUDE_DIRS "")
+if(JE_USE_CONDA_INCLUDES AND DEFINED ENV{CONDA_PREFIX})
+  list(APPEND JE_EXTRA_INCLUDE_DIRS "$ENV{CONDA_PREFIX}/include")
+endif()
+if(CMAKE_PREFIX_PATH)
+  foreach(_je_prefix IN LISTS CMAKE_PREFIX_PATH)
+    if(IS_DIRECTORY "${_je_prefix}/include")
+      list(APPEND JE_EXTRA_INCLUDE_DIRS "${_je_prefix}/include")
+    endif()
+  endforeach()
+endif()
+if(TARGET pinocchio::pinocchio)
+  get_target_property(_PINOCCHIO_INCLUDES pinocchio::pinocchio INTERFACE_INCLUDE_DIRECTORIES)
+  if(_PINOCCHIO_INCLUDES)
+    list(APPEND JE_EXTRA_INCLUDE_DIRS ${_PINOCCHIO_INCLUDES})
+  endif()
+endif()
+if(TARGET nlohmann_json::nlohmann_json)
+  get_target_property(_NLOHMANN_INCLUDES nlohmann_json::nlohmann_json INTERFACE_INCLUDE_DIRECTORIES)
+  if(_NLOHMANN_INCLUDES)
+    list(APPEND JE_EXTRA_INCLUDE_DIRS ${_NLOHMANN_INCLUDES})
+  endif()
+endif()
+
+find_path(JE_PINOCCHIO_INCLUDE_DIR pinocchio/multibody/model.hpp
+  PATH_SUFFIXES include
+  PATHS ${CMAKE_PREFIX_PATH}
+)
+if(JE_PINOCCHIO_INCLUDE_DIR)
+  list(APPEND JE_EXTRA_INCLUDE_DIRS ${JE_PINOCCHIO_INCLUDE_DIR})
+endif()
+
+find_path(JE_NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp
+  PATH_SUFFIXES include
+  PATHS ${CMAKE_PREFIX_PATH}
+)
+if(JE_NLOHMANN_JSON_INCLUDE_DIR)
+  list(APPEND JE_EXTRA_INCLUDE_DIRS ${JE_NLOHMANN_JSON_INCLUDE_DIR})
+endif()
+
+if(JE_CPPZMQ_INCLUDE_DIR)
+  list(APPEND JE_EXTRA_INCLUDE_DIRS ${JE_CPPZMQ_INCLUDE_DIR})
+endif()
+
+list(REMOVE_DUPLICATES JE_EXTRA_INCLUDE_DIRS)
 
 # ----------------------------
 # Python install (Manual, to avoid target collision with rosidl)
@@ -141,12 +204,23 @@ ament_target_dependencies(je_robot_node
   geometry_msgs
   common
 )
+target_include_directories(je_robot_node
+  PRIVATE
+    ${ZMQ_INCLUDE_DIRS}
+    ${JE_CPPZMQ_INCLUDE_DIR}
+    ${JE_EXTRA_INCLUDE_DIRS}
+)
+if(JE_CPPZMQ_INCLUDE_DIR)
+  target_compile_options(je_robot_node PRIVATE "-I${JE_CPPZMQ_INCLUDE_DIR}")
+endif()
 # IMPORTANT: use plain signature consistently (ament_target_dependencies uses plain internally)
 target_link_libraries(je_robot_node
   PkgConfig::ZMQ
   nlohmann_json::nlohmann_json
   Eigen3::Eigen
   ik_solver
+  spdlog::spdlog
+  fmt::fmt
   ${cpp_typesupport_target}
 )
 
@@ -157,6 +231,10 @@ ament_target_dependencies(cli_target_publisher
   rclcpp
   sensor_msgs
   geometry_msgs
+)
+target_link_libraries(cli_target_publisher
+  spdlog::spdlog
+  fmt::fmt
 )
 # If cli_target_publisher includes/uses EndEffectorCommand.msg, uncomment:
 # target_link_libraries(cli_target_publisher
@@ -173,6 +251,8 @@ ament_target_dependencies(end_effector_cli
 )
 target_link_libraries(end_effector_cli
   ${cpp_typesupport_target}
+  spdlog::spdlog
+  fmt::fmt
 )
 
 add_executable(jsonl_replayer_node
@@ -184,6 +264,15 @@ ament_target_dependencies(jsonl_replayer_node
   geometry_msgs
   common
 )
+target_include_directories(jsonl_replayer_node
+  PRIVATE
+    ${JE_EXTRA_INCLUDE_DIRS}
+)
+target_link_libraries(jsonl_replayer_node
+  nlohmann_json::nlohmann_json
+  spdlog::spdlog
+  fmt::fmt
+)
 
 # ik_solver library (from utils)
 add_library(ik_solver STATIC
@@ -192,6 +281,7 @@ add_library(ik_solver STATIC
 
 target_include_directories(ik_solver
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/utils/include
+         ${JE_EXTRA_INCLUDE_DIRS}
 )
 
 target_compile_features(ik_solver PUBLIC cxx_std_17)

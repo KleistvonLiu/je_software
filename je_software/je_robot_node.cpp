@@ -12,6 +12,7 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <cstdio>
 
 // ===== NEW: logging =====
 #include <fstream>
@@ -35,17 +36,48 @@ using namespace std::chrono_literals;
 
 using json = nlohmann::json; // 默认 std::map
 
+namespace
+{
+rclcpp::NodeOptions je_log_node_options(const char *tag)
+{
+    std::fprintf(stderr, "[je_robot_node] ctor: before base (%s)\n", tag);
+    std::fflush(stderr);
+    return rclcpp::NodeOptions();
+}
+
+zmq::context_t je_log_zmq_context(int io_threads)
+{
+    std::fprintf(stderr, "[je_robot_node] ctor: init zmq context\n");
+    std::fflush(stderr);
+    return zmq::context_t(io_threads);
+}
+
+zmq::socket_t je_log_zmq_socket(zmq::context_t &ctx, zmq::socket_type type, const char *tag)
+{
+    std::fprintf(stderr, "[je_robot_node] ctor: init zmq socket (%s)\n", tag);
+    std::fflush(stderr);
+    return zmq::socket_t(ctx, type);
+}
+} // namespace
+
 class JeRobotNode : public rclcpp::Node
 {
 public:
     JeRobotNode()
-        : Node("je_robot_node"),
-          context_(1),
-          publisher_(context_, zmq::socket_type::pub),
-          subscriber_(context_, zmq::socket_type::sub),
+        : JeRobotNode(je_log_node_options("NodeOptions"))
+    {
+    }
+
+    explicit JeRobotNode(const rclcpp::NodeOptions &options)
+        : Node("je_robot_node", options),
+          context_(je_log_zmq_context(1)),
+          publisher_(je_log_zmq_socket(context_, zmq::socket_type::pub, "publisher")),
+          subscriber_(je_log_zmq_socket(context_, zmq::socket_type::sub, "subscriber")),
           joint_cmd_received_(false),
           state_thread_running_(false)
     {
+        std::fprintf(stderr, "[je_robot_node] ctor: start\n");
+        std::fflush(stderr);
         // ---------- 声明 & 获取参数 ----------
         this->declare_parameter<std::string>("joint_sub_topic", "/joint_cmd");
         this->declare_parameter<std::string>("end_pose_topic", "/end_pose");
@@ -75,6 +107,9 @@ public:
         this->declare_parameter<bool>("ik_log", false);
         // ========================================
 
+    std::fprintf(stderr, "[je_robot_node] ctor: declared base params\n");
+    std::fflush(stderr);
+
         std::string joint_sub_topic =
             this->get_parameter("joint_sub_topic").as_string();
         std::string end_pose_topic =
@@ -96,6 +131,9 @@ public:
         dt_init_ = this->get_parameter("dt_init").as_double();
 
         gripper_sub_topic_ = gripper_sub_topic;
+
+    std::fprintf(stderr, "[je_robot_node] ctor: read base params\n");
+    std::fflush(stderr);
 
         // IK solver parameters (per-arm, optional)
         this->declare_parameter<std::string>("robot_left_urdf", "");
@@ -157,7 +195,12 @@ public:
         this->declare_parameter<int>("ik_right_timeout_ms", 100);
         this->declare_parameter<double>("ik_right_step_size", 1.0);
 
+    std::fprintf(stderr, "[je_robot_node] ctor: declared IK params\n");
+    std::fflush(stderr);
+
         std::string urdf_left = this->get_parameter("robot_left_urdf").as_string();
+    std::fprintf(stderr, "[je_robot_node] ctor: read IK params start\n");
+    std::fflush(stderr);
         std::string urdf_right = this->get_parameter("robot_right_urdf").as_string();
         std::string ik_left_tip = this->get_parameter("ik_left_tip_frame").as_string();
         std::string ik_right_tip = this->get_parameter("ik_right_tip_frame").as_string();
@@ -1303,9 +1346,28 @@ private:
 
 int main(int argc, char *argv[])
 {
-    rclcpp::init(argc, argv);
-    auto node = std::make_shared<JeRobotNode>();
+    std::fprintf(stderr, "[je_robot_node] main(): start\n");
+    std::fflush(stderr);
+    std::fprintf(stderr, "[je_robot_node] before context init\n");
+    std::fflush(stderr);
+    auto context = std::make_shared<rclcpp::Context>();
+    context->init(argc, argv);
+    std::fprintf(stderr, "[je_robot_node] after context init\n");
+    std::fflush(stderr);
+    rclcpp::NodeOptions options;
+    options.context(context);
+    std::fprintf(stderr, "[je_robot_node] before JeRobotNode ctor\n");
+    std::fflush(stderr);
+    auto node = std::make_shared<JeRobotNode>(options);
+    std::fprintf(stderr, "[je_robot_node] after JeRobotNode ctor\n");
+    std::fflush(stderr);
+    std::fprintf(stderr, "[je_robot_node] before rclcpp::spin\n");
+    std::fflush(stderr);
     rclcpp::spin(node);
-    rclcpp::shutdown();
+    std::fprintf(stderr, "[je_robot_node] after rclcpp::spin\n");
+    std::fflush(stderr);
+    context->shutdown("main shutdown");
+    std::fprintf(stderr, "[je_robot_node] after rclcpp::shutdown\n");
+    std::fflush(stderr);
     return 0;
 }

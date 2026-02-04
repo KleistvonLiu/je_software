@@ -30,14 +30,14 @@ def generate_launch_description():
 
     # -------------------- IK / solver parameters (per-arm) ----------------------------------------------------
     # URDF / tip names
-    robot_left_urdf_arg = DeclareLaunchArgument('robot_left_urdf', default_value='/home/kleist/ros2_ws/src/je_software/je_software/urdf/LH_JEARM/zongzhuang2.urdf')
-    robot_right_urdf_arg = DeclareLaunchArgument('robot_right_urdf', default_value='/home/kleist/ros2_ws/src/je_software/je_software/urdf/RH_JEARM/zongzhuang2.urdf')
+    robot_left_urdf_arg = DeclareLaunchArgument('robot_left_urdf', default_value='/home/test/ros2_ws/src/je_software/je_software/urdf/L_JEARM/L_JEARM.urdf')
+    robot_right_urdf_arg = DeclareLaunchArgument('robot_right_urdf', default_value='/home/test/ros2_ws/src/je_software/je_software/urdf/R_JEARM/R_JEARM.urdf')
     ik_left_tip_frame_arg = DeclareLaunchArgument('ik_left_tip_frame', default_value='Link7')
     ik_right_tip_frame_arg = DeclareLaunchArgument('ik_right_tip_frame', default_value='Link7')
 
     # ===== Left arm parameters (grouped by functionality) =====
     # convergence / iterations
-    ik_left_max_iters_arg = DeclareLaunchArgument('ik_left_max_iters', default_value='200')
+    ik_left_max_iters_arg = DeclareLaunchArgument('ik_left_max_iters', default_value='1000')
     ik_left_eps_arg = DeclareLaunchArgument('ik_left_eps', default_value='1e-4')
     ik_left_eps_relaxed_6d_arg = DeclareLaunchArgument('ik_left_eps_relaxed_6d', default_value='1e-2')
 
