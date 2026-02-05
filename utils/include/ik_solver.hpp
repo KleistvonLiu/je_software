@@ -10,6 +10,8 @@
 #include <sstream>
 #include <memory>
 
+#include "geometry_msgs/msg/pose.hpp"
+
 // Include Pinocchio forward declarations (typedefs) instead of forward-declaring class names
 #include <pinocchio/multibody/fwd.hpp>
 
@@ -93,6 +95,11 @@ public:
   // Synchronous solve. If timeout_ms==0 -> no timeout.
   Result solve(const SE3 &target, const Eigen::VectorXd &q_init, int timeout_ms = 0);
 
+  // Solve directly from a ROS geometry pose (position + quaternion).
+  Result solvePose(const geometry_msgs::msg::Pose &pose,
+                   const Eigen::VectorXd &q_init,
+                   int timeout_ms = 0);
+
   // Single-step iteration (advances one internal LM iteration). Returns Result with updated q
   Result step(const SE3 &target, const Eigen::VectorXd &q_current);
 
@@ -108,6 +115,13 @@ public:
 
   // Return tip SE3 for given joint vector (uses internal data_)
   SE3 forwardKinematicsSE3(const Eigen::VectorXd &q);
+
+  // Build SE3 from position + quaternion (x,y,z + qx,qy,qz,qw)
+  static SE3 makeSE3(double px, double py, double pz,
+                     double qx, double qy, double qz, double qw);
+
+  // Build SE3 from a ROS geometry pose
+  static SE3 makeSE3(const geometry_msgs::msg::Pose &pose);
 
   // Load a simple YAML-style file (keys:value) to populate Params. Returns true on success.
   bool loadParamsFromFile(const std::string &path);

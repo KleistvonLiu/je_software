@@ -288,6 +288,10 @@ add_library(ik_solver STATIC
   utils/src/ik_solver.cpp
 )
 
+ament_target_dependencies(ik_solver
+  geometry_msgs
+)
+
 target_include_directories(ik_solver
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/utils/include
          ${JE_EXTRA_INCLUDE_DIRS}
@@ -297,9 +301,9 @@ target_compile_features(ik_solver PUBLIC cxx_std_17)
 
 # Link Pinocchio and Eigen (support both modern imported target and legacy variable)
 if (TARGET pinocchio::pinocchio)
-  target_link_libraries(ik_solver PUBLIC pinocchio::pinocchio Eigen3::Eigen)
+  target_link_libraries(ik_solver pinocchio::pinocchio Eigen3::Eigen)
 else()
-  target_link_libraries(ik_solver PUBLIC ${pinocchio_LIBRARIES} Eigen3::Eigen)
+  target_link_libraries(ik_solver ${pinocchio_LIBRARIES} Eigen3::Eigen)
 endif()
 
 # Install library and headers so local builds can find them

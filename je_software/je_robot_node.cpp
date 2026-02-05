@@ -835,20 +835,11 @@ private:
     {
         if (!msg) return;
 
-        const bool left_ok = msg->left_valid;
-        const bool right_ok = msg->right_valid;
+    bool left_ok = msg->left_valid;
+    bool right_ok = msg->right_valid;
         if (!left_ok && !right_ok) return;
 
         global_time_ += dt_;
-
-        // Helper to build SE3 from geometry pose
-        auto make_se3 = [&](const geometry_msgs::msg::Pose &p) {
-            ros2_ik_cpp::IkSolver::SE3 se3 = ros2_ik_cpp::IkSolver::SE3::Identity();
-            Eigen::Quaterniond q(p.orientation.w, p.orientation.x, p.orientation.y, p.orientation.z);
-            se3.linear() = q.toRotationMatrix();
-            se3.translation() = Eigen::Vector3d(p.position.x, p.position.y, p.position.z);
-            return se3;
-        };
 
         // Local snapshot of last_state_json_
         nlohmann::json state_snapshot;
@@ -860,7 +851,6 @@ private:
         // Process left
         if (left_ok) {
             if (ik_solver_left_) {
-                auto target = make_se3(msg->left_pose);
                 Eigen::VectorXd q_init = Eigen::VectorXd::Zero(ik_solver_left_->getNq());
                 // try to seed with last reported robot joints if available
                 try {
@@ -872,7 +862,7 @@ private:
                 } catch(...) {}
 
                 ros2_ik_cpp::IkSolver::Result r;
-                try { r = ik_solver_left_->solve(target, q_init, ik_left_timeout_ms_); }
+                try { r = ik_solver_left_->solvePose(msg->left_pose, q_init, ik_left_timeout_ms_); }
                 catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK left threw: %s", e.what()); }
 
                 if (ik_log_) {
@@ -880,6 +870,7 @@ private:
                     auto init_fk = ik_solver_left_->forwardKinematicsSE3(q_init);
                     // compute error between init_fk and target
                     Eigen::Vector3d pos_init = init_fk.translation();
+                    auto target = ros2_ik_cpp::IkSolver::makeSE3(msg->left_pose);
                     Eigen::Vector3d pos_tgt = target.translation();
                     Eigen::Vector3d pos_err = pos_tgt - pos_init;
                     Eigen::Quaterniond qinit(init_fk.rotation());
@@ -912,17 +903,20 @@ private:
                     set_robot_joint(joints, 0);
                 } else {
                     // fallback: send cartesian
-                    set_robot_cartesian(pose_to_cartesian(msg->left_pose), 0);
+                    left_ok = false;
+                    RCLCPP_INFO(this->get_logger(), "No IK solution for left arm. Skipping IK.");
+                    // set_robot_cartesian(pose_to_cartesian(msg->left_pose), 0);
                 }
             } else {
-                set_robot_cartesian(pose_to_cartesian(msg->left_pose), 0);
+                left_ok = false;
+                RCLCPP_INFO(this->get_logger(), "No IK solver for left arm, skipping IK.");
+                // set_robot_cartesian(pose_to_cartesian(msg->left_pose), 0);
             }
         }
 
         // Process right
         if (right_ok) {
             if (ik_solver_right_) {
-                auto target = make_se3(msg->right_pose);
                 Eigen::VectorXd q_init = Eigen::VectorXd::Zero(ik_solver_right_->getNq());
                 try {
                     if (state_snapshot.contains("Robot1") && state_snapshot["Robot1"].contains("Joint")) {
@@ -933,12 +927,13 @@ private:
                 } catch(...) {}
 
                 ros2_ik_cpp::IkSolver::Result r;
-                try { r = ik_solver_right_->solve(target, q_init, ik_right_timeout_ms_); }
+                try { r = ik_solver_right_->solvePose(msg->right_pose, q_init, ik_right_timeout_ms_); }
                 catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK right threw: %s", e.what()); }
 
                 if (ik_log_) {
                     auto init_fk = ik_solver_right_->forwardKinematicsSE3(q_init);
                     Eigen::Vector3d pos_init = init_fk.translation();
+                    auto target = ros2_ik_cpp::IkSolver::makeSE3(msg->right_pose);
                     Eigen::Vector3d pos_tgt = target.translation();
                     Eigen::Vector3d pos_err = pos_tgt - pos_init;
                     Eigen::Quaterniond qinit(init_fk.rotation());
@@ -968,10 +963,14 @@ private:
                     for (int i = 0; i < r.q.size(); ++i) joints[i] = r.q[i];
                     set_robot_joint(joints, 1);
                 } else {
-                    set_robot_cartesian(pose_to_cartesian(msg->right_pose), 1);
+                    right_ok = false;
+                    RCLCPP_INFO(this->get_logger(), "No IK solver for right arm, skipping IK.");
+                    // set_robot_cartesian(pose_to_cartesian(msg->right_pose), 1);
                 }
             } else {
-                set_robot_cartesian(pose_to_cartesian(msg->right_pose), 1);
+                right_ok = false;
+                RCLCPP_INFO(this->get_logger(), "No IK solver for right arm, skipping IK.");
+                // set_robot_cartesian(pose_to_cartesian(msg->right_pose), 1);
             }
         }
      }

@@ -241,6 +241,27 @@ IkSolver::IkSolver(const std::string &yaml_path)
 
 IkSolver::~IkSolver() {}
 
+IkSolver::SE3 IkSolver::makeSE3(double px, double py, double pz,
+                                double qx, double qy, double qz, double qw) {
+  SE3 se3 = SE3::Identity();
+  Eigen::Quaterniond q(qw, qx, qy, qz);
+  se3.linear() = q.toRotationMatrix();
+  se3.translation() = Eigen::Vector3d(px, py, pz);
+  return se3;
+}
+
+IkSolver::SE3 IkSolver::makeSE3(const geometry_msgs::msg::Pose &pose) {
+  return makeSE3(pose.position.x, pose.position.y, pose.position.z,
+                 pose.orientation.x, pose.orientation.y,
+                 pose.orientation.z, pose.orientation.w);
+}
+
+IkSolver::Result IkSolver::solvePose(const geometry_msgs::msg::Pose &pose,
+                                     const Eigen::VectorXd &q_init,
+                                     int timeout_ms) {
+  return solve(makeSE3(pose), q_init, timeout_ms);
+}
+
 void IkSolver::setParams(const Params &p) {
   std::lock_guard<std::mutex> lk(mutex_);
   params_ = p;
