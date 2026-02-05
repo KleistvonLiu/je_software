@@ -28,98 +28,13 @@ def generate_launch_description():
     pub_port_arg  = DeclareLaunchArgument('pub_port',  default_value='8001')
     sub_port_arg  = DeclareLaunchArgument('sub_port',  default_value='8000')
 
-    # -------------------- IK / solver parameters (per-arm) ----------------------------------------------------
-    # URDF / tip names
-    robot_left_urdf_arg = DeclareLaunchArgument('robot_left_urdf', default_value='/home/test/ros2_ws/src/je_software/je_software/urdf/L_JEARM/L_JEARM.urdf')
-    robot_right_urdf_arg = DeclareLaunchArgument('robot_right_urdf', default_value='/home/test/ros2_ws/src/je_software/je_software/urdf/R_JEARM/R_JEARM.urdf')
-    ik_left_tip_frame_arg = DeclareLaunchArgument('ik_left_tip_frame', default_value='Link7')
-    ik_right_tip_frame_arg = DeclareLaunchArgument('ik_right_tip_frame', default_value='Link7')
-
-    # ===== Left arm parameters (grouped by functionality) =====
-    # convergence / iterations
-    ik_left_max_iters_arg = DeclareLaunchArgument('ik_left_max_iters', default_value='1000')
-    ik_left_eps_arg = DeclareLaunchArgument('ik_left_eps', default_value='1e-4')
-    ik_left_eps_relaxed_6d_arg = DeclareLaunchArgument('ik_left_eps_relaxed_6d', default_value='1e-2')
-
-    # weights
-    ik_left_pos_weight_arg = DeclareLaunchArgument('ik_left_pos_weight', default_value='1.0')
-    ik_left_ang_weight_arg = DeclareLaunchArgument('ik_left_ang_weight', default_value='1.0')
-
-    # numeric jacobian fallback
-    ik_left_use_numeric_jacobian_arg = DeclareLaunchArgument('ik_left_use_numeric_jacobian', default_value='true')
-
-    # SVD / LM tuning
-    ik_left_use_svd_damped_arg = DeclareLaunchArgument('ik_left_use_svd_damped', default_value='true')
-    ik_left_ik_svd_damping_arg = DeclareLaunchArgument('ik_left_ik_svd_damping', default_value='1e-6')
-    ik_left_ik_svd_damping_min_arg = DeclareLaunchArgument('ik_left_ik_svd_damping_min', default_value='1e-12')
-    ik_left_ik_svd_damping_max_arg = DeclareLaunchArgument('ik_left_ik_svd_damping_max', default_value='1e6')
-    ik_left_ik_svd_damping_reduce_factor_arg = DeclareLaunchArgument('ik_left_ik_svd_damping_reduce_factor', default_value='0.1')
-    ik_left_ik_svd_damping_increase_factor_arg = DeclareLaunchArgument('ik_left_ik_svd_damping_increase_factor', default_value='10.0')
-    ik_left_ik_svd_trunc_tol_arg = DeclareLaunchArgument('ik_left_ik_svd_trunc_tol', default_value='1e-6')
-    ik_left_ik_svd_min_rel_reduction_arg = DeclareLaunchArgument('ik_left_ik_svd_min_rel_reduction', default_value='1e-8')
-
-    # line-search / per-iteration limits
-    ik_left_max_delta_arg = DeclareLaunchArgument('ik_left_max_delta', default_value='0.05')
-    ik_left_max_delta_min_arg = DeclareLaunchArgument('ik_left_max_delta_min', default_value='1e-6')
-
-    # nullspace / special-case penalties
-    ik_left_nullspace_penalty_scale_arg = DeclareLaunchArgument('ik_left_nullspace_penalty_scale', default_value='1e-4')
-    ik_left_joint4_penalty_threshold_arg = DeclareLaunchArgument('ik_left_joint4_penalty_threshold', default_value='0.05')
-
-    # numeric fallback policy
-    ik_left_numeric_fallback_after_rejects_arg = DeclareLaunchArgument('ik_left_numeric_fallback_after_rejects', default_value='3')
-    ik_left_numeric_fallback_duration_arg = DeclareLaunchArgument('ik_left_numeric_fallback_duration', default_value='10')
-
-    # joint limits (optional): set [] to disable
-    ik_left_joint_limits_min = [-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83]
-    ik_left_joint_limits_max = [2.96, 2.18, 2.96, 3.13, 2.96, 1.83, 1.83]
-
-    # per-iteration step scale and timeout
-    ik_left_step_size_arg = DeclareLaunchArgument('ik_left_step_size', default_value='1.0')
-    ik_left_timeout_ms_arg = DeclareLaunchArgument('ik_left_timeout_ms', default_value='100')
-
-    # ===== Right arm parameters (grouped same as left) =====
-    # convergence / iterations
-    ik_right_max_iters_arg = DeclareLaunchArgument('ik_right_max_iters', default_value='2000')
-    ik_right_eps_arg = DeclareLaunchArgument('ik_right_eps', default_value='1e-4')
-    ik_right_eps_relaxed_6d_arg = DeclareLaunchArgument('ik_right_eps_relaxed_6d', default_value='1e-2')
-
-    # weights
-    ik_right_pos_weight_arg = DeclareLaunchArgument('ik_right_pos_weight', default_value='1.0')
-    ik_right_ang_weight_arg = DeclareLaunchArgument('ik_right_ang_weight', default_value='1.0')
-
-    # numeric jacobian fallback
-    ik_right_use_numeric_jacobian_arg = DeclareLaunchArgument('ik_right_use_numeric_jacobian', default_value='true')
-
-    # SVD / LM tuning
-    ik_right_use_svd_damped_arg = DeclareLaunchArgument('ik_right_use_svd_damped', default_value='true')
-    ik_right_ik_svd_damping_arg = DeclareLaunchArgument('ik_right_ik_svd_damping', default_value='1e-6')
-    ik_right_ik_svd_damping_min_arg = DeclareLaunchArgument('ik_right_ik_svd_damping_min', default_value='1e-12')
-    ik_right_ik_svd_damping_max_arg = DeclareLaunchArgument('ik_right_ik_svd_damping_max', default_value='1e6')
-    ik_right_ik_svd_damping_reduce_factor_arg = DeclareLaunchArgument('ik_right_ik_svd_damping_reduce_factor', default_value='0.1')
-    ik_right_ik_svd_damping_increase_factor_arg = DeclareLaunchArgument('ik_right_ik_svd_damping_increase_factor', default_value='10.0')
-    ik_right_ik_svd_trunc_tol_arg = DeclareLaunchArgument('ik_right_ik_svd_trunc_tol', default_value='1e-6')
-    ik_right_ik_svd_min_rel_reduction_arg = DeclareLaunchArgument('ik_right_ik_svd_min_rel_reduction', default_value='1e-8')
-
-    # line-search / per-iteration limits
-    ik_right_max_delta_arg = DeclareLaunchArgument('ik_right_max_delta', default_value='0.05')
-    ik_right_max_delta_min_arg = DeclareLaunchArgument('ik_right_max_delta_min', default_value='1e-6')
-
-    # nullspace / special-case penalties
-    ik_right_nullspace_penalty_scale_arg = DeclareLaunchArgument('ik_right_nullspace_penalty_scale', default_value='1e-4')
-    ik_right_joint4_penalty_threshold_arg = DeclareLaunchArgument('ik_right_joint4_penalty_threshold', default_value='0.05')
-
-    # numeric fallback policy
-    ik_right_numeric_fallback_after_rejects_arg = DeclareLaunchArgument('ik_right_numeric_fallback_after_rejects', default_value='3')
-    ik_right_numeric_fallback_duration_arg = DeclareLaunchArgument('ik_right_numeric_fallback_duration', default_value='10')
-
-    # joint limits (optional): set [] to disable
-    ik_right_joint_limits_min = [-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83]
-    ik_right_joint_limits_max = [2.96, 2.18, 2.96, 3.13, 2.96, 1.83, 1.83]
-
-    # per-iteration step scale and timeout
-    ik_right_step_size_arg = DeclareLaunchArgument('ik_right_step_size', default_value='1.0')
-    ik_right_timeout_ms_arg = DeclareLaunchArgument('ik_right_timeout_ms', default_value='100')
+    # -------------------- IK YAML paths (per-arm) --------------------
+    ik_left_yaml_path_arg = DeclareLaunchArgument(
+        'ik_left_yaml_path',
+        default_value='/home/test/ros2_ws/src/je_software/config/ik_para_left.yaml')
+    ik_right_yaml_path_arg = DeclareLaunchArgument(
+        'ik_right_yaml_path',
+        default_value='/home/test/ros2_ws/src/je_software/config/ik_para_right.yaml')
 
     # 你的节点（按需改 package / executable）
     node = Node(
@@ -142,62 +57,8 @@ def generate_launch_description():
                 "pub_port": LaunchConfiguration("pub_port"),
                 "sub_port": LaunchConfiguration("sub_port"),
                 "ik_log": ParameterValue(LaunchConfiguration("ik_log"), value_type=bool),
-
-                # IK parameters (LEFT grouped)
-                "robot_left_urdf": LaunchConfiguration("robot_left_urdf"),
-                "ik_left_tip_frame": LaunchConfiguration("ik_left_tip_frame"),
-                "ik_left_max_iters": ParameterValue(LaunchConfiguration("ik_left_max_iters"), value_type=int),
-                "ik_left_eps": ParameterValue(LaunchConfiguration("ik_left_eps"), value_type=float),
-                "ik_left_eps_relaxed_6d": ParameterValue(LaunchConfiguration("ik_left_eps_relaxed_6d"), value_type=float),
-                "ik_left_pos_weight": ParameterValue(LaunchConfiguration("ik_left_pos_weight"), value_type=float),
-                "ik_left_ang_weight": ParameterValue(LaunchConfiguration("ik_left_ang_weight"), value_type=float),
-                "ik_left_use_numeric_jacobian": ParameterValue(LaunchConfiguration("ik_left_use_numeric_jacobian"), value_type=bool),
-                "ik_left_use_svd_damped": ParameterValue(LaunchConfiguration("ik_left_use_svd_damped"), value_type=bool),
-                "ik_left_ik_svd_damping": ParameterValue(LaunchConfiguration("ik_left_ik_svd_damping"), value_type=float),
-                "ik_left_ik_svd_damping_min": ParameterValue(LaunchConfiguration("ik_left_ik_svd_damping_min"), value_type=float),
-                "ik_left_ik_svd_damping_max": ParameterValue(LaunchConfiguration("ik_left_ik_svd_damping_max"), value_type=float),
-                "ik_left_ik_svd_damping_reduce_factor": ParameterValue(LaunchConfiguration("ik_left_ik_svd_damping_reduce_factor"), value_type=float),
-                "ik_left_ik_svd_damping_increase_factor": ParameterValue(LaunchConfiguration("ik_left_ik_svd_damping_increase_factor"), value_type=float),
-                "ik_left_ik_svd_trunc_tol": ParameterValue(LaunchConfiguration("ik_left_ik_svd_trunc_tol"), value_type=float),
-                "ik_left_ik_svd_min_rel_reduction": ParameterValue(LaunchConfiguration("ik_left_ik_svd_min_rel_reduction"), value_type=float),
-                "ik_left_max_delta": ParameterValue(LaunchConfiguration("ik_left_max_delta"), value_type=float),
-                "ik_left_max_delta_min": ParameterValue(LaunchConfiguration("ik_left_max_delta_min"), value_type=float),
-                "ik_left_nullspace_penalty_scale": ParameterValue(LaunchConfiguration("ik_left_nullspace_penalty_scale"), value_type=float),
-                "ik_left_joint4_penalty_threshold": ParameterValue(LaunchConfiguration("ik_left_joint4_penalty_threshold"), value_type=float),
-                "ik_left_numeric_fallback_after_rejects": ParameterValue(LaunchConfiguration("ik_left_numeric_fallback_after_rejects"), value_type=int),
-                "ik_left_numeric_fallback_duration": ParameterValue(LaunchConfiguration("ik_left_numeric_fallback_duration"), value_type=int),
-                "ik_left_joint_limits_min": ik_left_joint_limits_min,
-                "ik_left_joint_limits_max": ik_left_joint_limits_max,
-                "ik_left_step_size": ParameterValue(LaunchConfiguration("ik_left_step_size"), value_type=float),
-                "ik_left_timeout_ms": ParameterValue(LaunchConfiguration("ik_left_timeout_ms"), value_type=int),
-
-                # IK parameters (RIGHT grouped)
-                "robot_right_urdf": LaunchConfiguration("robot_right_urdf"),
-                "ik_right_tip_frame": LaunchConfiguration("ik_right_tip_frame"),
-                "ik_right_max_iters": ParameterValue(LaunchConfiguration("ik_right_max_iters"), value_type=int),
-                "ik_right_eps": ParameterValue(LaunchConfiguration("ik_right_eps"), value_type=float),
-                "ik_right_eps_relaxed_6d": ParameterValue(LaunchConfiguration("ik_right_eps_relaxed_6d"), value_type=float),
-                "ik_right_pos_weight": ParameterValue(LaunchConfiguration("ik_right_pos_weight"), value_type=float),
-                "ik_right_ang_weight": ParameterValue(LaunchConfiguration("ik_right_ang_weight"), value_type=float),
-                "ik_right_use_numeric_jacobian": ParameterValue(LaunchConfiguration("ik_right_use_numeric_jacobian"), value_type=bool),
-                "ik_right_use_svd_damped": ParameterValue(LaunchConfiguration("ik_right_use_svd_damped"), value_type=bool),
-                "ik_right_ik_svd_damping": ParameterValue(LaunchConfiguration("ik_right_ik_svd_damping"), value_type=float),
-                "ik_right_ik_svd_damping_min": ParameterValue(LaunchConfiguration("ik_right_ik_svd_damping_min"), value_type=float),
-                "ik_right_ik_svd_damping_max": ParameterValue(LaunchConfiguration("ik_right_ik_svd_damping_max"), value_type=float),
-                "ik_right_ik_svd_damping_reduce_factor": ParameterValue(LaunchConfiguration("ik_right_ik_svd_damping_reduce_factor"), value_type=float),
-                "ik_right_ik_svd_damping_increase_factor": ParameterValue(LaunchConfiguration("ik_right_ik_svd_damping_increase_factor"), value_type=float),
-                "ik_right_ik_svd_trunc_tol": ParameterValue(LaunchConfiguration("ik_right_ik_svd_trunc_tol"), value_type=float),
-                "ik_right_ik_svd_min_rel_reduction": ParameterValue(LaunchConfiguration("ik_right_ik_svd_min_rel_reduction"), value_type=float),
-                "ik_right_max_delta": ParameterValue(LaunchConfiguration("ik_right_max_delta"), value_type=float),
-                "ik_right_max_delta_min": ParameterValue(LaunchConfiguration("ik_right_max_delta_min"), value_type=float),
-                "ik_right_nullspace_penalty_scale": ParameterValue(LaunchConfiguration("ik_right_nullspace_penalty_scale"), value_type=float),
-                "ik_right_joint4_penalty_threshold": ParameterValue(LaunchConfiguration("ik_right_joint4_penalty_threshold"), value_type=float),
-                "ik_right_numeric_fallback_after_rejects": ParameterValue(LaunchConfiguration("ik_right_numeric_fallback_after_rejects"), value_type=int),
-                "ik_right_numeric_fallback_duration": ParameterValue(LaunchConfiguration("ik_right_numeric_fallback_duration"), value_type=int),
-                "ik_right_joint_limits_min": ik_right_joint_limits_min,
-                "ik_right_joint_limits_max": ik_right_joint_limits_max,
-                "ik_right_step_size": ParameterValue(LaunchConfiguration("ik_right_step_size"), value_type=float),
-                "ik_right_timeout_ms": ParameterValue(LaunchConfiguration("ik_right_timeout_ms"), value_type=int),
+                "ik_left_yaml_path": LaunchConfiguration("ik_left_yaml_path"),
+                "ik_right_yaml_path": LaunchConfiguration("ik_right_yaml_path"),
             }
         ],
         # 如需 remap，可加：remappings=[('/joint_cmd','/xxx'), ...]
@@ -229,54 +90,8 @@ def generate_launch_description():
         robot_ip_arg,
         pub_port_arg,
         sub_port_arg,
-        robot_left_urdf_arg,
-        robot_right_urdf_arg,
-        ik_left_tip_frame_arg,
-        ik_right_tip_frame_arg,
-        ik_left_max_iters_arg,
-        ik_left_eps_arg,
-        ik_left_eps_relaxed_6d_arg,
-        ik_left_use_svd_damped_arg,
-        ik_left_ik_svd_damping_min_arg,
-        ik_left_ik_svd_damping_max_arg,
-        ik_left_ik_svd_damping_reduce_factor_arg,
-        ik_left_ik_svd_damping_increase_factor_arg,
-        ik_left_ik_svd_trunc_tol_arg,
-        ik_left_ik_svd_min_rel_reduction_arg,
-        ik_left_pos_weight_arg,
-        ik_left_ang_weight_arg,
-        ik_left_use_numeric_jacobian_arg,
-        ik_left_ik_svd_damping_arg,
-        ik_left_max_delta_arg,
-        ik_left_max_delta_min_arg,
-        ik_left_nullspace_penalty_scale_arg,
-        ik_left_joint4_penalty_threshold_arg,
-        ik_left_numeric_fallback_after_rejects_arg,
-        ik_left_numeric_fallback_duration_arg,
-        ik_left_step_size_arg,
-        ik_right_max_iters_arg,
-        ik_right_eps_arg,
-        ik_right_eps_relaxed_6d_arg,
-        ik_right_use_svd_damped_arg,
-        ik_right_ik_svd_damping_min_arg,
-        ik_right_ik_svd_damping_max_arg,
-        ik_right_ik_svd_damping_reduce_factor_arg,
-        ik_right_ik_svd_damping_increase_factor_arg,
-        ik_right_ik_svd_trunc_tol_arg,
-        ik_right_ik_svd_min_rel_reduction_arg,
-        ik_right_pos_weight_arg,
-        ik_right_ang_weight_arg,
-        ik_right_use_numeric_jacobian_arg,
-        ik_right_ik_svd_damping_arg,
-        ik_right_max_delta_arg,
-        ik_right_max_delta_min_arg,
-        ik_right_nullspace_penalty_scale_arg,
-        ik_right_joint4_penalty_threshold_arg,
-        ik_right_numeric_fallback_after_rejects_arg,
-        ik_right_numeric_fallback_duration_arg,
-        ik_right_step_size_arg,
-        ik_left_timeout_ms_arg,
-        ik_right_timeout_ms_arg,
+        ik_left_yaml_path_arg,
+        ik_right_yaml_path_arg,
 
         node
     ])

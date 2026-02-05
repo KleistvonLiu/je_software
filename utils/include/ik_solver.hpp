@@ -48,6 +48,9 @@ public:
     int numeric_fallback_after_rejects = 3;
     int numeric_fallback_duration = 10;
 
+  // solver timeout (ms) used by caller
+  int timeout_ms = 100;
+
     // logging / diagnostics (solver-local)
     bool log_to_file = false;
     std::string log_file;
@@ -71,6 +74,10 @@ public:
 
   // Construct from URDF XML string or URDF file path and tip frame name (builds internal Pinocchio model)
   explicit IkSolver(const std::string &urdf_xml, const std::string &tip_frame_name);
+  // Construct from URDF and load solver params from YAML file path (if provided)
+  IkSolver(const std::string &urdf_xml, const std::string &tip_frame_name, const std::string &yaml_path);
+  // Construct entirely from YAML file path (urdf + tip + params)
+  explicit IkSolver(const std::string &yaml_path);
   ~IkSolver();
 
   // Parameter access
@@ -131,58 +138,5 @@ private:
   int j7_q_index_{-1};
   int j3_q_index_{-1};
 };
-
-// Inline simple YAML-like loader implementation
-inline bool IkSolver::loadParamsFromFile(const std::string &path) {
-  std::ifstream ifs(path);
-  if (!ifs) return false;
-  std::string line;
-  bool in_planning = false;
-  Params p;
-  while (std::getline(ifs, line)) {
-    auto l = line.find_first_not_of(" \t\r\n");
-    if (l==std::string::npos) continue;
-    line = line.substr(l);
-    if (line.rfind("planning:",0) == 0) { in_planning = true; continue; }
-    if (!in_planning) continue;
-    if (line.size()>0 && line[0]=='#') continue;
-    auto colon = line.find(':');
-    if (colon==std::string::npos) continue;
-    std::string key = line.substr(0, colon);
-    key.erase(key.find_last_not_of(" \t\r\n")+1);
-    std::string val = line.substr(colon+1);
-    auto s = val.find_first_not_of(" \t"); if (s!=std::string::npos) val = val.substr(s);
-    if (key=="max_delta") p.max_delta = std::stod(val);
-    else if (key=="pos_weight") p.pos_weight = std::stod(val);
-    else if (key=="ang_weight") p.ang_weight = std::stod(val);
-    else if (key=="use_numeric_jacobian") p.use_numeric_jacobian = (val.find("true")!=std::string::npos);
-    else if (key=="ik_step_size") p.ik_step_size = std::stod(val);
-    else if (key=="ik_max_iterations") p.max_iters = std::stoi(val);
-    else if (key=="ik_epsilon") p.eps = std::stod(val);
-    else if (key=="nullspace_penalty_scale") p.nullspace_penalty_scale = std::stod(val);
-    else if (key=="joint_limits_min") {
-      size_t a = val.find('['); size_t b = val.find(']'); if (a!=std::string::npos && b!=std::string::npos && b>a) {
-        std::string body = val.substr(a+1, b-a-1);
-        std::vector<double> vals; std::stringstream ss(body); double x; char ch;
-        while (ss >> x) { vals.push_back(x); ss >> ch; }
-        p.joint_limits_min = vals;
-      }
-    } else if (key=="joint_limits_max") {
-      size_t a = val.find('['); size_t b = val.find(']'); if (a!=std::string::npos && b!=std::string::npos && b>a) {
-        std::string body = val.substr(a+1, b-a-1);
-        std::vector<double> vals; std::stringstream ss(body); double x; char ch;
-        while (ss >> x) { vals.push_back(x); ss >> ch; }
-        p.joint_limits_max = vals;
-      }
-    }
-  }
-  setParams(p);
-  if (p.joint_limits_min.size() == p.joint_limits_max.size() && p.joint_limits_min.size()>0) {
-    Eigen::VectorXd lo(p.joint_limits_min.size()), hi(p.joint_limits_max.size());
-    for (size_t i=0;i<p.joint_limits_min.size();++i) { lo[i]=p.joint_limits_min[i]; hi[i]=p.joint_limits_max[i]; }
-    setJointLimits(lo, hi);
-  }
-  return true;
-}
 
 } // namespace ros2_ik_cpp

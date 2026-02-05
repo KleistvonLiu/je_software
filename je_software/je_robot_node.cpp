@@ -36,48 +36,23 @@ using namespace std::chrono_literals;
 
 using json = nlohmann::json; // 默认 std::map
 
-namespace
-{
-rclcpp::NodeOptions je_log_node_options(const char *tag)
-{
-    std::fprintf(stderr, "[je_robot_node] ctor: before base (%s)\n", tag);
-    std::fflush(stderr);
-    return rclcpp::NodeOptions();
-}
-
-zmq::context_t je_log_zmq_context(int io_threads)
-{
-    std::fprintf(stderr, "[je_robot_node] ctor: init zmq context\n");
-    std::fflush(stderr);
-    return zmq::context_t(io_threads);
-}
-
-zmq::socket_t je_log_zmq_socket(zmq::context_t &ctx, zmq::socket_type type, const char *tag)
-{
-    std::fprintf(stderr, "[je_robot_node] ctor: init zmq socket (%s)\n", tag);
-    std::fflush(stderr);
-    return zmq::socket_t(ctx, type);
-}
-} // namespace
-
 class JeRobotNode : public rclcpp::Node
 {
 public:
     JeRobotNode()
-        : JeRobotNode(je_log_node_options("NodeOptions"))
+        : JeRobotNode(rclcpp::NodeOptions())
     {
     }
 
     explicit JeRobotNode(const rclcpp::NodeOptions &options)
         : Node("je_robot_node", options),
-          context_(je_log_zmq_context(1)),
-          publisher_(je_log_zmq_socket(context_, zmq::socket_type::pub, "publisher")),
-          subscriber_(je_log_zmq_socket(context_, zmq::socket_type::sub, "subscriber")),
+          context_(1),
+          publisher_(context_, zmq::socket_type::pub),
+          subscriber_(context_, zmq::socket_type::sub),
           joint_cmd_received_(false),
           state_thread_running_(false)
     {
-        std::fprintf(stderr, "[je_robot_node] ctor: start\n");
-        std::fflush(stderr);
+
         // ---------- 声明 & 获取参数 ----------
         this->declare_parameter<std::string>("joint_sub_topic", "/joint_cmd");
         this->declare_parameter<std::string>("end_pose_topic", "/end_pose");
@@ -107,9 +82,6 @@ public:
         this->declare_parameter<bool>("ik_log", false);
         // ========================================
 
-    std::fprintf(stderr, "[je_robot_node] ctor: declared base params\n");
-    std::fflush(stderr);
-
         std::string joint_sub_topic =
             this->get_parameter("joint_sub_topic").as_string();
         std::string end_pose_topic =
@@ -132,190 +104,39 @@ public:
 
         gripper_sub_topic_ = gripper_sub_topic;
 
-    std::fprintf(stderr, "[je_robot_node] ctor: read base params\n");
-    std::fflush(stderr);
-
         // IK solver parameters (per-arm, optional)
-        this->declare_parameter<std::string>("robot_left_urdf", "");
-        this->declare_parameter<std::string>("robot_right_urdf", "");
-        this->declare_parameter<std::string>("ik_left_tip_frame", "left_ee_link");
-        this->declare_parameter<std::string>("ik_right_tip_frame", "right_ee_link");
+        this->declare_parameter<std::string>("ik_left_yaml_path", "");
+        this->declare_parameter<std::string>("ik_right_yaml_path", "");
 
-        // solver tuning (left)
-        this->declare_parameter<int>("ik_left_max_iters", 200);
-        this->declare_parameter<double>("ik_left_eps", 1e-4);
-        this->declare_parameter<double>("ik_left_eps_relaxed_6d", 1e-2);
-        this->declare_parameter<double>("ik_left_pos_weight", 1.0);
-        this->declare_parameter<double>("ik_left_ang_weight", 1.0);
-        this->declare_parameter<bool>("ik_left_use_numeric_jacobian", true);
+        std::string ik_left_yaml_path = this->get_parameter("ik_left_yaml_path").as_string();
+        std::string ik_right_yaml_path = this->get_parameter("ik_right_yaml_path").as_string();
 
-        this->declare_parameter<bool>("ik_left_use_svd_damped", true);
-        this->declare_parameter<double>("ik_left_ik_svd_damping", 1e-6);
-        this->declare_parameter<double>("ik_left_ik_svd_damping_min", 1e-12);
-        this->declare_parameter<double>("ik_left_ik_svd_damping_max", 1e6);
-        this->declare_parameter<double>("ik_left_ik_svd_damping_reduce_factor", 0.1);
-        this->declare_parameter<double>("ik_left_ik_svd_damping_increase_factor", 10.0);
-        this->declare_parameter<double>("ik_left_ik_svd_trunc_tol", 1e-6);
-        this->declare_parameter<double>("ik_left_ik_svd_min_rel_reduction", 1e-8);
-        this->declare_parameter<double>("ik_left_max_delta", 0.03);
-        this->declare_parameter<double>("ik_left_max_delta_min", 1e-6);
-        this->declare_parameter<double>("ik_left_nullspace_penalty_scale", 1e-4);
-        this->declare_parameter<double>("ik_left_joint4_penalty_threshold", 0.05);
-        this->declare_parameter<int>("ik_left_numeric_fallback_after_rejects", 3);
-        this->declare_parameter<int>("ik_left_numeric_fallback_duration", 10);
-        this->declare_parameter<std::vector<double>>("ik_left_joint_limits_min", std::vector<double>());
-        this->declare_parameter<std::vector<double>>("ik_left_joint_limits_max", std::vector<double>());
-        this->declare_parameter<int>("ik_left_timeout_ms", 100);
-        this->declare_parameter<double>("ik_left_step_size", 1.0);
-
-        // solver tuning (right)
-        this->declare_parameter<int>("ik_right_max_iters", 200);
-        this->declare_parameter<double>("ik_right_eps", 1e-4);
-        this->declare_parameter<double>("ik_right_eps_relaxed_6d", 1e-2);
-        this->declare_parameter<double>("ik_right_pos_weight", 1.0);
-        this->declare_parameter<double>("ik_right_ang_weight", 1.0);
-        this->declare_parameter<bool>("ik_right_use_numeric_jacobian", true);
-
-        this->declare_parameter<bool>("ik_right_use_svd_damped", true);
-        this->declare_parameter<double>("ik_right_ik_svd_damping", 1e-6);
-        this->declare_parameter<double>("ik_right_ik_svd_damping_min", 1e-12);
-        this->declare_parameter<double>("ik_right_ik_svd_damping_max", 1e6);
-        this->declare_parameter<double>("ik_right_ik_svd_damping_reduce_factor", 0.1);
-        this->declare_parameter<double>("ik_right_ik_svd_damping_increase_factor", 10.0);
-        this->declare_parameter<double>("ik_right_ik_svd_trunc_tol", 1e-6);
-        this->declare_parameter<double>("ik_right_ik_svd_min_rel_reduction", 1e-8);
-        this->declare_parameter<double>("ik_right_max_delta", 0.03);
-        this->declare_parameter<double>("ik_right_max_delta_min", 1e-6);
-        this->declare_parameter<double>("ik_right_nullspace_penalty_scale", 1e-4);
-        this->declare_parameter<double>("ik_right_joint4_penalty_threshold", 0.05);
-        this->declare_parameter<int>("ik_right_numeric_fallback_after_rejects", 3);
-        this->declare_parameter<int>("ik_right_numeric_fallback_duration", 10);
-        this->declare_parameter<std::vector<double>>("ik_right_joint_limits_min", std::vector<double>());
-        this->declare_parameter<std::vector<double>>("ik_right_joint_limits_max", std::vector<double>());
-        this->declare_parameter<int>("ik_right_timeout_ms", 100);
-        this->declare_parameter<double>("ik_right_step_size", 1.0);
-
-    std::fprintf(stderr, "[je_robot_node] ctor: declared IK params\n");
-    std::fflush(stderr);
-
-        std::string urdf_left = this->get_parameter("robot_left_urdf").as_string();
-    std::fprintf(stderr, "[je_robot_node] ctor: read IK params start\n");
-    std::fflush(stderr);
-        std::string urdf_right = this->get_parameter("robot_right_urdf").as_string();
-        std::string ik_left_tip = this->get_parameter("ik_left_tip_frame").as_string();
-        std::string ik_right_tip = this->get_parameter("ik_right_tip_frame").as_string();
-
-        auto summarize_urdf = [](const std::string &value) -> std::string {
-            if (value.empty())
-            {
-                return "<empty>";
+        if (!ik_left_yaml_path.empty()) {
+            try {
+                ik_solver_left_ = std::make_unique<ros2_ik_cpp::IkSolver>(ik_left_yaml_path);
+                ik_left_timeout_ms_ = ik_solver_left_->getParams().timeout_ms;
+                RCLCPP_INFO(this->get_logger(),
+                            "IkSolver left initialized from YAML: %s",
+                            ik_left_yaml_path.c_str());
+            } catch (const std::exception &e) {
+                RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver left: %s", e.what());
             }
-            if (value.find("<robot") != std::string::npos || value.find("<?xml") != std::string::npos)
-            {
-                return "<urdf_xml len=" + std::to_string(value.size()) + ">";
-            }
-            return value;
-        };
-        
-        const std::string left_urdf_summary = summarize_urdf(urdf_left);
-        const std::string right_urdf_summary = summarize_urdf(urdf_right);
-        RCLCPP_INFO(this->get_logger(),
-                    "IK params: left_urdf=%s right_urdf=%s left_tip='%s' right_tip='%s'",
-                    left_urdf_summary.c_str(), right_urdf_summary.c_str(),
-                    ik_left_tip.c_str(), ik_right_tip.c_str());
-
-        if (!urdf_left.empty()) {
-          try {
-            ik_solver_left_ = std::make_unique<ros2_ik_cpp::IkSolver>(urdf_left, ik_left_tip);
-            RCLCPP_INFO(this->get_logger(),
-                        "IkSolver left created from URDF: %s (tip:'%s')",
-                        left_urdf_summary.c_str(), ik_left_tip.c_str());
-            // apply left solver params
-            ros2_ik_cpp::IkSolver::Params p = ik_solver_left_->getParams();
-            p.max_iters = this->get_parameter("ik_left_max_iters").as_int();
-            p.eps = this->get_parameter("ik_left_eps").as_double();
-            p.eps_relaxed_6d = this->get_parameter("ik_left_eps_relaxed_6d").as_double();
-            p.pos_weight = this->get_parameter("ik_left_pos_weight").as_double();
-            p.ang_weight = this->get_parameter("ik_left_ang_weight").as_double();
-            p.use_numeric_jacobian = this->get_parameter("ik_left_use_numeric_jacobian").as_bool();
-            p.use_svd_damped = this->get_parameter("ik_left_use_svd_damped").as_bool();
-            p.ik_svd_damping = this->get_parameter("ik_left_ik_svd_damping").as_double();
-            p.ik_svd_damping_min = this->get_parameter("ik_left_ik_svd_damping_min").as_double();
-            p.ik_svd_damping_max = this->get_parameter("ik_left_ik_svd_damping_max").as_double();
-            p.ik_svd_damping_reduce_factor = this->get_parameter("ik_left_ik_svd_damping_reduce_factor").as_double();
-            p.ik_svd_damping_increase_factor = this->get_parameter("ik_left_ik_svd_damping_increase_factor").as_double();
-            p.ik_svd_trunc_tol = this->get_parameter("ik_left_ik_svd_trunc_tol").as_double();
-            p.ik_svd_min_rel_reduction = this->get_parameter("ik_left_ik_svd_min_rel_reduction").as_double();
-            p.max_delta = this->get_parameter("ik_left_max_delta").as_double();
-            p.max_delta_min = this->get_parameter("ik_left_max_delta_min").as_double();
-            p.nullspace_penalty_scale = this->get_parameter("ik_left_nullspace_penalty_scale").as_double();
-            p.joint4_penalty_threshold = this->get_parameter("ik_left_joint4_penalty_threshold").as_double();
-            p.numeric_fallback_after_rejects = this->get_parameter("ik_left_numeric_fallback_after_rejects").as_int();
-            p.numeric_fallback_duration = this->get_parameter("ik_left_numeric_fallback_duration").as_int();
-            p.ik_step_size = this->get_parameter("ik_left_step_size").as_double();
-            ik_solver_left_->setParams(p);
-            // optional joint limits
-            std::vector<double> jlmin, jlmax;
-            if (this->get_parameter("ik_left_joint_limits_min", jlmin) && this->get_parameter("ik_left_joint_limits_max", jlmax)) {
-              if (jlmin.size() == jlmax.size() && jlmin.size() > 0) {
-                Eigen::VectorXd lo(jlmin.size()), hi(jlmax.size());
-                for (size_t i=0;i<jlmin.size();++i) { lo[i]=jlmin[i]; hi[i]=jlmax[i]; }
-                ik_solver_left_->setJointLimits(lo, hi);
-              }
-            }
-            RCLCPP_INFO(this->get_logger(), "IkSolver left initialized (tip:'%s')", ik_left_tip.c_str());
-            ik_left_timeout_ms_ = this->get_parameter("ik_left_timeout_ms").as_int();
-          } catch (const std::exception &e) {
-            RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver left: %s", e.what());
-          }
         } else {
-          RCLCPP_WARN(this->get_logger(), "No robot_left_urdf provided; left IK disabled.");
+            RCLCPP_WARN(this->get_logger(), "No ik_left_yaml_path provided; left IK disabled.");
         }
 
-        if (!urdf_right.empty()) {
-          try {
-            ik_solver_right_ = std::make_unique<ros2_ik_cpp::IkSolver>(urdf_right, ik_right_tip);
-            RCLCPP_INFO(this->get_logger(),
-                        "IkSolver right created from URDF: %s (tip:'%s')",
-                        right_urdf_summary.c_str(), ik_right_tip.c_str());
-            ros2_ik_cpp::IkSolver::Params p = ik_solver_right_->getParams();
-            p.max_iters = this->get_parameter("ik_right_max_iters").as_int();
-            p.eps = this->get_parameter("ik_right_eps").as_double();
-            p.eps_relaxed_6d = this->get_parameter("ik_right_eps_relaxed_6d").as_double();
-            p.pos_weight = this->get_parameter("ik_right_pos_weight").as_double();
-            p.ang_weight = this->get_parameter("ik_right_ang_weight").as_double();
-            p.use_numeric_jacobian = this->get_parameter("ik_right_use_numeric_jacobian").as_bool();
-            p.use_svd_damped = this->get_parameter("ik_right_use_svd_damped").as_bool();
-            p.ik_svd_damping = this->get_parameter("ik_right_ik_svd_damping").as_double();
-            p.ik_svd_damping_min = this->get_parameter("ik_right_ik_svd_damping_min").as_double();
-            p.ik_svd_damping_max = this->get_parameter("ik_right_ik_svd_damping_max").as_double();
-            p.ik_svd_damping_reduce_factor = this->get_parameter("ik_right_ik_svd_damping_reduce_factor").as_double();
-            p.ik_svd_damping_increase_factor = this->get_parameter("ik_right_ik_svd_damping_increase_factor").as_double();
-            p.ik_svd_trunc_tol = this->get_parameter("ik_right_ik_svd_trunc_tol").as_double();
-            p.ik_svd_min_rel_reduction = this->get_parameter("ik_right_ik_svd_min_rel_reduction").as_double();
-            p.max_delta = this->get_parameter("ik_right_max_delta").as_double();
-            p.max_delta_min = this->get_parameter("ik_right_max_delta_min").as_double();
-            p.nullspace_penalty_scale = this->get_parameter("ik_right_nullspace_penalty_scale").as_double();
-            p.joint4_penalty_threshold = this->get_parameter("ik_right_joint4_penalty_threshold").as_double();
-            p.numeric_fallback_after_rejects = this->get_parameter("ik_right_numeric_fallback_after_rejects").as_int();
-            p.numeric_fallback_duration = this->get_parameter("ik_right_numeric_fallback_duration").as_int();
-            p.ik_step_size = this->get_parameter("ik_right_step_size").as_double();
-            ik_solver_right_->setParams(p);
-            std::vector<double> jlmin, jlmax;
-            if (this->get_parameter("ik_right_joint_limits_min", jlmin) && this->get_parameter("ik_right_joint_limits_max", jlmax)) {
-              if (jlmin.size() == jlmax.size() && jlmin.size() > 0) {
-                Eigen::VectorXd lo(jlmin.size()), hi(jlmax.size());
-                for (size_t i=0;i<jlmin.size();++i) { lo[i]=jlmin[i]; hi[i]=jlmax[i]; }
-                ik_solver_right_->setJointLimits(lo, hi);
-              }
+        if (!ik_right_yaml_path.empty()) {
+            try {
+                ik_solver_right_ = std::make_unique<ros2_ik_cpp::IkSolver>(ik_right_yaml_path);
+                ik_right_timeout_ms_ = ik_solver_right_->getParams().timeout_ms;
+                RCLCPP_INFO(this->get_logger(),
+                            "IkSolver right initialized from YAML: %s",
+                            ik_right_yaml_path.c_str());
+            } catch (const std::exception &e) {
+                RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver right: %s", e.what());
             }
-            RCLCPP_INFO(this->get_logger(), "IkSolver right initialized (tip:'%s')", ik_right_tip.c_str());
-            ik_right_timeout_ms_ = this->get_parameter("ik_right_timeout_ms").as_int();
-          } catch (const std::exception &e) {
-            RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver right: %s", e.what());
-          }
         } else {
-          RCLCPP_WARN(this->get_logger(), "No robot_right_urdf provided; right IK disabled.");
+            RCLCPP_WARN(this->get_logger(), "No ik_right_yaml_path provided; right IK disabled.");
         }
 
         // ===== NEW: read logging params =====
@@ -1346,28 +1167,12 @@ private:
 
 int main(int argc, char *argv[])
 {
-    std::fprintf(stderr, "[je_robot_node] main(): start\n");
-    std::fflush(stderr);
-    std::fprintf(stderr, "[je_robot_node] before context init\n");
-    std::fflush(stderr);
     auto context = std::make_shared<rclcpp::Context>();
     context->init(argc, argv);
-    std::fprintf(stderr, "[je_robot_node] after context init\n");
-    std::fflush(stderr);
     rclcpp::NodeOptions options;
     options.context(context);
-    std::fprintf(stderr, "[je_robot_node] before JeRobotNode ctor\n");
-    std::fflush(stderr);
     auto node = std::make_shared<JeRobotNode>(options);
-    std::fprintf(stderr, "[je_robot_node] after JeRobotNode ctor\n");
-    std::fflush(stderr);
-    std::fprintf(stderr, "[je_robot_node] before rclcpp::spin\n");
-    std::fflush(stderr);
     rclcpp::spin(node);
-    std::fprintf(stderr, "[je_robot_node] after rclcpp::spin\n");
-    std::fflush(stderr);
     context->shutdown("main shutdown");
-    std::fprintf(stderr, "[je_robot_node] after rclcpp::shutdown\n");
-    std::fflush(stderr);
     return 0;
 }

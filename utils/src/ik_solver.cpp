@@ -12,6 +12,7 @@
 #include <fstream>
 #include <algorithm>
 #include <stdexcept>
+#include <cctype>
 
 using namespace ros2_ik_cpp;
 using Eigen::VectorXd;
@@ -30,6 +31,141 @@ static SE3 fromPinocchioSE3(const pinocchio::SE3 &p) {
   s.translation() = p.translation();
   return s;
 }
+
+namespace {
+struct IkYamlConfig {
+  std::string urdf_path;
+  std::string tip_frame;
+  ros2_ik_cpp::IkSolver::Params params;
+};
+
+std::string trim_copy(const std::string &s) {
+  const auto start = s.find_first_not_of(" \t\r\n");
+  if (start == std::string::npos) return "";
+  const auto end = s.find_last_not_of(" \t\r\n");
+  return s.substr(start, end - start + 1);
+}
+
+std::string strip_quotes(const std::string &s) {
+  if (s.size() >= 2) {
+    if ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\'')) {
+      return s.substr(1, s.size() - 2);
+    }
+  }
+  return s;
+}
+
+bool parse_bool(const std::string &val) {
+  std::string v;
+  v.reserve(val.size());
+  for (char c : val) v.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  v = trim_copy(v);
+  return (v == "true" || v == "1" || v == "yes" || v == "on");
+}
+
+std::vector<double> parse_list(const std::string &val) {
+  std::vector<double> out;
+  const auto a = val.find('[');
+  const auto b = val.find(']');
+  if (a == std::string::npos || b == std::string::npos || b <= a) return out;
+  const std::string body = val.substr(a + 1, b - a - 1);
+  std::stringstream ss(body);
+  double x;
+  char ch;
+  while (ss >> x) {
+    out.push_back(x);
+    ss >> ch;
+  }
+  return out;
+}
+
+void apply_key_value(const std::string &key,
+                     const std::string &val,
+                     IkYamlConfig &cfg) {
+  if (key == "urdf" || key == "urdf_path" || key == "robot_urdf") {
+    cfg.urdf_path = strip_quotes(val);
+  } else if (key == "tip" || key == "tip_frame" || key == "tip_frame_name") {
+    cfg.tip_frame = strip_quotes(val);
+  } else if (key == "max_iters" || key == "ik_max_iterations") {
+    cfg.params.max_iters = std::stoi(val);
+  } else if (key == "eps" || key == "ik_epsilon") {
+    cfg.params.eps = std::stod(val);
+  } else if (key == "eps_relaxed_6d") {
+    cfg.params.eps_relaxed_6d = std::stod(val);
+  } else if (key == "pos_weight") {
+    cfg.params.pos_weight = std::stod(val);
+  } else if (key == "ang_weight") {
+    cfg.params.ang_weight = std::stod(val);
+  } else if (key == "use_numeric_jacobian") {
+    cfg.params.use_numeric_jacobian = parse_bool(val);
+  } else if (key == "use_svd_damped") {
+    cfg.params.use_svd_damped = parse_bool(val);
+  } else if (key == "ik_svd_damping") {
+    cfg.params.ik_svd_damping = std::stod(val);
+  } else if (key == "ik_svd_damping_min") {
+    cfg.params.ik_svd_damping_min = std::stod(val);
+  } else if (key == "ik_svd_damping_max") {
+    cfg.params.ik_svd_damping_max = std::stod(val);
+  } else if (key == "ik_svd_damping_reduce_factor") {
+    cfg.params.ik_svd_damping_reduce_factor = std::stod(val);
+  } else if (key == "ik_svd_damping_increase_factor") {
+    cfg.params.ik_svd_damping_increase_factor = std::stod(val);
+  } else if (key == "ik_svd_trunc_tol") {
+    cfg.params.ik_svd_trunc_tol = std::stod(val);
+  } else if (key == "ik_svd_min_rel_reduction") {
+    cfg.params.ik_svd_min_rel_reduction = std::stod(val);
+  } else if (key == "max_delta") {
+    cfg.params.max_delta = std::stod(val);
+  } else if (key == "max_delta_min") {
+    cfg.params.max_delta_min = std::stod(val);
+  } else if (key == "nullspace_penalty_scale") {
+    cfg.params.nullspace_penalty_scale = std::stod(val);
+  } else if (key == "joint4_penalty_threshold") {
+    cfg.params.joint4_penalty_threshold = std::stod(val);
+  } else if (key == "numeric_fallback_after_rejects") {
+    cfg.params.numeric_fallback_after_rejects = std::stoi(val);
+  } else if (key == "numeric_fallback_duration") {
+    cfg.params.numeric_fallback_duration = std::stoi(val);
+  } else if (key == "ik_step_size") {
+    cfg.params.ik_step_size = std::stod(val);
+  } else if (key == "joint_limits_min") {
+    cfg.params.joint_limits_min = parse_list(val);
+  } else if (key == "joint_limits_max") {
+    cfg.params.joint_limits_max = parse_list(val);
+  } else if (key == "timeout_ms") {
+    cfg.params.timeout_ms = std::stoi(val);
+  }
+}
+
+bool parse_ik_yaml(const std::string &path, IkYamlConfig &cfg) {
+  std::ifstream ifs(path);
+  if (!ifs) return false;
+  bool in_planning = false;
+  std::string line;
+  while (std::getline(ifs, line)) {
+    auto comment_pos = line.find('#');
+    if (comment_pos != std::string::npos) {
+      line = line.substr(0, comment_pos);
+    }
+    line = trim_copy(line);
+    if (line.empty()) continue;
+    if (line.rfind("planning:", 0) == 0) {
+      in_planning = true;
+      continue;
+    }
+    const auto colon = line.find(':');
+    if (colon == std::string::npos) continue;
+    std::string key = trim_copy(line.substr(0, colon));
+    std::string val = trim_copy(line.substr(colon + 1));
+    if (in_planning) {
+      apply_key_value(key, val, cfg);
+    } else {
+      apply_key_value(key, val, cfg);
+    }
+  }
+  return true;
+}
+} // namespace
 
 static std::string load_urdf_xml(const std::string &urdf_xml_or_path) {
   if (urdf_xml_or_path.find("<robot") != std::string::npos ||
@@ -64,6 +200,45 @@ IkSolver::IkSolver(const std::string &urdf_xml, const std::string &tip_frame_nam
   }
 }
 
+IkSolver::IkSolver(const std::string &urdf_xml,
+                   const std::string &tip_frame_name,
+                   const std::string &yaml_path)
+  : IkSolver(urdf_xml, tip_frame_name) {
+  if (!yaml_path.empty()) {
+    if (!loadParamsFromFile(yaml_path)) {
+      throw std::runtime_error("Failed to load IK params YAML: " + yaml_path);
+    }
+  }
+}
+
+IkSolver::IkSolver(const std::string &yaml_path)
+  : model_(nullptr), data_(nullptr), tip_frame_name_() {
+  IkYamlConfig cfg;
+  if (!parse_ik_yaml(yaml_path, cfg)) {
+    throw std::runtime_error("Failed to read IK YAML: " + yaml_path);
+  }
+  if (cfg.urdf_path.empty() || cfg.tip_frame.empty()) {
+    throw std::runtime_error("IK YAML missing urdf_path or tip_frame: " + yaml_path);
+  }
+  model_ = std::make_unique<pinocchio::Model>();
+  const std::string xml = load_urdf_xml(cfg.urdf_path);
+  pinocchio::urdf::buildModelFromXML(xml, *model_);
+  data_ = std::make_unique<pinocchio::Data>(*model_);
+  tip_frame_name_ = cfg.tip_frame;
+  tip_frame_id_ = model_->getFrameId(tip_frame_name_);
+  setParams(cfg.params);
+  if (cfg.params.joint_limits_min.size() == cfg.params.joint_limits_max.size() &&
+      !cfg.params.joint_limits_min.empty()) {
+    Eigen::VectorXd lo(cfg.params.joint_limits_min.size());
+    Eigen::VectorXd hi(cfg.params.joint_limits_max.size());
+    for (size_t i = 0; i < cfg.params.joint_limits_min.size(); ++i) {
+      lo[i] = cfg.params.joint_limits_min[i];
+      hi[i] = cfg.params.joint_limits_max[i];
+    }
+    setJointLimits(lo, hi);
+  }
+}
+
 IkSolver::~IkSolver() {}
 
 void IkSolver::setParams(const Params &p) {
@@ -88,6 +263,25 @@ void IkSolver::setJointLimits(const Eigen::VectorXd &lo, const Eigen::VectorXd &
 void IkSolver::setIterCallback(IterCallback cb) {
   std::lock_guard<std::mutex> lk(mutex_);
   iter_cb_ = cb;
+}
+
+bool IkSolver::loadParamsFromFile(const std::string &path) {
+  IkYamlConfig cfg;
+  if (!parse_ik_yaml(path, cfg)) {
+    return false;
+  }
+  setParams(cfg.params);
+  if (cfg.params.joint_limits_min.size() == cfg.params.joint_limits_max.size() &&
+      !cfg.params.joint_limits_min.empty()) {
+    Eigen::VectorXd lo(cfg.params.joint_limits_min.size());
+    Eigen::VectorXd hi(cfg.params.joint_limits_max.size());
+    for (size_t i = 0; i < cfg.params.joint_limits_min.size(); ++i) {
+      lo[i] = cfg.params.joint_limits_min[i];
+      hi[i] = cfg.params.joint_limits_max[i];
+    }
+    setJointLimits(lo, hi);
+  }
+  return true;
 }
 
 IkSolver::Result IkSolver::solve(const SE3 &target, const Eigen::VectorXd &q_init, int timeout_ms) {
