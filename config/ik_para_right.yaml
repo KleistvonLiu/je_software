@@ -1,0 +1,28 @@
+urdf_path: /home/test/ros2_ws/src/je_software/je_software/urdf/R_JEARM/R_JEARM.urdf
+tip_frame: Link7
+timeout_ms: 100
+
+planning:
+	max_iters: 2000
+	eps: 1e-4
+	eps_relaxed_6d: 1e-2
+	pos_weight: 1.0
+	ang_weight: 1.0
+	use_numeric_jacobian: true
+	use_svd_damped: true
+	ik_svd_damping: 1e-6
+	ik_svd_damping_min: 1e-12
+	ik_svd_damping_max: 1e6
+	ik_svd_damping_reduce_factor: 0.1
+	ik_svd_damping_increase_factor: 10.0
+	ik_svd_trunc_tol: 1e-6
+	ik_svd_min_rel_reduction: 1e-8
+	max_delta: 0.05
+	max_delta_min: 1e-6
+	nullspace_penalty_scale: 1e-4
+	joint4_penalty_threshold: 0.05
+	numeric_fallback_after_rejects: 3
+	numeric_fallback_duration: 10
+	ik_step_size: 1.0
+	joint_limits_min: [-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83]
+	joint_limits_max: [2.96, 2.18, 2.96, 3.13, 2.96, 1.83, 1.83]

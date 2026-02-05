@@ -24,6 +24,9 @@ ros2 run orbbec_camera list_devices_node
 
 ros2 launch je_software manager.launch.py overwrite:=false episode_idx:=1
 
+colcon build --merge-install --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+
+
 
 # 机器人的节点
 ros2 launch je_software agilex_robot.launch.py joint_pub_topic:=/joint_states_right can_port:=can_right
