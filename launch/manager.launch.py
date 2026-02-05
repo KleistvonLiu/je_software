@@ -179,7 +179,8 @@ def generate_launch_description():
     joint_csv = DeclareLaunchArgument(
         'joint_state_topics_csv',
         # default_value='/joint_states_right',
-        default_value='/joint_states_double_arm',
+        # default_value='/joint_states_double_arm',
+        default_value='/joint_cmd_double_arm',
         description='CSV: /arm_a/joint_states,/arm_b/joint_states'
     )
     joint_list = DeclareLaunchArgument(

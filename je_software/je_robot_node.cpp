@@ -5,11 +5,14 @@
 #include <vector>
 #include <unordered_map>
 #include <array>
+#include <algorithm>
 #include <iostream>
 #include <atomic>
 #include <mutex>
 #include <cerrno>
 #include <cmath>
+#include <cctype>
+#include <cstdlib>
 #include <iomanip>
 #include <sstream>
 #include <cstdio>
@@ -26,6 +29,7 @@
 #include "je_software/msg/end_effector_command_lr.hpp"
 #include "common/msg/oculus_controllers.hpp"
 #include "common/msg/oculus_init_joint_state.hpp"
+#include "ros2_qos.hpp"
 #include "ik_solver.hpp"
 
 #include <zmq.hpp>
@@ -35,6 +39,10 @@
 using namespace std::chrono_literals;
 
 using json = nlohmann::json; // 默认 std::map
+
+#ifndef JE_ENABLE_PUBLISH_STATE_FREQ_LOG
+#define JE_ENABLE_PUBLISH_STATE_FREQ_LOG 0
+#endif
 
 class JeRobotNode : public rclcpp::Node
 {
@@ -69,9 +77,13 @@ public:
         // 下发关节指令时的插补时间（秒）
         this->declare_parameter<double>("dt", 0.014);
         this->declare_parameter<double>("dt_init", 5.0);
+        this->declare_parameter<double>("oculus_joint_jump_threshold", 1.0);
+        this->declare_parameter<double>("oculus_pose_jump_threshold_pos", 0.5);
+        this->declare_parameter<double>("oculus_pose_jump_threshold_rpy", 0.5);
 
         // Gripper ROS2 command topic
         this->declare_parameter<std::string>("gripper_sub_topic", "/end_effector_cmd_lr");
+        this->declare_parameter<std::string>("end_effector_mode", "external");
 
         // ===== NEW: state logging parameters =====
         this->declare_parameter<bool>("state_log_enable", true);
@@ -94,6 +106,8 @@ public:
             this->get_parameter("oculus_init_joint_state_topic").as_string();
         std::string gripper_sub_topic =
             this->get_parameter("gripper_sub_topic").as_string();
+        std::string end_effector_mode =
+            this->get_parameter("end_effector_mode").as_string();
         double fps = this->get_parameter("fps").as_double();
 
         std::string robot_ip = this->get_parameter("robot_ip").as_string();
@@ -101,8 +115,32 @@ public:
         int sub_port = this->get_parameter("sub_port").as_int();
         dt_ = this->get_parameter("dt").as_double();
         dt_init_ = this->get_parameter("dt_init").as_double();
+        joint_jump_threshold_ = this->get_parameter("oculus_joint_jump_threshold").as_double();
+        pose_jump_threshold_pos_ =
+            this->get_parameter("oculus_pose_jump_threshold_pos").as_double();
+        pose_jump_threshold_rpy_ =
+            this->get_parameter("oculus_pose_jump_threshold_rpy").as_double();
 
         gripper_sub_topic_ = gripper_sub_topic;
+        {
+            std::transform(end_effector_mode.begin(),
+                           end_effector_mode.end(),
+                           end_effector_mode.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (end_effector_mode == "msg" || end_effector_mode == "message")
+            {
+                oculus_init_use_msg_gripper_ = true;
+            }
+            else if (!end_effector_mode.empty() &&
+                     end_effector_mode != "external" &&
+                     end_effector_mode != "command")
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "Unknown end_effector_mode '%s', fallback to 'external'.",
+                            end_effector_mode.c_str());
+                oculus_init_use_msg_gripper_ = false;
+            }
+        }
 
         // IK solver parameters (per-arm, optional)
         this->declare_parameter<std::string>("ik_left_yaml_path", "");
@@ -150,7 +188,11 @@ public:
 
         if (fps <= 0.0)
         {
-            fps = 50.0;
+            fps = 30.0;
+        }
+        if (fps > 0.0)
+        {
+            dt_ = 1.0 / fps;
         }
 
         // ---------- 初始化 ZMQ 通讯 ----------
@@ -199,48 +241,48 @@ public:
         current_cmd_joint_.assign(7, 0.0);
 
         // ---------- ROS 订阅/发布 ----------
-        auto qos = rclcpp::QoS(rclcpp::KeepLast(1));
-        qos.reliable();
+        auto reliable_qos_shallow = common_utils::reliable_qos_shallow();
+        auto reliable_qos = common_utils::reliable_qos();
 
         // 订阅关节目标
         sub_joint_cmd_ = this->create_subscription<sensor_msgs::msg::JointState>(
             joint_sub_topic,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::joint_cmd_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] joint cmd: %s", joint_sub_topic.c_str());
 
         // 订阅夹爪指令（模式 + 指令值）
         sub_gripper_cmd_ = this->create_subscription<je_software::msg::EndEffectorCommandLR>(
             gripper_sub_topic_,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::gripper_cmd_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] gripper cmd: %s", gripper_sub_topic_.c_str());
 
         // 订阅末端位姿（暂只缓存，不控制）
         sub_end_pose_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
             end_pose_topic,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::end_pose_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] end pose: %s", end_pose_topic.c_str());
 
         // 订阅 Oculus 控制器位姿（左右手）
         sub_oculus_controllers_ = this->create_subscription<common::msg::OculusControllers>(
             oculus_controllers_topic,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::oculus_controllers_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] oculus controllers: %s", oculus_controllers_topic.c_str());
 
         // 订阅 Oculus 初始化关节指令（左右手）
         sub_oculus_init_joint_ = this->create_subscription<common::msg::OculusInitJointState>(
             oculus_init_joint_state_topic,
-            qos,
+            reliable_qos_shallow,
             std::bind(&JeRobotNode::oculus_init_joint_state_callback, this, std::placeholders::_1));
         RCLCPP_INFO(this->get_logger(), "[SUB] oculus init joint: %s", oculus_init_joint_state_topic.c_str());
 
         // 发布关节状态（OculusInitJointState）
         pub_joint_state_ = this->create_publisher<common::msg::OculusInitJointState>(
             joint_pub_topic,
-            qos);
+            reliable_qos);
         RCLCPP_INFO(this->get_logger(), "[PUB] joint state: %s", joint_pub_topic.c_str());
 
         // ===== NEW: open log file once (optional) =====
@@ -398,6 +440,47 @@ private:
         return (robot_index == 1) ? gripper_cmd_right_ : gripper_cmd_left_;
     }
 
+    void append_gripper_from_command(nlohmann::json &data, int robot_index)
+    {
+        const auto &gripper_cmd = get_gripper_command(robot_index);
+        if (!gripper_cmd.received)
+        {
+            return;
+        }
+        nlohmann::json ee;
+        ee["mode"] = gripper_cmd.mode;
+        if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+        {
+            ee["position"] = gripper_cmd.position;
+        }
+        else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+        {
+            ee["preset"] = gripper_cmd.preset;
+        }
+        data[robot_key(robot_index)]["EndEffector"] = ee;
+    }
+
+    void append_gripper_from_position(nlohmann::json &data, int robot_index, double position)
+    {
+        nlohmann::json ee;
+        ee["mode"] = je_software::msg::EndEffectorCommand::MODE_POSITION;
+        ee["position"] = position;
+        // std::cout << "Here: published postion: " << robot_index << ", " << position << std::endl;
+        data[robot_key(robot_index)]["EndEffector"] = ee;
+    }
+
+    void append_oculus_init_gripper(nlohmann::json &data, int robot_index, double position)
+    {
+        if (oculus_init_use_msg_gripper_)
+        {
+            append_gripper_from_position(data, robot_index, position);
+        }
+        else
+        {
+            append_gripper_from_command(data, robot_index);
+        }
+    }
+
     void set_robot_joint(const std::vector<double> &joint, int robot_index, double delta_time = 0.0)
     {
         if (std::abs(delta_time - 0) < 1e-5)
@@ -412,21 +495,7 @@ private:
         const char *key = robot_key(robot_index);
         data[key]["time"] = global_time_;
         data[key]["joint"] = joint;
-        const auto &gripper_cmd = get_gripper_command(robot_index);
-        if (gripper_cmd.received)
-        {
-            nlohmann::json ee;
-            ee["mode"] = gripper_cmd.mode;
-            if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-            {
-                ee["position"] = gripper_cmd.position;
-            }
-            else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-            {
-                ee["preset"] = gripper_cmd.preset;
-            }
-            data[key]["end_effector"] = ee;
-        }
+        append_gripper_from_command(data, robot_index);
 
         std::ostringstream oss;
         oss.setf(std::ios::fixed);
@@ -461,21 +530,7 @@ private:
         const char *key = robot_key(robot_index);
         data[key]["time"] = global_time_;
         data[key]["cartesian"] = cartesian;
-        const auto &gripper_cmd = get_gripper_command(robot_index);
-        if (gripper_cmd.received)
-        {
-            nlohmann::json ee;
-            ee["mode"] = gripper_cmd.mode;
-            if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-            {
-                ee["position"] = gripper_cmd.position;
-            }
-            else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-            {
-                ee["preset"] = gripper_cmd.preset;
-            }
-            data[key]["end_effector"] = ee;
-        }
+        append_gripper_from_command(data, robot_index);
         publisher_.send(zmq::buffer("Cartesian " + data.dump()));
     }
 
@@ -960,6 +1015,28 @@ private:
             return;
         }
 
+        if (joint_jump_threshold_ > 0.0)
+        {
+            if (left_ok)
+            {
+                check_and_update_joint_jump(
+                    "Left",
+                    target_left,
+                    is_init,
+                    prev_target_left_,
+                    prev_left_valid_);
+            }
+            if (right_ok)
+            {
+                check_and_update_joint_jump(
+                    "Right",
+                    target_right,
+                    is_init,
+                    prev_target_right_,
+                    prev_right_valid_);
+            }
+        }
+
         const double delta_time = init_dt;
         if (std::abs(delta_time - 0) < 1e-5)
         {
@@ -985,46 +1062,38 @@ private:
 
         if (left_ok)
         {
-            const auto &gripper_cmd = get_gripper_command(0);
-            if (gripper_cmd.received)
-            {
-                nlohmann::json ee;
-                ee["mode"] = gripper_cmd.mode;
-                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-                {
-                    ee["position"] = gripper_cmd.position;
-                }
-                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-                {
-                    ee["preset"] = gripper_cmd.preset;
-                }
-                data["Robot0"]["end_effector"] = ee;
-            }
+            append_oculus_init_gripper(data, 0, msg->left_gripper);
         }
         if (right_ok)
         {
-            const auto &gripper_cmd = get_gripper_command(1);
-            if (gripper_cmd.received)
-            {
-                nlohmann::json ee;
-                ee["mode"] = gripper_cmd.mode;
-                if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
-                {
-                    ee["position"] = gripper_cmd.position;
-                }
-                else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
-                {
-                    ee["preset"] = gripper_cmd.preset;
-                }
-                data["Robot1"]["end_effector"] = ee;
-            }
+            append_oculus_init_gripper(data, 1, msg->right_gripper);
         }
-
+        // std::cout << "Publish data: " << data << std::endl;
         publisher_.send(zmq::buffer("Joint " + data.dump()));
     }
 
     void publish_state_once()
     {
+#if JE_ENABLE_PUBLISH_STATE_FREQ_LOG
+        // log frequency
+        const rclcpp::Time now = this->get_clock()->now();
+        if (pub_state_window_start_.nanoseconds() == 0)
+        {
+            pub_state_window_start_ = now;
+        }
+        ++pub_state_window_count_;
+        const double elapsed = (now - pub_state_window_start_).seconds();
+        if (elapsed >= 1.0)
+        {
+            const double hz = pub_state_window_count_ / elapsed;
+            RCLCPP_INFO(this->get_logger(),
+                        "publish_state_once rate: %.2f Hz (%zu calls / %.2fs)",
+                        hz, pub_state_window_count_, elapsed);
+            pub_state_window_start_ = now;
+            pub_state_window_count_ = 0;
+        }
+#endif
+
         nlohmann::json state_json = get_robot_state_blocking();
         if (state_json.is_null())
         {
@@ -1050,36 +1119,97 @@ private:
             msg.header.stamp = stamp;  // 用同一个 stamp，便于和日志对齐
             msg.init = false;
 
-            if (state_json.contains("Robot0") && state_json["Robot0"].contains("Joint"))
+            auto fill_joint_fields = [&](const nlohmann::json &robot,
+                                         sensor_msgs::msg::JointState &out,
+                                         const char *label) -> bool
             {
-                auto joint_vec = state_json["Robot0"]["Joint"].get<std::vector<double>>();
-                if (joint_vec.size() >= 7)
+                if (!robot.contains("Joint"))
                 {
-                    msg.left.name = expected_names_;
-                    msg.left.position = joint_vec;
+                    return false;
+                }
+                auto joint_vec = robot["Joint"].get<std::vector<double>>();
+                if (joint_vec.size() < 7)
+                {
+                    RCLCPP_WARN(this->get_logger(),
+                                "%s joint vector size %zu < 7", label, joint_vec.size());
+                    return false;
+                }
+
+                out.name = expected_names_;
+                out.position = joint_vec;
+
+                if (robot.contains("JointVelocity"))
+                {
+                    auto vel_vec = robot["JointVelocity"].get<std::vector<double>>();
+                    if (vel_vec.size() >= 7)
+                    {
+                        out.velocity = vel_vec;
+                    }
+                }
+
+                if (robot.contains("JointSensorTorque"))
+                {
+                    auto eff_vec = robot["JointSensorTorque"].get<std::vector<double>>();
+                    if (eff_vec.size() >= 7)
+                    {
+                        out.effort = eff_vec;
+                    }
+                }
+
+                return true;
+            };
+
+            auto fill_gripper_field = [&](const nlohmann::json &robot,
+                                          const char *label,
+                                          float &out) -> bool
+            {
+                if (!robot.contains("EndEffector") || !robot["EndEffector"].is_object())
+                {
+                    return false;
+                }
+                const auto &ee = robot["EndEffector"];
+                if (ee.contains("Valid"))
+                {
+                    const bool valid = ee["Valid"].get<bool>();
+                    if (!valid)
+                    {
+                        return false;
+                    }
+                }
+                if (!ee.contains("CurrentPosition"))
+                {
+                    return false;
+                }
+                try
+                {
+                    out = static_cast<float>(ee["CurrentPosition"].get<double>());
+                    return true;
+                }
+                catch (const std::exception &e)
+                {
+                    RCLCPP_WARN(this->get_logger(),
+                                "%s EndEffector CurrentPosition parse failed: %s",
+                                label, e.what());
+                    return false;
+                }
+            };
+
+            if (state_json.contains("Robot0") && state_json["Robot0"].is_object())
+            {
+                if (fill_joint_fields(state_json["Robot0"], msg.left, "Robot0"))
+                {
                     msg.left_valid = true;
                 }
-                else
-                {
-                    RCLCPP_WARN(this->get_logger(),
-                                "Robot0 joint vector size %zu < 7", joint_vec.size());
-                }
+                fill_gripper_field(state_json["Robot0"], "Robot0", msg.left_gripper);
             }
 
-            if (state_json.contains("Robot1") && state_json["Robot1"].contains("Joint"))
+            if (state_json.contains("Robot1") && state_json["Robot1"].is_object())
             {
-                auto joint_vec = state_json["Robot1"]["Joint"].get<std::vector<double>>();
-                if (joint_vec.size() >= 7)
+                if (fill_joint_fields(state_json["Robot1"], msg.right, "Robot1"))
                 {
-                    msg.right.name = expected_names_;
-                    msg.right.position = joint_vec;
                     msg.right_valid = true;
                 }
-                else
-                {
-                    RCLCPP_WARN(this->get_logger(),
-                                "Robot1 joint vector size %zu < 7", joint_vec.size());
-                }
+                fill_gripper_field(state_json["Robot1"], "Robot1", msg.right_gripper);
             }
 
             if (!msg.left_valid && !msg.right_valid)
@@ -1109,6 +1239,107 @@ private:
     }
 
 private:
+    void check_and_update_joint_jump(const char *label,
+                                     const std::vector<double> &current,
+                                     bool is_init,
+                                     std::vector<double> &prev,
+                                     bool &prev_valid)
+    {
+        if (prev_valid && !is_init)
+        {
+            const size_t n = std::min(current.size(), prev.size());
+            size_t max_idx = 0;
+            double max_delta = 0.0;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const double d = std::abs(current[i] - prev[i]);
+                if (d > max_delta)
+                {
+                    max_delta = d;
+                    max_idx = i;
+                }
+            }
+            if (max_delta > joint_jump_threshold_)
+            {
+                RCLCPP_ERROR(this->get_logger(),
+                             "%s target jump detected at joint%zu: prev=%.6f curr=%.6f delta=%.6f threshold=%.6f. Shutting down.",
+                             label,
+                             max_idx + 1,
+                             prev[max_idx],
+                             current[max_idx],
+                             max_delta,
+                             joint_jump_threshold_);
+                rclcpp::shutdown();
+                std::exit(1);
+            }
+        }
+        prev = current;
+        prev_valid = true;
+    }
+
+    void check_and_update_pose_jump(const char *label,
+                                    const std::vector<double> &current,
+                                    std::vector<double> &prev,
+                                    bool &prev_valid)
+    {
+        if (prev_valid)
+        {
+            size_t max_pos_idx = 0;
+            double max_pos_delta = 0.0;
+            for (size_t i = 0; i < 3; ++i)
+            {
+                const double d = std::abs(current[i] - prev[i]);
+                if (d > max_pos_delta)
+                {
+                    max_pos_delta = d;
+                    max_pos_idx = i;
+                }
+            }
+
+            size_t max_rpy_idx = 3;
+            double max_rpy_delta = 0.0;
+            for (size_t i = 3; i < 6; ++i)
+            {
+                const double d = std::abs(current[i] - prev[i]);
+                if (d > max_rpy_delta)
+                {
+                    max_rpy_delta = d;
+                    max_rpy_idx = i;
+                }
+            }
+
+            if (pose_jump_threshold_pos_ > 0.0 && max_pos_delta > pose_jump_threshold_pos_)
+            {
+                RCLCPP_ERROR(this->get_logger(),
+                             "%s pose position jump at idx%zu: prev=%.6f curr=%.6f delta=%.6f threshold=%.6f. Shutting down.",
+                             label,
+                             max_pos_idx,
+                             prev[max_pos_idx],
+                             current[max_pos_idx],
+                             max_pos_delta,
+                             pose_jump_threshold_pos_);
+                rclcpp::shutdown();
+                std::exit(1);
+            }
+
+            if (pose_jump_threshold_rpy_ > 0.0 && max_rpy_delta > pose_jump_threshold_rpy_)
+            {
+                RCLCPP_ERROR(this->get_logger(),
+                             "%s pose rpy jump at idx%zu: prev=%.6f curr=%.6f delta=%.6f threshold=%.6f. Shutting down.",
+                             label,
+                             max_rpy_idx,
+                             prev[max_rpy_idx],
+                             current[max_rpy_idx],
+                             max_rpy_delta,
+                             pose_jump_threshold_rpy_);
+                rclcpp::shutdown();
+                std::exit(1);
+            }
+        }
+        prev = current;
+        prev_valid = true;
+    }
+
     // global time
     double global_time_ = 0.0;
     double dt_ = 0.014;   // 72hz
@@ -1127,6 +1358,11 @@ private:
     bool joint_cmd_received_;
     geometry_msgs::msg::PoseStamped::SharedPtr latest_ee_pose_;
 
+#if JE_ENABLE_PUBLISH_STATE_FREQ_LOG
+    rclcpp::Time pub_state_window_start_{0, 0, RCL_SYSTEM_TIME};
+    size_t pub_state_window_count_{0};
+#endif
+
     // ZMQ
     zmq::context_t context_;
     zmq::socket_t publisher_;
@@ -1138,9 +1374,23 @@ private:
     std::string gripper_sub_topic_{"/end_effector_cmd_lr"};
     GripperCommand gripper_cmd_left_{};
     GripperCommand gripper_cmd_right_{};
+    bool oculus_init_use_msg_gripper_{false};
 
     // 参数
     double publish_period_;
+    double joint_jump_threshold_{0.0};
+    double pose_jump_threshold_pos_{0.0};
+    double pose_jump_threshold_rpy_{0.0};
+
+    std::vector<double> prev_target_left_;
+    std::vector<double> prev_target_right_;
+    bool prev_left_valid_{false};
+    bool prev_right_valid_{false};
+
+    std::vector<double> prev_cart_left_;
+    std::vector<double> prev_cart_right_;
+    bool prev_left_pose_valid_{false};
+    bool prev_right_pose_valid_{false};
 
     // 线程
     std::atomic_bool state_thread_running_;

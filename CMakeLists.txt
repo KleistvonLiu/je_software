@@ -90,6 +90,12 @@ find_path(JE_CPPZMQ_INCLUDE_DIR zmq.hpp
   PATHS ${CMAKE_PREFIX_PATH} /usr
 )
 
+set(JE_ZMQ_INCLUDE_DIRS "${ZMQ_INCLUDE_DIRS}" "${JE_CPPZMQ_INCLUDE_DIR}")
+if(DEFINED ENV{CONDA_PREFIX})
+  list(APPEND JE_ZMQ_INCLUDE_DIRS "$ENV{CONDA_PREFIX}/include")
+endif()
+list(REMOVE_DUPLICATES JE_ZMQ_INCLUDE_DIRS)
+
 find_package(nlohmann_json REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(pinocchio REQUIRED)
@@ -171,6 +177,9 @@ install(DIRECTORY ${PROJECT_NAME}
 install(PROGRAMS
   scripts/agilex_robot
   scripts/camera_node
+  scripts/dynamixel_init_joint_state
+  scripts/plot_dynamixel_positions
+  scripts/joint_rate_monitor
   scripts/manager_node
   scripts/replay_node
   scripts/tactile_sensor
@@ -266,7 +275,7 @@ ament_target_dependencies(jsonl_replayer_node
 )
 target_include_directories(jsonl_replayer_node
   PRIVATE
-    ${JE_EXTRA_INCLUDE_DIRS}
+    ${common_INCLUDE_DIRS}
 )
 target_link_libraries(jsonl_replayer_node
   nlohmann_json::nlohmann_json

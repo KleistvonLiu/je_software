@@ -14,12 +14,16 @@ def generate_launch_description():
     oculus_controllers_topic_arg = DeclareLaunchArgument(
         'oculus_controllers_topic', default_value='/oculus_controllers')
     oculus_init_joint_state_topic_arg = DeclareLaunchArgument(
-        'oculus_init_joint_state_topic', default_value='/oculus_init_joint_state')
+        'oculus_init_joint_state_topic', default_value='/joint_cmd_double_arm')
     gripper_sub_topic_arg = DeclareLaunchArgument(
         'gripper_sub_topic', default_value='/end_effector_cmd_lr')
+    end_effector_mode_arg   = DeclareLaunchArgument('end_effector_mode', default_value='msg') # msg or commnad
     fps_arg             = DeclareLaunchArgument('fps',             default_value='50')
     dt_arg              = DeclareLaunchArgument('dt',              default_value='0.014')
-    dt_init_arg         = DeclareLaunchArgument('dt_init',         default_value='3.0')
+    dt_init_arg         = DeclareLaunchArgument('dt_init',         default_value='5.0')
+    jump_thr_arg        = DeclareLaunchArgument('oculus_joint_jump_threshold', default_value='0.174') # 5 deg --> 5 / 180 * 3.14 rad
+    pose_jump_pos_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_pos', default_value='0.02') # 0.02 m
+    pose_jump_rpy_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_rpy', default_value='0.0348') # 2 deg --> 2 / 180 * 3.14 rad
     # per-solve IK console logging
     ik_log_arg = DeclareLaunchArgument('ik_log', default_value='true')
 
@@ -50,9 +54,16 @@ def generate_launch_description():
                 "oculus_controllers_topic": LaunchConfiguration("oculus_controllers_topic"),
                 "oculus_init_joint_state_topic": LaunchConfiguration("oculus_init_joint_state_topic"),
                 "gripper_sub_topic": LaunchConfiguration("gripper_sub_topic"),
+                "end_effector_mode": LaunchConfiguration("end_effector_mode"),
                 "fps": ParameterValue(LaunchConfiguration("fps"), value_type=float),
                 "dt": ParameterValue(LaunchConfiguration("dt"), value_type=float),
                 "dt_init": ParameterValue(LaunchConfiguration("dt_init"), value_type=float),
+                "oculus_joint_jump_threshold": ParameterValue(
+                    LaunchConfiguration("oculus_joint_jump_threshold"), value_type=float),
+                "oculus_pose_jump_threshold_pos": ParameterValue(
+                    LaunchConfiguration("oculus_pose_jump_threshold_pos"), value_type=float),
+                "oculus_pose_jump_threshold_rpy": ParameterValue(
+                    LaunchConfiguration("oculus_pose_jump_threshold_rpy"), value_type=float),
                 "robot_ip": LaunchConfiguration("robot_ip"),
                 "pub_port": LaunchConfiguration("pub_port"),
                 "sub_port": LaunchConfiguration("sub_port"),
@@ -83,10 +94,14 @@ def generate_launch_description():
         oculus_controllers_topic_arg,
         oculus_init_joint_state_topic_arg,
         gripper_sub_topic_arg,
+        end_effector_mode_arg,
         fps_arg,
         dt_arg,
         dt_init_arg,
         ik_log_arg,
+        jump_thr_arg,
+        pose_jump_pos_arg,
+        pose_jump_rpy_arg,
         robot_ip_arg,
         pub_port_arg,
         sub_port_arg,

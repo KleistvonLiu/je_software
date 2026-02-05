@@ -12,6 +12,7 @@ setup(
         (f'share/{package_name}/launch', ['launch/orbbec.launch.py']),
         (f'share/{package_name}/config', ['config/orbbec.yaml']),
         (f'share/{package_name}/launch', ['launch/agilex_robot.launch.py']),
+        (f'share/{package_name}/launch', ['launch/dynamixel_init_joint_state.launch.py']),
         (f'share/{package_name}/launch', ['launch/tactile_sensor.launch.py']),
         (f'share/{package_name}/launch', ['launch/manager.launch.py']),
         (f'share/{package_name}/launch', ['launch/manager_test.launch.py']),
@@ -30,12 +31,15 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'koch_leader_teleop = je_software.koch_leader_node:main',
+            'dynamixel_init_joint_state = je_software.dynamixel_init_joint_state_node:main',
             'camera_node = je_software.camera_node:main',
             'agilex_robot = je_software.robot_node:main',
             'tactile_sensor = je_software.tactile_sensor_node:main',
             'manager_node = je_software.recorder_manager_node:main',
             'test_publisher = je_software.test_publisher_node:main',
             'replay_node = je_software.replay_node:main',
+            'joint_rate_monitor = je_software.joint_rate_monitor_node:main',
         ],
     },
 )

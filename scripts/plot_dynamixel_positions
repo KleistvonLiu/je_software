@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+import argparse
+import math
+import os
+import sys
+
+import matplotlib.pyplot as plt
+
+
+def parse_log(path: str):
+    samples = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(maxsplit=1)
+            if len(parts) < 2:
+                continue
+            try:
+                ts = float(parts[0])
+            except ValueError:
+                continue
+            payload = parts[1].strip()
+            if not (payload.startswith("left:") or payload.startswith("right:")):
+                continue
+            label, rest = payload.split(":", 1)
+            values = {}
+            for token in rest.strip().split():
+                if token.startswith("(") and token.endswith(")"):
+                    continue
+                if "=" not in token:
+                    continue
+                name, val = token.split("=", 1)
+                try:
+                    values[name] = float(val)
+                except ValueError:
+                    continue
+            if values:
+                samples.append((ts, label, values))
+    return samples
+
+
+def normalize_joint_arg(joint: str) -> str:
+    joint = joint.strip().lower()
+    if joint == "gripper":
+        return "gripper"
+    if joint.startswith("joint"):
+        suffix = joint.replace("joint", "", 1)
+        if suffix.isdigit():
+            return f"joint{int(suffix)}"
+    if joint.isdigit():
+        return f"joint{int(joint)}"
+    raise ValueError(f"Unsupported joint id: {joint}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Plot dynamixel joint positions from log.")
+    parser.add_argument("--log", required=True, help="Path to positions log.")
+    parser.add_argument("--arm", required=True, choices=["left", "right"], help="Arm side.")
+    parser.add_argument("--joint", required=True, help="Joint id (1-7 or 'gripper').")
+    parser.add_argument("--out", default="", help="Output image path (optional).")
+    parser.add_argument("--start", type=float, default=None, help="Start time (epoch seconds).")
+    parser.add_argument("--end", type=float, default=None, help="End time (epoch seconds).")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.log):
+        print(f"Log file not found: {args.log}", file=sys.stderr)
+        return 1
+
+    joint_key = normalize_joint_arg(args.joint)
+    samples = parse_log(args.log)
+    xs = []
+    ys = []
+    t0 = None
+    for ts, label, values in samples:
+        if label != args.arm:
+            continue
+        if args.start is not None and ts < args.start:
+            continue
+        if args.end is not None and ts > args.end:
+            continue
+        if joint_key not in values:
+            continue
+        if t0 is None:
+            t0 = ts
+        xs.append(ts - t0)
+        ys.append(values[joint_key])
+
+    if not xs:
+        print("No matching samples found.", file=sys.stderr)
+        return 1
+
+    deltas_deg = [math.degrees(ys[i] - ys[i - 1]) for i in range(1, len(ys))]
+    delta_xs = xs[1:]
+
+    fig, axes = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+    axes[0].plot(xs, ys, linewidth=1.0)
+    axes[0].set_ylabel(f"{args.arm} {joint_key} (rad)")
+    axes[0].set_title(f"{args.arm} {joint_key}")
+    axes[0].grid(True, linewidth=0.3, alpha=0.6)
+
+    axes[1].plot(delta_xs, deltas_deg, linewidth=1.0, color="tab:orange")
+    axes[1].set_xlabel("t (s)")
+    axes[1].set_ylabel("delta (deg)")
+    axes[1].grid(True, linewidth=0.3, alpha=0.6)
+
+    if args.out:
+        plt.savefig(args.out, dpi=150)
+        print(f"Saved plot to {args.out}")
+    else:
+        plt.show()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

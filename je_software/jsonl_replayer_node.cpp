@@ -12,10 +12,10 @@
 #include <cmath>
 #include <optional>
 #include <cctype>
-#include <sstream>
 
 #include "common/msg/oculus_controllers.hpp"
 #include "common/msg/oculus_init_joint_state.hpp"
+#include "ros2_qos.hpp"
 
 using json = nlohmann::json;
 
@@ -53,6 +53,8 @@ public:
 
         // use file stamp
         this->declare_parameter<bool>("use_file_stamp", true);
+        this->declare_parameter<double>("dt_init", 5.0);
+        this->declare_parameter<int>("init_repeat_count", 10);
 
         // Pose options
         this->declare_parameter<std::string>("frame_id", "base_link");
@@ -87,6 +89,9 @@ public:
         oculus_controllers_topic_ = this->get_parameter("oculus_controllers_topic").as_string();
         oculus_init_joint_state_topic_ = this->get_parameter("oculus_init_joint_state_topic").as_string();
         use_file_stamp_ = this->get_parameter("use_file_stamp").as_bool();
+        init_delay_sec_ = this->get_parameter("dt_init").as_double();
+    init_repeat_count_ = this->get_parameter("init_repeat_count").as_int();
+        to_lower_inplace(output_type_);
 
         frame_id_ = this->get_parameter("frame_id").as_string();
         pose_field_ = this->get_parameter("pose_field").as_string();
@@ -99,11 +104,6 @@ public:
         joint_position_field_ = this->get_parameter("joint_position_field").as_string();
         joint_velocity_field_ = this->get_parameter("joint_velocity_field").as_string();
         joint_effort_field_ = this->get_parameter("joint_effort_field").as_string();
-        joint_init_flag_ = this->get_parameter("joint_init_flag").as_bool();
-        init_left_joint_position_ =
-            parse_double_list_param(this->get_parameter("init_left_joint_position"));
-        init_right_joint_position_ =
-            parse_double_list_param(this->get_parameter("init_right_joint_position"));
         init_left_valid_ = this->get_parameter("init_left_valid").as_bool();
         init_right_valid_ = this->get_parameter("init_right_valid").as_bool();
         if (send_arm_ == "left")
@@ -117,8 +117,6 @@ public:
             init_left_valid_ = false;
         }
 
-        normalize_init_positions();
-
         if (jsonl_path_.empty())
         {
             throw std::runtime_error("Parameter 'jsonl_path' is empty. Please set it in launch.");
@@ -128,13 +126,23 @@ public:
             RCLCPP_WARN(this->get_logger(), "rate_hz <= 0, fallback to 50.0");
             rate_hz_ = 50.0;
         }
+        if (init_delay_sec_ < 0.0)
+        {
+            RCLCPP_WARN(this->get_logger(), "dt_init < 0, fallback to 5.0");
+            init_delay_sec_ = 5.0;
+        }
+        if (init_repeat_count_ <= 0)
+        {
+            RCLCPP_WARN(this->get_logger(), "init_repeat_count <= 0, fallback to 10");
+            init_repeat_count_ = 10;
+        }
 
         // -------------------- Open file --------------------
         open_file_or_throw();
+        prepare_init_from_first_record();
 
         // -------------------- Create publisher --------------------
-        to_lower_inplace(output_type_);
-        auto qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable();
+        auto qos = common_utils::reliable_qos_shallow();
         pub_oculus_joint_ = this->create_publisher<common::msg::OculusInitJointState>(
             oculus_init_joint_state_topic_, qos);
         if (output_type_ == "oculus_joint")
@@ -225,6 +233,45 @@ private:
                 // fallback
             }
         }
+        if (use_file_stamp_ && obj.contains("timestamp"))
+        {
+            try
+            {
+                const double sec = obj.at("timestamp").get<double>();
+                const int64_t ns = static_cast<int64_t>(sec * 1e9);
+                return rclcpp::Time(ns, RCL_SYSTEM_TIME);
+            }
+            catch (...)
+            {
+                // fallback
+            }
+        }
+        if (use_file_stamp_ && obj.contains("joints") && obj["joints"].is_array() && !obj["joints"].empty())
+        {
+            try
+            {
+                const auto &entry = obj["joints"].front();
+                if (entry.contains("stamp_ns"))
+                {
+                    if (entry["stamp_ns"].is_number_float())
+                    {
+                        const double sec = entry["stamp_ns"].get<double>();
+                        const int64_t ns = static_cast<int64_t>(sec * 1e9);
+                        return rclcpp::Time(ns, RCL_SYSTEM_TIME);
+                    }
+                    const int64_t v = entry["stamp_ns"].get<int64_t>();
+                    if (v > 1000000000000LL)
+                    {
+                        return rclcpp::Time(v, RCL_SYSTEM_TIME);
+                    }
+                    return rclcpp::Time(static_cast<int64_t>(static_cast<double>(v) * 1e9), RCL_SYSTEM_TIME);
+                }
+            }
+            catch (...)
+            {
+                // fallback
+            }
+        }
         return this->get_clock()->now();
     }
 
@@ -235,63 +282,6 @@ private:
         out.sec = static_cast<int32_t>(ns / 1000000000LL);
         out.nanosec = static_cast<uint32_t>(ns % 1000000000LL);
         return out;
-    }
-
-    static std::vector<double> parse_double_list_param(const rclcpp::Parameter &param)
-    {
-        if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY)
-        {
-            return param.as_double_array();
-        }
-        if (param.get_type() != rclcpp::ParameterType::PARAMETER_STRING)
-        {
-            return std::vector<double>{};
-        }
-
-        std::string s = param.as_string();
-        for (char &c : s)
-        {
-            if (c == ',' || c == '[' || c == ']')
-            {
-                c = ' ';
-            }
-        }
-        std::istringstream iss(s);
-        std::vector<double> vals;
-        double v = 0.0;
-        while (iss >> v)
-        {
-            vals.push_back(v);
-        }
-        return vals;
-    }
-
-    static std::vector<double> normalize_joint_vector(const std::vector<double> &values)
-    {
-        std::vector<double> normalized(7, 0.0);
-        for (size_t i = 0; i < normalized.size() && i < values.size(); ++i)
-        {
-            normalized[i] = values[i];
-        }
-        return normalized;
-    }
-
-    void normalize_init_positions()
-    {
-        if (init_left_joint_position_.size() != 7)
-        {
-            RCLCPP_WARN(this->get_logger(),
-                        "init_left_joint_position size %zu != 7, will pad/trim.",
-                        init_left_joint_position_.size());
-            init_left_joint_position_ = normalize_joint_vector(init_left_joint_position_);
-        }
-        if (init_right_joint_position_.size() != 7)
-        {
-            RCLCPP_WARN(this->get_logger(),
-                        "init_right_joint_position size %zu != 7, will pad/trim.",
-                        init_right_joint_position_.size());
-            init_right_joint_position_ = normalize_joint_vector(init_right_joint_position_);
-        }
     }
 
     static std::optional<std::vector<double>> get_vec7(const json &robot0, const std::string &field)
@@ -306,6 +296,113 @@ private:
         std::vector<double> v(7);
         for (size_t i = 0; i < 7; ++i) v[i] = arr.at(i).get<double>();
         return v;
+    }
+
+    static bool is_left_topic(const std::string &topic)
+    {
+        return topic.find("left") != std::string::npos;
+    }
+
+    static bool is_right_topic(const std::string &topic)
+    {
+        return topic.find("right") != std::string::npos;
+    }
+
+    static bool fill_joint_from_meta_entry(const json &entry,
+                                           sensor_msgs::msg::JointState &out,
+                                           bool use_effort_filtered)
+    {
+        if (!entry.contains("position") || !entry["position"].is_array())
+        {
+            return false;
+        }
+
+        out.name.clear();
+        out.position.clear();
+        out.velocity.clear();
+        out.effort.clear();
+
+        if (entry.contains("name") && entry["name"].is_array())
+        {
+            out.name = entry["name"].get<std::vector<std::string>>();
+        }
+
+        out.position = entry["position"].get<std::vector<double>>();
+        if (entry.contains("velocity") && entry["velocity"].is_array())
+        {
+            out.velocity = entry["velocity"].get<std::vector<double>>();
+        }
+        if (use_effort_filtered && entry.contains("effort_filtered") && entry["effort_filtered"].is_array())
+        {
+            out.effort = entry["effort_filtered"].get<std::vector<double>>();
+        }
+        else if (entry.contains("effort") && entry["effort"].is_array())
+        {
+            out.effort = entry["effort"].get<std::vector<double>>();
+        }
+
+        return !out.position.empty();
+    }
+
+    static bool parse_gripper_value(const json &entry, float &out)
+    {
+        if (!entry.contains("gripper"))
+        {
+            return false;
+        }
+        const auto &grip = entry["gripper"];
+        if (grip.is_number())
+        {
+            out = static_cast<float>(grip.get<double>());
+            return true;
+        }
+        if (grip.is_array() && !grip.empty() && grip[0].is_number())
+        {
+            out = static_cast<float>(grip[0].get<double>());
+            return true;
+        }
+        return false;
+    }
+
+    bool fill_from_meta_joints(const json &obj,
+                               common::msg::OculusInitJointState &msg)
+    {
+        if (!obj.contains("joints") || !obj["joints"].is_array())
+        {
+            return false;
+        }
+
+        for (const auto &entry : obj["joints"])
+        {
+            if (!entry.is_object())
+            {
+                continue;
+            }
+            std::string topic;
+            if (entry.contains("topic") && entry["topic"].is_string())
+            {
+                topic = entry["topic"].get<std::string>();
+            }
+
+            if (is_left_topic(topic))
+            {
+                if (fill_joint_from_meta_entry(entry, msg.left, false))
+                {
+                    msg.left_valid = true;
+                }
+                parse_gripper_value(entry, msg.left_gripper);
+            }
+            else if (is_right_topic(topic))
+            {
+                if (fill_joint_from_meta_entry(entry, msg.right, false))
+                {
+                    msg.right_valid = true;
+                }
+                parse_gripper_value(entry, msg.right_gripper);
+            }
+        }
+
+        return msg.left_valid || msg.right_valid;
     }
 
     static std::optional<std::array<double,6>> get_cart6(const json &robot0, const std::string &field)
@@ -363,22 +460,159 @@ private:
         return true;
     }
 
+    bool build_init_joint_from_record(const json &obj,
+                                      common::msg::OculusInitJointState &msg)
+    {
+        msg.left = sensor_msgs::msg::JointState();
+        msg.right = sensor_msgs::msg::JointState();
+        msg.left_valid = false;
+        msg.right_valid = false;
+
+        bool filled = fill_from_meta_joints(obj, msg);
+
+        if (!filled)
+        {
+            if (init_left_valid_ && obj.contains("Robot0") && obj.at("Robot0").is_object())
+            {
+                const auto &robot0 = obj.at("Robot0");
+                if (fill_joint_state(robot0, msg.left))
+                {
+                    msg.left_valid = true;
+                }
+            }
+
+            if (init_right_valid_ && obj.contains("Robot1") && obj.at("Robot1").is_object())
+            {
+                const auto &robot1 = obj.at("Robot1");
+                if (fill_joint_state(robot1, msg.right))
+                {
+                    msg.right_valid = true;
+                }
+            }
+        }
+
+        if (!init_left_valid_)
+        {
+            msg.left_valid = false;
+            msg.left = sensor_msgs::msg::JointState();
+        }
+        if (!init_right_valid_)
+        {
+            msg.right_valid = false;
+            msg.right = sensor_msgs::msg::JointState();
+        }
+
+        if (msg.left_valid && msg.left.name.empty())
+        {
+            msg.left.name = joint_names_;
+        }
+        if (msg.right_valid && msg.right.name.empty())
+        {
+            msg.right.name = joint_names_;
+        }
+
+        return msg.left_valid || msg.right_valid;
+    }
+
+    bool build_init_pose_from_record(const json &obj,
+                                     common::msg::OculusControllers &msg)
+    {
+        msg.left_valid = false;
+        msg.right_valid = false;
+
+        if (pose_left_valid_ && obj.contains("Robot0") && obj.at("Robot0").is_object())
+        {
+            const auto &robot0 = obj.at("Robot0");
+            auto cart = get_cart6(robot0, pose_field_);
+            if (cart.has_value())
+            {
+                msg.left_pose = make_pose_from_cart(*cart);
+                msg.left_valid = true;
+            }
+        }
+
+        if (pose_right_valid_ && obj.contains("Robot1") && obj.at("Robot1").is_object())
+        {
+            const auto &robot1 = obj.at("Robot1");
+            auto cart = get_cart6(robot1, pose_field_);
+            if (cart.has_value())
+            {
+                msg.right_pose = make_pose_from_cart(*cart);
+                msg.right_valid = true;
+            }
+        }
+
+        return msg.left_valid || msg.right_valid;
+    }
+
+    void prepare_init_from_first_record()
+    {
+        if (output_type_ != "oculus_joint" && output_type_ != "oculus_pose")
+        {
+            throw std::runtime_error("output_type must be 'oculus_joint' or 'oculus_pose'.");
+        }
+
+        auto rec = read_next_record();
+        if (!rec.has_value())
+        {
+            throw std::runtime_error("jsonl file is empty; cannot initialize from first record.");
+        }
+        first_record_ = *rec;
+
+        common::msg::OculusInitJointState joint_msg;
+        const bool joint_ok = build_init_joint_from_record(*rec, joint_msg);
+
+        common::msg::OculusControllers pose_msg;
+        const bool pose_ok = build_init_pose_from_record(*rec, pose_msg);
+
+        if (output_type_ == "oculus_joint")
+        {
+            if (!joint_ok)
+            {
+                throw std::runtime_error("First record has no valid joint data for initialization.");
+            }
+            init_joint_msg_ = joint_msg;
+            init_use_pose_ = false;
+            return;
+        }
+
+        if (pose_ok)
+        {
+            init_pose_msg_ = pose_msg;
+            init_use_pose_ = true;
+            return;
+        }
+
+        if (joint_ok)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "First record missing pose_field='%s'; init from joint instead.",
+                        pose_field_.c_str());
+            init_joint_msg_ = joint_msg;
+            init_use_pose_ = false;
+            return;
+        }
+
+        throw std::runtime_error("First record has no valid pose or joint data for initialization.");
+    }
+
     void publish_init_joint()
     {
-        // RCLCPP_INFO(this->get_logger(), "Publish initial position here.");
-        common::msg::OculusInitJointState msg;
+        common::msg::OculusInitJointState msg = init_joint_msg_;
         msg.header.stamp = to_builtin_time(this->get_clock()->now());
         msg.header.frame_id = frame_id_;
         msg.init = true;
 
-        msg.left.name = joint_names_;
-        msg.right.name = joint_names_;
-        msg.left.position = init_left_joint_position_;
-        msg.right.position = init_right_joint_position_;
-        msg.left_valid = init_left_valid_;
-        msg.right_valid = init_right_valid_;
-
         pub_oculus_joint_->publish(msg);
+    }
+
+    void publish_init_pose()
+    {
+        common::msg::OculusControllers msg = init_pose_msg_;
+        msg.header.stamp = to_builtin_time(this->get_clock()->now());
+        msg.header.frame_id = frame_id_;
+
+        pub_oculus_pose_->publish(msg);
     }
 
     void publish_oculus_joint(const json &obj)
@@ -386,7 +620,13 @@ private:
         common::msg::OculusInitJointState msg;
         msg.header.stamp = to_builtin_time(make_stamp(obj));
         msg.header.frame_id = frame_id_;
-        msg.init = joint_init_flag_;
+        msg.init = false;
+
+        if (fill_from_meta_joints(obj, msg))
+        {
+            pub_oculus_joint_->publish(msg);
+            return;
+        }
 
         if (init_left_valid_ && obj.contains("Robot0") && obj.at("Robot0").is_object())
         {
@@ -461,7 +701,14 @@ private:
         if (init_sent_count_ < init_repeat_count_)
         {
             // RCLCPP_INFO(this->get_logger(), "Publish initial position.");
-            publish_init_joint();
+            if (init_use_pose_)
+            {
+                publish_init_pose();
+            }
+            else
+            {
+                publish_init_joint();
+            }
             ++init_sent_count_;
             if (init_sent_count_ >= init_repeat_count_)
             {
@@ -474,7 +721,16 @@ private:
             return;
         }
 
-        auto rec = read_next_record();
+        std::optional<json> rec;
+        if (first_record_.has_value())
+        {
+            rec = *first_record_;
+            first_record_.reset();
+        }
+        else
+        {
+            rec = read_next_record();
+        }
         if (!rec.has_value())
         {
             if (loop_)
@@ -524,15 +780,16 @@ private:
     std::string joint_position_field_{"Joint"};
     std::string joint_velocity_field_{""};
     std::string joint_effort_field_{""};
-    bool joint_init_flag_{false};
-    std::vector<double> init_left_joint_position_{};
-    std::vector<double> init_right_joint_position_{};
     bool init_left_valid_{true};
     bool init_right_valid_{true};
+    bool init_use_pose_{false};
+    common::msg::OculusInitJointState init_joint_msg_{};
+    common::msg::OculusControllers init_pose_msg_{};
+    std::optional<json> first_record_{};
     int init_sent_count_{0};
     int init_repeat_count_{10};
     rclcpp::Time init_sent_time_{0, 0, RCL_SYSTEM_TIME};
-    const double init_delay_sec_{5.0};
+    double init_delay_sec_{5.0};
 
     // io
     std::ifstream ifs_;

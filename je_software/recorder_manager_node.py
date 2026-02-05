@@ -303,7 +303,7 @@ class RecorderManager(BaseManager):
         #         effort=[float(x) for x in getattr(js_msg, "effort", [])],
         #     ))
             
-        def _append_joint_entry(topic_name, stamp_ns, joint_msg, side=None):
+        def _append_joint_entry(topic_name, stamp_ns, joint_msg, side=None, gripper = -1):
             names = list(getattr(joint_msg, "name", []))
             positions = [float(x) for x in getattr(joint_msg, "position", [])]
             velocities = [float(x) for x in getattr(joint_msg, "velocity", [])]
@@ -335,6 +335,7 @@ class RecorderManager(BaseManager):
                 effort=raw_efforts,
                 # 新增：滤波后的力矩
                 effort_filtered=filtered_efforts,
+                gripper = gripper,
             )
             joints_meta.append(entry)
 
@@ -346,9 +347,9 @@ class RecorderManager(BaseManager):
 
             if hasattr(js_msg, "left") and hasattr(js_msg, "right") and hasattr(js_msg, "left_valid"):
                 if getattr(js_msg, "left_valid", False):
-                    _append_joint_entry(topic, t_ns, js_msg.left, side="left")
+                    _append_joint_entry(topic, t_ns, js_msg.left, side="left", gripper=js_msg.left_gripper)
                 if getattr(js_msg, "right_valid", False):
-                    _append_joint_entry(topic, t_ns, js_msg.right, side="right")
+                    _append_joint_entry(topic, t_ns, js_msg.right, side="right", gripper=js_msg.right_gripper)
             else:
                 _append_joint_entry(topic, t_ns, js_msg)
             
@@ -449,9 +450,10 @@ def main(args=None):
     rclpy.init(args=args)
     node = RecorderManager()
     try:
-        executor = MultiThreadedExecutor(num_threads=os.cpu_count() or 4)
-        executor.add_node(node)
-        executor.spin()
+        # executor = MultiThreadedExecutor(num_threads=os.cpu_count() or 4)
+        # executor.add_node(node)
+        # executor.spin()
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
