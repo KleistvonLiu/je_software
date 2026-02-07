@@ -666,48 +666,51 @@ std::string IkSolver::getTipFrameName() const { return tip_frame_name_; }
 int IkSolver::getNq() const { return model_ ? model_->nq : 0; }
 int IkSolver::getNv() const { return model_ ? model_->nv : 0; }
 
-std::string IkSolver::makeInitLog(const SE3 &target, const Eigen::VectorXd &q_init, const Result &r, bool include_solution) const {
-  std::ostringstream oss;
-  oss.setf(std::ios::fixed);
-  oss<<std::setprecision(6);
-  if (!model_) {
-    oss << "init_err=inf result=time_ms=" << std::fixed << std::setprecision(3) << r.elapsed_ms << " success=" << (int)r.success;
-    return oss.str();
-  }
+std::string IkSolver::makeInitLog(const geometry_msgs::msg::Pose &pose_msg, const Eigen::VectorXd &q_init, const Result &r, bool include_solution) const {
+   std::ostringstream oss;
+   oss.setf(std::ios::fixed);
+   oss<<std::setprecision(6);
+   if (!model_) {
+     oss << "init_err=inf result=time_ms=" << std::fixed << std::setprecision(3) << r.elapsed_ms << " success=" << (int)r.success;
+     return oss.str();
+   }
 
-  // Local data for FK to keep this method const-safe
-  pinocchio::Data data_local(*model_);
-  pinocchio::forwardKinematics(*model_, data_local, q_init);
-  pinocchio::updateFramePlacements(*model_, data_local);
-  const pinocchio::SE3 &pose = data_local.oMf[tip_frame_id_];
-  SE3 init_fk = SE3::Identity();
-  init_fk.linear() = pose.rotation();
-  init_fk.translation() = pose.translation();
+   // convert ROS pose to internal SE3
+   SE3 target = makeSE3(pose_msg);
+ 
+   // Local data for FK to keep this method const-safe
+   pinocchio::Data data_local(*model_);
+   pinocchio::forwardKinematics(*model_, data_local, q_init);
+   pinocchio::updateFramePlacements(*model_, data_local);
+   const pinocchio::SE3 &frame_pose = data_local.oMf[tip_frame_id_];
+   SE3 init_fk = SE3::Identity();
+   init_fk.linear() = frame_pose.rotation();
+   init_fk.translation() = frame_pose.translation();
 
-  Eigen::Vector3d pos_init = init_fk.translation();
-  Eigen::Quaterniond qinit(init_fk.rotation());
-  // compute rpy from quaternion (Z,Y,X -> yaw,pitch,roll)
-  auto quat_to_rpy_local = [](const Eigen::Quaterniond &q, double &roll, double &pitch, double &yaw) {
-    Eigen::Matrix3d R = q.toRotationMatrix();
-    Eigen::Vector3d ypr = R.eulerAngles(2, 1, 0);
-    yaw = ypr[0]; pitch = ypr[1]; roll = ypr[2];
-  };
-  double r_init=0,p_init=0,y_init=0; quat_to_rpy_local(qinit, r_init, p_init, y_init);
+   Eigen::Vector3d pos_init = init_fk.translation();
+   Eigen::Quaterniond qinit(init_fk.rotation());
+   // compute rpy from quaternion (Z,Y,X -> yaw,pitch,roll)
+   auto quat_to_rpy_local = [](const Eigen::Quaterniond &q, double &roll, double &pitch, double &yaw) {
+     Eigen::Matrix3d R = q.toRotationMatrix();
+     Eigen::Vector3d ypr = R.eulerAngles(2, 1, 0);
+     yaw = ypr[0]; pitch = ypr[1]; roll = ypr[2];
+   };
+   double r_init=0,p_init=0,y_init=0; quat_to_rpy_local(qinit, r_init, p_init, y_init);
 
-  // target
-  Eigen::Vector3d pos_tgt = target.translation();
-  Eigen::Quaterniond qtgt(target.rotation());
-  double r_t=0,p_t=0,y_t=0; quat_to_rpy_local(qtgt, r_t, p_t, y_t);
+   // target
+   Eigen::Vector3d pos_tgt = target.translation();
+   Eigen::Quaterniond qtgt(target.rotation());
+   double r_t=0,p_t=0,y_t=0; quat_to_rpy_local(qtgt, r_t, p_t, y_t);
 
-  // init_err
-  double init_err = computeError(target, q_init);
-  oss << "init_err=" << init_err << " init_fk=pos(" << pos_init.x() << "," << pos_init.y() << "," << pos_init.z() << ") rpy(" << r_init << "," << p_init << "," << y_init << ")";
-  oss << " target=pos(" << pos_tgt.x() << "," << pos_tgt.y() << "," << pos_tgt.z() << ") rpy(" << r_t << "," << p_t << "," << y_t << ")";
-  oss << " result=time_ms=" << std::fixed << std::setprecision(3) << r.elapsed_ms << " success=" << (int)r.success << " iters=" << r.iterations << " final_err=" << std::setprecision(6) << r.final_error;
-  if (include_solution && r.q.size()>0) {
-    oss << " q=[";
-    for (int i=0;i<r.q.size();++i) { if (i) oss<<", "; oss<<std::fixed<<std::setprecision(6)<<r.q[i]; }
-    oss << "]";
-  }
-  return oss.str();
-}
+   // init_err
+   double init_err = computeError(target, q_init);
+   oss << "init_err=" << init_err << " init_fk=pos(" << pos_init.x() << "," << pos_init.y() << "," << pos_init.z() << ") rpy(" << r_init << "," << p_init << "," << y_init << ")";
+   oss << " target=pos(" << pos_tgt.x() << "," << pos_tgt.y() << "," << pos_tgt.z() << ") rpy(" << r_t << "," << p_t << "," << y_t << ")";
+   oss << " result=time_ms=" << std::fixed << std::setprecision(3) << r.elapsed_ms << " success=" << (int)r.success << " iters=" << r.iterations << " final_err=" << std::setprecision(6) << r.final_error;
+   if (include_solution && r.q.size()>0) {
+     oss << " q=[";
+     for (int i=0;i<r.q.size();++i) { if (i) oss<<", "; oss<<std::fixed<<std::setprecision(6)<<r.q[i]; }
+     oss << "]";
+   }
+   return oss.str();
+ }

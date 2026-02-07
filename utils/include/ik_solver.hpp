@@ -133,7 +133,7 @@ public:
   // Produce a human-readable one-line summary for logging that includes
   // init error, init FK pos/rpy, target pos/rpy, and solver Result fields.
   // If include_solution is true and Result contains a q vector, it will be appended.
-  std::string makeInitLog(const SE3 &target, const Eigen::VectorXd &q_init, const Result &r, bool include_solution = false) const;
+  std::string makeInitLog(const geometry_msgs::msg::Pose &pose, const Eigen::VectorXd &q_init, const Result &r, bool include_solution = false) const;
 
 private:
   // non-copyable

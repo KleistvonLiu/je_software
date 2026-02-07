@@ -861,8 +861,7 @@ private:
                 catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK left threw: %s", e.what()); }
 
                 if (ik_log_) {
-                    auto target = ros2_ik_cpp::IkSolver::makeSE3(msg->left_pose);
-                    std::string summary = ik_solver_left_->makeInitLog(target, q_init, r, true);
+                    std::string summary = ik_solver_left_->makeInitLog(msg->left_pose, q_init, r, true);
                     RCLCPP_INFO(this->get_logger(), "[IK LEFT] %s", summary.c_str());
                 }
 
@@ -900,8 +899,7 @@ private:
                 catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK right threw: %s", e.what()); }
 
                 if (ik_log_) {
-                    auto target = ros2_ik_cpp::IkSolver::makeSE3(msg->right_pose);
-                    std::string summary = ik_solver_right_->makeInitLog(target, q_init, r, true);
+                    std::string summary = ik_solver_right_->makeInitLog(msg->right_pose, q_init, r, true);
                     RCLCPP_INFO(this->get_logger(), "[IK RIGHT] %s", summary.c_str());
                 }
 
