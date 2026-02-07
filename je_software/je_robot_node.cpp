@@ -48,12 +48,7 @@ class JeRobotNode : public rclcpp::Node
 {
 public:
     JeRobotNode()
-        : JeRobotNode(rclcpp::NodeOptions())
-    {
-    }
-
-    explicit JeRobotNode(const rclcpp::NodeOptions &options)
-        : Node("je_robot_node", options),
+        : Node("je_robot_node"),
           context_(1),
           publisher_(context_, zmq::socket_type::pub),
           subscriber_(context_, zmq::socket_type::sub),
@@ -1416,12 +1411,9 @@ private:
 
 int main(int argc, char *argv[])
 {
-    auto context = std::make_shared<rclcpp::Context>();
-    context->init(argc, argv);
-    rclcpp::NodeOptions options;
-    options.context(context);
-    auto node = std::make_shared<JeRobotNode>(options);
+    rclcpp::init(argc, argv);
+    auto node = std::make_shared<JeRobotNode>();
     rclcpp::spin(node);
-    context->shutdown("main shutdown");
+    rclcpp::shutdown();
     return 0;
 }
