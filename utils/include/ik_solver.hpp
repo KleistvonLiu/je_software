@@ -126,6 +126,15 @@ public:
   // Load a simple YAML-style file (keys:value) to populate Params. Returns true on success.
   bool loadParamsFromFile(const std::string &path);
 
+  // Compute 6D error (pos then angle-axis) between target SE3 and FK at q
+  // Returns the 2-norm of the 6-vector [pos_error; angle_axis_error]
+  double computeError(const SE3 &target, const Eigen::VectorXd &q) const;
+
+  // Produce a human-readable one-line summary for logging that includes
+  // init error, init FK pos/rpy, target pos/rpy, and solver Result fields.
+  // If include_solution is true and Result contains a q vector, it will be appended.
+  std::string makeInitLog(const SE3 &target, const Eigen::VectorXd &q_init, const Result &r, bool include_solution = false) const;
+
 private:
   // non-copyable
   IkSolver(const IkSolver &) = delete;
