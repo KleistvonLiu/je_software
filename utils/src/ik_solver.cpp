@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cctype>
+#include "nlohmann/json.hpp"
 
 using namespace ros2_ik_cpp;
 using Eigen::VectorXd;
@@ -262,6 +263,16 @@ IkSolver::Result IkSolver::solvePose(const geometry_msgs::msg::Pose &pose,
   return solve(makeSE3(pose), q_init, timeout_ms);
 }
 
+IkSolver::Result IkSolver::solvePose(const geometry_msgs::msg::Pose &pose, int timeout_ms) {
+  Eigen::VectorXd q_init;
+  {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (q_init_.size() == getNq() && getNq()>0) q_init = q_init_;
+  }
+  if (q_init.size() == 0) q_init = Eigen::VectorXd::Zero(getNq());
+  return solvePose(pose, q_init, timeout_ms);
+}
+
 void IkSolver::setParams(const Params &p) {
   std::lock_guard<std::mutex> lk(mutex_);
   params_ = p;
@@ -284,6 +295,37 @@ void IkSolver::setJointLimits(const Eigen::VectorXd &lo, const Eigen::VectorXd &
 void IkSolver::setIterCallback(IterCallback cb) {
   std::lock_guard<std::mutex> lk(mutex_);
   iter_cb_ = cb;
+}
+
+void IkSolver::setQInit(const Eigen::VectorXd &q_init) {
+  std::lock_guard<std::mutex> lk(mutex_);
+  q_init_ = q_init;
+}
+
+void IkSolver::setQInit(const nlohmann::json &joint_array) {
+  if (!joint_array.is_array()) {
+    return; // silently ignore non-array input
+  }
+  const int nq = getNq();
+  if (nq <= 0) return;
+  
+  Eigen::VectorXd q_init = Eigen::VectorXd::Zero(nq);
+  try {
+    const int limit = std::min(static_cast<int>(joint_array.size()), nq);
+    for (int i = 0; i < limit; ++i) {
+      q_init[i] = joint_array[i].get<double>();
+    }
+  } catch (...) {
+    return; // silently ignore parse errors
+  }
+  
+  std::lock_guard<std::mutex> lk(mutex_);
+  q_init_ = q_init;
+}
+
+Eigen::VectorXd IkSolver::getQInit() const {
+  std::lock_guard<std::mutex> lk(mutex_);
+  return q_init_;
 }
 
 bool IkSolver::loadParamsFromFile(const std::string &path) {
@@ -714,3 +756,15 @@ std::string IkSolver::makeInitLog(const geometry_msgs::msg::Pose &pose_msg, cons
    }
    return oss.str();
  }
+
+std::string IkSolver::makeInitLog(const geometry_msgs::msg::Pose &pose, const Result &r, bool include_solution) const {
+  Eigen::VectorXd q_init_local;
+  if (r.q.size() == getNq() && r.q.size() > 0) {
+    q_init_local = r.q;
+  } else {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (q_init_.size() == getNq() && getNq()>0) q_init_local = q_init_;
+  }
+  if (q_init_local.size() == 0) q_init_local = Eigen::VectorXd::Zero(getNq());
+  return makeInitLog(pose, q_init_local, r, include_solution);
+}

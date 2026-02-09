@@ -11,6 +11,7 @@
 #include <memory>
 
 #include "geometry_msgs/msg/pose.hpp"
+#include "nlohmann/json.hpp"
 
 // Include Pinocchio forward declarations (typedefs) instead of forward-declaring class names
 #include <pinocchio/multibody/fwd.hpp>
@@ -100,6 +101,16 @@ public:
                    const Eigen::VectorXd &q_init,
                    int timeout_ms = 0);
 
+  // Convenience overload: solve using a default q_init (zeros) derived from model size.
+  Result solvePose(const geometry_msgs::msg::Pose &pose, int timeout_ms = 0);
+
+  // Set or update the solver's internal q_init vector. If not set, the solver will
+  // fall back to zeros when caller omits q_init.
+  void setQInit(const Eigen::VectorXd &q_init);
+  // Set q_init from a JSON array (e.g., state_snapshot["Robot"]["Joint"])
+  void setQInit(const nlohmann::json &joint_array);
+  Eigen::VectorXd getQInit() const;
+
   // Single-step iteration (advances one internal LM iteration). Returns Result with updated q
   Result step(const SE3 &target, const Eigen::VectorXd &q_current);
 
@@ -135,6 +146,9 @@ public:
   // If include_solution is true and Result contains a q vector, it will be appended.
   std::string makeInitLog(const geometry_msgs::msg::Pose &pose, const Eigen::VectorXd &q_init, const Result &r, bool include_solution = false) const;
 
+  // Convenience overload: use Result.q or the solver's internal q_init (if set) or zeros.
+  std::string makeInitLog(const geometry_msgs::msg::Pose &pose, const Result &r, bool include_solution = false) const;
+
 private:
   // non-copyable
   IkSolver(const IkSolver &) = delete;
@@ -160,6 +174,8 @@ private:
   int j5_q_index_{-1};
   int j7_q_index_{-1};
   int j3_q_index_{-1};
+  // optional user-provided initial configuration used when callers omit q_init
+  Eigen::VectorXd q_init_;
 };
 
 } // namespace ros2_ik_cpp

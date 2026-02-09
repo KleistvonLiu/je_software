@@ -846,22 +846,17 @@ private:
         // Process left
         if (left_ok) {
             if (ik_solver_left_) {
-                Eigen::VectorXd q_init = Eigen::VectorXd::Zero(ik_solver_left_->getNq());
-                // try to seed with last reported robot joints if available
-                try {
-                    if (state_snapshot.contains("Robot0") && state_snapshot["Robot0"].contains("Joint")) {
-                        auto arr = state_snapshot["Robot0"]["Joint"];
-                        int limit = std::min(static_cast<int>(arr.size()), static_cast<int>(q_init.size()));
-                        for (int i = 0; i < limit; ++i) q_init[i] = arr[i].get<double>();
-                    }
-                } catch ( ... ) {}
+                // Set q_init from last reported robot joints if available
+                if (state_snapshot.contains("Robot0") && state_snapshot["Robot0"].contains("Joint")) {
+                    ik_solver_left_->setQInit(state_snapshot["Robot0"]["Joint"]);
+                }
 
                 ros2_ik_cpp::IkSolver::Result r;
-                try { r = ik_solver_left_->solvePose(msg->left_pose, q_init, ik_left_timeout_ms_); }
+                try { r = ik_solver_left_->solvePose(msg->left_pose, ik_left_timeout_ms_); }
                 catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK left threw: %s", e.what()); }
 
                 if (ik_log_) {
-                    std::string summary = ik_solver_left_->makeInitLog(msg->left_pose, q_init, r, true);
+                    std::string summary = ik_solver_left_->makeInitLog(msg->left_pose, r, true);
                     RCLCPP_INFO(this->get_logger(), "[IK LEFT] %s", summary.c_str());
                 }
 
@@ -885,21 +880,17 @@ private:
         // Process right
         if (right_ok) {
             if (ik_solver_right_) {
-                Eigen::VectorXd q_init = Eigen::VectorXd::Zero(ik_solver_right_->getNq());
-                try {
-                    if (state_snapshot.contains("Robot1") && state_snapshot["Robot1"].contains("Joint")) {
-                        auto arr = state_snapshot["Robot1"]["Joint"];
-                        int limit = std::min(static_cast<int>(arr.size()), static_cast<int>(q_init.size()));
-                        for (int i = 0; i < limit; ++i) q_init[i] = arr[i].get<double>();
-                    }
-                } catch ( ... ) {}
+                // Set q_init from last reported robot joints if available
+                if (state_snapshot.contains("Robot1") && state_snapshot["Robot1"].contains("Joint")) {
+                    ik_solver_right_->setQInit(state_snapshot["Robot1"]["Joint"]);
+                }
 
                 ros2_ik_cpp::IkSolver::Result r;
-                try { r = ik_solver_right_->solvePose(msg->right_pose, q_init, ik_right_timeout_ms_); }
+                try { r = ik_solver_right_->solvePose(msg->right_pose, ik_right_timeout_ms_); }
                 catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK right threw: %s", e.what()); }
 
                 if (ik_log_) {
-                    std::string summary = ik_solver_right_->makeInitLog(msg->right_pose, q_init, r, true);
+                    std::string summary = ik_solver_right_->makeInitLog(msg->right_pose, r, true);
                     RCLCPP_INFO(this->get_logger(), "[IK RIGHT] %s", summary.c_str());
                 }
 
