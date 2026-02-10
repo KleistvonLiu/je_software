@@ -165,13 +165,13 @@ def generate_launch_description():
     # --- 颜色/深度（CSV） ---
     color_csv = DeclareLaunchArgument(
         'color_topics_csv',
-        # default_value='/camera_01/color/image_raw,/camera_02/color/image_raw,/camera_03/color/image_raw,/camera_04/color/image_raw,'
-        default_value=''
+        default_value='/camera_03/color/image_raw,/camera_04/color/image_raw,/camera_05/color/image_raw'
+        # default_value=''
     )
     depth_csv = DeclareLaunchArgument(
         'depth_topics_csv',
-        # default_value='/camera_01/depth/image_raw,/camera_03/depth/image_raw,/camera_04/depth/image_raw'
-        default_value=''
+        default_value='/camera_03/depth/image_raw,/camera_04/depth/image_raw,/camera_05/depth/image_raw'
+        # default_value=''
     )
 
     # --- joint/tactile：多路与兼容 ---

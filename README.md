@@ -1,5 +1,5 @@
 1. 进入环境
-conda activate ros2-humble-py310
+conda activate ros2-humble-py310-new
 source ~/ros2_ws/install/setup.bash
 source /opt/ros/humble/setup.bash
 
