@@ -84,6 +84,7 @@ def _launch_setup(context, *args, **kwargs):
 
         # 单路旧参数（保持兼容；若你传了多路参数，节点内部会优先使用多路）
         'joint_state_topic': LaunchConfiguration('joint_state_topic').perform(context),
+        'joint_cmd_topic': LaunchConfiguration('joint_cmd_topic').perform(context),
         'tactile_topic': LaunchConfiguration('tactile_topic').perform(context),
 
         # 频率/容差/窗口
@@ -121,6 +122,13 @@ def _launch_setup(context, *args, **kwargs):
         params['joint_state_topics'] = jt_list
     if jt_csv.strip():
         params['joint_state_topics_csv'] = jt_csv
+
+    jc_list = _parse_str_list(context, 'joint_cmd_topics')
+    jc_csv = LaunchConfiguration('joint_cmd_topics_csv').perform(context) or ''
+    if jc_list:
+        params['joint_cmd_topics'] = jc_list
+    if jc_csv.strip():
+        params['joint_cmd_topics_csv'] = jc_csv
 
     tac_list = _parse_str_list(context, 'tactile_topics')
     tac_csv = LaunchConfiguration('tactile_topics_csv').perform(context) or ''
@@ -180,7 +188,7 @@ def generate_launch_description():
         'joint_state_topics_csv',
         # default_value='/joint_states_right',
         # default_value='/joint_states_double_arm',
-        default_value='/joint_cmd_double_arm',
+        default_value='/joint_states_double_arm',
         description='CSV: /arm_a/joint_states,/arm_b/joint_states'
     )
     joint_list = DeclareLaunchArgument(
@@ -190,6 +198,22 @@ def generate_launch_description():
     )
     joint_legacy = DeclareLaunchArgument(
         'joint_state_topic',
+        default_value='',
+        description='单路兼容'
+    )
+
+    joint_cmd_csv = DeclareLaunchArgument(
+        'joint_cmd_topics_csv',
+        default_value='/joint_cmd_double_arm',
+        description='CSV: /arm_a/joint_cmd,/arm_b/joint_cmd'
+    )
+    joint_cmd_list = DeclareLaunchArgument(
+        'joint_cmd_topics',
+        default_value='[]',
+        description='YAML 列表: [/arm_a/joint_cmd, /arm_b/joint_cmd]'
+    )
+    joint_cmd_legacy = DeclareLaunchArgument(
+        'joint_cmd_topic',
         default_value='',
         description='单路兼容'
     )
@@ -303,6 +327,7 @@ def generate_launch_description():
 
         # joint/tactile 多路 + 兼容
         joint_csv, joint_list, joint_legacy,
+        joint_cmd_csv, joint_cmd_list, joint_cmd_legacy,
         tactile_csv, tactile_list, tactile_legacy,
 
         # 频率/容差/窗口
