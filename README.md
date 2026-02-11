@@ -75,3 +75,9 @@ ros2 run je_software joint_rate_monitor --ros-args \
 
 orbbec需要在conda环境之外build
 colcon build --event-handlers console_direct+ --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-up-to orbbec_camera
+
+4. 上传文件到服务器
+bbcp   -f -P 5 -s 64 -w 128M -v -r   /home/kleist/Documents/Database/test_0207/ alice@10.215.247.2:/jedata/jemotor/source/
+
+5. 从服务器下载文件
+bbcp   -f -P 5 -s 64 -w 128M -v  alice@10.215.247.2:/jedata/jemotor/model/0207_pi05_test/15000/ /目标路径
