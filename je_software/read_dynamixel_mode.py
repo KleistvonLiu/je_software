@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""
+python3 src/je_software/je_software/read_dynamixel_mode.py \
+  --port /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0
+"""
 import ast
 import sys
 from argparse import ArgumentParser, Namespace
@@ -53,6 +57,11 @@ def _build_arg_parser() -> ArgumentParser:
         type=int,
         default=1,
         help="Additional retry attempts for sync_read",
+    )
+    parser.add_argument(
+        "--handshake",
+        action="store_true",
+        help="Enable strict handshake/model-number check before reading",
     )
     return parser
 
@@ -124,7 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         bus.connect(handshake=False)
         bus.set_baudrate(args.baudrate)
-        bus._handshake()
+        if args.handshake:
+            bus._handshake()
         values = bus.sync_read("Operating_Mode", normalize=False, num_retry=max(0, args.retry))
         _print_results(values, name_to_id)
     except Exception as exc:
