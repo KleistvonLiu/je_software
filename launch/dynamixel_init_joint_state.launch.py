@@ -26,8 +26,8 @@ def generate_launch_description():
     )
     position_scale_arg = DeclareLaunchArgument(
         # "position_scale", default_value="0.087890625" # 360/4096
-        # "position_scale", default_value="0.001533981" # 2pi/4096
-        "position_scale", default_value="1" # 2pi/4096
+        "position_scale", default_value="0.001533981" # 2pi/4096
+        # "position_scale", default_value="1" # 2pi/4096
     )
     lsb_confirm_samples_arg = DeclareLaunchArgument("lsb_confirm_samples", default_value="3")
     zero_on_start_arg = DeclareLaunchArgument("zero_on_start", default_value="false")
