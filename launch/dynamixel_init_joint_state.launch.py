@@ -27,11 +27,13 @@ def generate_launch_description():
     position_scale_arg = DeclareLaunchArgument(
         # "position_scale", default_value="0.087890625" # 360/4096
         "position_scale", default_value="0.001533981" # 2pi/4096
+        # "position_scale", default_value="1" # 2pi/4096
     )
+    drop_lsb_bits_arg = DeclareLaunchArgument("drop_lsb_bits", default_value="1")
     zero_on_start_arg = DeclareLaunchArgument("zero_on_start", default_value="false")
     zero_file_arg = DeclareLaunchArgument(
         "zero_file",
-        default_value="/home/test/ros2_ws/src/je_common/config/dynamixel_zero_offsets.json"
+        default_value="/home/kleist/ros2_ws/src/common/config/dynamixel_zero_offsets.json"
     )
     print_positions_arg = DeclareLaunchArgument(
         "print_positions", default_value="true"
@@ -93,6 +95,9 @@ def generate_launch_description():
                 "position_scale": ParameterValue(
                     LaunchConfiguration("position_scale"), value_type=float
                 ),
+                "drop_lsb_bits": ParameterValue(
+                    LaunchConfiguration("drop_lsb_bits"), value_type=int
+                ),
                 "zero_on_start": ParameterValue(
                     LaunchConfiguration("zero_on_start"), value_type=bool
                 ),
@@ -143,6 +148,7 @@ def generate_launch_description():
             left_models_arg,
             right_models_arg,
             position_scale_arg,
+            drop_lsb_bits_arg,
             zero_on_start_arg,
             zero_file_arg,
             print_positions_arg,

@@ -39,6 +39,7 @@ class DynamixelInitJointStateNode(Node):
         self.declare_parameter("left_models", '["xl330-m077"]')
         self.declare_parameter("right_models", '["xl330-m077"]')
         self.declare_parameter("position_scale", 0.087890625)
+        self.declare_parameter("drop_lsb_bits", 0)
         self.declare_parameter("left_gripper_min", 0.0)
         self.declare_parameter("left_gripper_max", 1.0)
         self.declare_parameter("right_gripper_min", 0.0)
@@ -85,6 +86,7 @@ class DynamixelInitJointStateNode(Node):
             self.get_parameter("right_models").value, "right_models"
         )
         self._position_scale = float(self.get_parameter("position_scale").value)
+        self._drop_lsb_bits = max(0, int(self.get_parameter("drop_lsb_bits").value))
         self._left_gripper_min = float(self.get_parameter("left_gripper_min").value)
         self._left_gripper_max = float(self.get_parameter("left_gripper_max").value)
         self._right_gripper_min = float(self.get_parameter("right_gripper_min").value)
@@ -135,6 +137,10 @@ class DynamixelInitJointStateNode(Node):
         self.get_logger().info(
             f"Publishing to {self._topic} at {1.0 / self._period_s:.2f} Hz"
         )
+        if self._drop_lsb_bits > 0:
+            self.get_logger().info(
+                f"Position LSB drop enabled: drop_lsb_bits={self._drop_lsb_bits}"
+            )
 
         self._stop_event = threading.Event()
         self._first_publish = True
@@ -259,6 +265,18 @@ class DynamixelInitJointStateNode(Node):
         with open(self._zero_file, "w", encoding="utf-8") as handle:
             json.dump(self._zero_offsets, handle, ensure_ascii=True, indent=2, sort_keys=True)
 
+    def _drop_position_lsb(self, value: float) -> float:
+        k = self._drop_lsb_bits
+        if k <= 0:
+            return float(value)
+
+        raw = int(value)  # 向 0 截断
+        if raw >= 0:
+            return float((raw >> k) << k)   # 清零低 k 位
+        else:
+            mag = -raw                      # 正数幅值
+            return float(-((mag >> k) << k))  # 幅值清零后再加负号（向 0）
+
     def _capture_zero_offsets(self, bus: DynamixelMotorsBus, label: str) -> dict[str, float]:
         try:
             action = bus.sync_read("Present_Position", normalize=False)
@@ -270,7 +288,7 @@ class DynamixelInitJointStateNode(Node):
         missing = []
         for name in self._joint_names + ["gripper"]:
             if name in action:
-                offsets[name] = float(action[name])
+                offsets[name] = self._drop_position_lsb(float(action[name]))
             else:
                 missing.append(name)
 
@@ -396,13 +414,13 @@ class DynamixelInitJointStateNode(Node):
         offsets = self._left_offsets if label == "left" else self._right_offsets
         for name in self._joint_names:
             if name in action:
-                raw = float(action[name])
+                raw = self._drop_position_lsb(float(action[name]))
                 positions.append(raw - float(offsets.get(name, 0.0)))
             else:
                 positions.append(0.0)
                 missing.append(name)
         if "gripper" in action:
-            raw_gripper = float(action["gripper"])
+            raw_gripper = self._drop_position_lsb(float(action["gripper"]))
             gripper = raw_gripper - float(offsets.get("gripper", 0.0))
         else:
             missing.append("gripper")
