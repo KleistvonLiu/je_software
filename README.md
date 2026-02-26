@@ -5,7 +5,7 @@ source /opt/ros/humble/setup.bash
 
 2. 编译
 cd ~/ros2_ws
-colcon build --symlink-install --packages-select je_software
+colcon build --symlink-install --packages-select je_software je_common
 
 3. 运行程序
 编译完之后需要
