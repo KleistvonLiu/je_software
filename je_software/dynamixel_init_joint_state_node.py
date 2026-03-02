@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import rclpy
@@ -15,6 +16,13 @@ from sensor_msgs.msg import JointState
 from common.msg import OculusInitJointState
 from je_software.motors import Motor, MotorNormMode
 from je_software.motors.dynamixel import DynamixelMotorsBus
+
+
+@dataclass
+class EncoderLsbFilterState:
+    stable: Optional[int] = None
+    candidate: Optional[int] = None
+    candidate_count: int = 0
 
 
 class DynamixelInitJointStateNode(Node):
@@ -39,6 +47,7 @@ class DynamixelInitJointStateNode(Node):
         self.declare_parameter("left_models", '["xl330-m077"]')
         self.declare_parameter("right_models", '["xl330-m077"]')
         self.declare_parameter("position_scale", 0.087890625)
+        self.declare_parameter("lsb_confirm_samples", 2)
         self.declare_parameter("left_gripper_min", 0.0)
         self.declare_parameter("left_gripper_max", 1.0)
         self.declare_parameter("right_gripper_min", 0.0)
@@ -85,6 +94,9 @@ class DynamixelInitJointStateNode(Node):
             self.get_parameter("right_models").value, "right_models"
         )
         self._position_scale = float(self.get_parameter("position_scale").value)
+        self._lsb_confirm_samples = max(
+            1, int(self.get_parameter("lsb_confirm_samples").value)
+        )
         self._left_gripper_min = float(self.get_parameter("left_gripper_min").value)
         self._left_gripper_max = float(self.get_parameter("left_gripper_max").value)
         self._right_gripper_min = float(self.get_parameter("right_gripper_min").value)
@@ -106,6 +118,8 @@ class DynamixelInitJointStateNode(Node):
         self._zero_offsets: dict[str, dict[str, float]] = {"left": {}, "right": {}}
         self._left_offsets: dict[str, float] = {}
         self._right_offsets: dict[str, float] = {}
+        self._left_encoder_filter = self._init_encoder_filter_state()
+        self._right_encoder_filter = self._init_encoder_filter_state()
 
         self._left_signs = self._resolve_signs(self._left_signs, "left_signs")
         self._right_signs = self._resolve_signs(self._right_signs, "right_signs")
@@ -134,6 +148,9 @@ class DynamixelInitJointStateNode(Node):
         self._publisher = self.create_publisher(OculusInitJointState, self._topic, 10)
         self.get_logger().info(
             f"Publishing to {self._topic} at {1.0 / self._period_s:.2f} Hz"
+        )
+        self.get_logger().info(
+            f"Encoder 1-LSB confirm filter enabled: lsb_confirm_samples={self._lsb_confirm_samples}"
         )
 
         self._stop_event = threading.Event()
@@ -207,6 +224,54 @@ class DynamixelInitJointStateNode(Node):
             self.get_logger().error(f"{label} length is {len(signs)}; expected 8.")
             return [1.0] * 8
         return signs
+
+    def _init_encoder_filter_state(self) -> dict[str, EncoderLsbFilterState]:
+        return {
+            name: EncoderLsbFilterState() for name in [*self._joint_names, "gripper"]
+        }
+
+    def _filter_encoder_lsb(self, label: str, name: str, raw: int) -> int:
+        states = self._left_encoder_filter if label == "left" else self._right_encoder_filter
+        state = states.setdefault(name, EncoderLsbFilterState())
+
+        if state.stable is None:
+            state.stable = raw
+            state.candidate = None
+            state.candidate_count = 0
+            return raw
+
+        diff = raw - state.stable
+        abs_diff = abs(diff)
+
+        if abs_diff > 1:
+            state.stable = raw
+            state.candidate = None
+            state.candidate_count = 0
+            return raw
+
+        if abs_diff == 0:
+            state.candidate = None
+            state.candidate_count = 0
+            return state.stable
+
+        if self._lsb_confirm_samples <= 1:
+            state.stable = raw
+            state.candidate = None
+            state.candidate_count = 0
+            return raw
+
+        if state.candidate == raw:
+            state.candidate_count += 1
+        else:
+            state.candidate = raw
+            state.candidate_count = 1
+
+        if state.candidate_count >= self._lsb_confirm_samples:
+            state.stable = raw
+            state.candidate = None
+            state.candidate_count = 0
+
+        return state.stable
 
     def _load_zero_file(self, allow_missing: bool = False) -> None:
         self._zero_offsets = {"left": {}, "right": {}}
@@ -396,14 +461,14 @@ class DynamixelInitJointStateNode(Node):
         offsets = self._left_offsets if label == "left" else self._right_offsets
         for name in self._joint_names:
             if name in action:
-                raw = float(action[name])
-                positions.append(raw - float(offsets.get(name, 0.0)))
+                filtered = self._filter_encoder_lsb(label, name, int(action[name]))
+                positions.append(float(filtered) - float(offsets.get(name, 0.0)))
             else:
                 positions.append(0.0)
                 missing.append(name)
         if "gripper" in action:
-            raw_gripper = float(action["gripper"])
-            gripper = raw_gripper - float(offsets.get("gripper", 0.0))
+            filtered_gripper = self._filter_encoder_lsb(label, "gripper", int(action["gripper"]))
+            gripper = float(filtered_gripper) - float(offsets.get("gripper", 0.0))
         else:
             missing.append("gripper")
 

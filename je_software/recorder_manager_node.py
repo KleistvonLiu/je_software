@@ -42,6 +42,7 @@ class RecorderManager(BaseManager):
     def __init__(self):
         super().__init__(node_name='manager')
         self._meta_lock = threading.Lock()
+        self._joint_topic_fallback_warned = False
 
         self._pending_safe_log = False
 
@@ -66,6 +67,15 @@ class RecorderManager(BaseManager):
         self.start_keyboard_control()
         # 启动保存线程
         self.start_save_thread()
+
+    def _resolve_joint_topics(self) -> List[str]:
+        """与 BaseManager 的 joint 流顺序保持一致：state 在前，cmd 在后。"""
+        topics = list(getattr(self, "joint_state_topics", []) or [])
+        topics.extend(list(getattr(self, "joint_cmd_topics", []) or []))
+        if topics:
+            return topics
+        # 兼容旧版 BaseManager 字段
+        return list(getattr(self, "joint_topics", []) or [])
 
     # ---------- 键盘控制（按需启动） ----------
     def start_keyboard_control(self):
@@ -339,11 +349,21 @@ class RecorderManager(BaseManager):
             )
             joints_meta.append(entry)
 
+        joint_topics = self._resolve_joint_topics()
         for k, item in enumerate(joint_picks):
             if item is None:
                 continue
             t_ns, js_msg = item
-            topic = self.joint_topics[k]
+            if k < len(joint_topics):
+                topic = joint_topics[k]
+            else:
+                topic = f"joint_stream_{k}"
+                if not self._joint_topic_fallback_warned:
+                    self.get_logger().warn(
+                        f"Joint topic index {k} out of range (topics={len(joint_topics)}), "
+                        f"fallback to '{topic}'."
+                    )
+                    self._joint_topic_fallback_warned = True
 
             if hasattr(js_msg, "left") and hasattr(js_msg, "right") and hasattr(js_msg, "left_valid"):
                 if getattr(js_msg, "left_valid", False):

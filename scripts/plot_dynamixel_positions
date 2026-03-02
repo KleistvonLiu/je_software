@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+可视化dynamixel_init_joint_state_node.py 保存的位置信息。
+ros2 run je_software plot_dynamixel_positions --log /home/kleist/jemotor/log/dynamixel_positions.log --arm right --joint 7
+ros2 run je_software plot_dynamixel_positions --log /home/kleist/jemotor/log/dynamixel_positions.log --arm right --joint 1,2,3,gripper
+ros2 run je_software plot_dynamixel_positions --log /home/kleist/jemotor/log/dynamixel_positions.log --arm right --signal velocity --joint 7
+多关节时会分子图显示：每个关节一行（左：position，右：delta）。
+"""
 import argparse
 import math
 import os
@@ -7,7 +14,16 @@ import sys
 import matplotlib.pyplot as plt
 
 
-def parse_log(path: str):
+def parse_log(path: str, signal: str):
+    signal_labels = {
+        "position": {"left": "left", "right": "right"},
+        "velocity": {"left_vel": "left", "right_vel": "right"},
+        "current": {"left_cur": "left", "right_cur": "right"},
+    }
+    if signal not in signal_labels:
+        raise ValueError(f"Unsupported signal: {signal}")
+    accepted = signal_labels[signal]
+
     samples = []
     with open(path, "r", encoding="utf-8") as handle:
         for line in handle:
@@ -22,9 +38,12 @@ def parse_log(path: str):
             except ValueError:
                 continue
             payload = parts[1].strip()
-            if not (payload.startswith("left:") or payload.startswith("right:")):
+            if ":" not in payload:
                 continue
-            label, rest = payload.split(":", 1)
+            raw_label, rest = payload.split(":", 1)
+            label = accepted.get(raw_label.strip())
+            if label is None:
+                continue
             values = {}
             for token in rest.strip().split():
                 if token.startswith("(") and token.endswith(")"):
@@ -54,11 +73,43 @@ def normalize_joint_arg(joint: str) -> str:
     raise ValueError(f"Unsupported joint id: {joint}")
 
 
+def parse_joint_args(joints):
+    joint_keys = []
+    for raw in joints:
+        for token in raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            key = normalize_joint_arg(token)
+            if key not in joint_keys:
+                joint_keys.append(key)
+    if not joint_keys:
+        raise ValueError("No valid joints provided.")
+    return joint_keys
+
+
+def delta_values(values, signal: str):
+    if signal == "position":
+        return [math.degrees(values[i] - values[i - 1]) for i in range(1, len(values))], "delta (deg)"
+    return [values[i] - values[i - 1] for i in range(1, len(values))], "delta"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Plot dynamixel joint positions from log.")
     parser.add_argument("--log", required=True, help="Path to positions log.")
     parser.add_argument("--arm", required=True, choices=["left", "right"], help="Arm side.")
-    parser.add_argument("--joint", required=True, help="Joint id (1-7 or 'gripper').")
+    parser.add_argument(
+        "--signal",
+        default="position",
+        choices=["position", "velocity", "current"],
+        help="Signal type from log lines.",
+    )
+    parser.add_argument(
+        "--joint",
+        required=True,
+        nargs="+",
+        help="Joint id(s), supports repeated args or comma-separated values: 1 2 3 or 1,2,3.",
+    )
     parser.add_argument("--out", default="", help="Output image path (optional).")
     parser.add_argument("--start", type=float, default=None, help="Start time (epoch seconds).")
     parser.add_argument("--end", type=float, default=None, help="End time (epoch seconds).")
@@ -68,10 +119,14 @@ def main() -> int:
         print(f"Log file not found: {args.log}", file=sys.stderr)
         return 1
 
-    joint_key = normalize_joint_arg(args.joint)
-    samples = parse_log(args.log)
-    xs = []
-    ys = []
+    try:
+        joint_keys = parse_joint_args(args.joint)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    samples = parse_log(args.log, args.signal)
+    series = {joint_key: {"x": [], "y": []} for joint_key in joint_keys}
     t0 = None
     for ts, label, values in samples:
         if label != args.arm:
@@ -80,30 +135,66 @@ def main() -> int:
             continue
         if args.end is not None and ts > args.end:
             continue
-        if joint_key not in values:
-            continue
         if t0 is None:
             t0 = ts
-        xs.append(ts - t0)
-        ys.append(values[joint_key])
+        rel_t = ts - t0
+        for joint_key in joint_keys:
+            if joint_key not in values:
+                continue
+            series[joint_key]["x"].append(rel_t)
+            series[joint_key]["y"].append(values[joint_key])
 
-    if not xs:
+    plotted = [joint_key for joint_key in joint_keys if series[joint_key]["x"]]
+    if not plotted:
         print("No matching samples found.", file=sys.stderr)
         return 1
 
-    deltas_deg = [math.degrees(ys[i] - ys[i - 1]) for i in range(1, len(ys))]
-    delta_xs = xs[1:]
+    delta_label = "delta"
+    if len(plotted) == 1:
+        joint_key = plotted[0]
+        xs = series[joint_key]["x"]
+        ys = series[joint_key]["y"]
+        fig, axes = plt.subplots(2, 1, sharex=True, figsize=(10, 7))
+        axes[0].plot(xs, ys, linewidth=1.0, label=joint_key)
+        axes[0].set_ylabel(args.signal)
+        axes[0].set_title(f"{args.arm} {joint_key} ({args.signal})")
+        axes[0].grid(True, linewidth=0.3, alpha=0.6)
+        axes[0].legend(loc="best")
 
-    fig, axes = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
-    axes[0].plot(xs, ys, linewidth=1.0)
-    axes[0].set_ylabel(f"{args.arm} {joint_key} (rad)")
-    axes[0].set_title(f"{args.arm} {joint_key}")
-    axes[0].grid(True, linewidth=0.3, alpha=0.6)
+        if len(ys) >= 2:
+            delta_xs = xs[1:]
+            deltas, delta_label = delta_values(ys, args.signal)
+            axes[1].plot(delta_xs, deltas, linewidth=1.0, color="tab:orange")
+        axes[1].set_xlabel("t (s)")
+        axes[1].set_ylabel(delta_label)
+        axes[1].grid(True, linewidth=0.3, alpha=0.6)
+        fig.tight_layout()
+    else:
+        rows = len(plotted)
+        fig, axes = plt.subplots(rows, 2, figsize=(12, max(3.0 * rows, 6.0)), squeeze=False)
+        fig.suptitle(f"{args.arm} {args.signal} joints: " + ", ".join(plotted))
+        for row, joint_key in enumerate(plotted):
+            xs = series[joint_key]["x"]
+            ys = series[joint_key]["y"]
+            pos_ax = axes[row][0]
+            delta_ax = axes[row][1]
 
-    axes[1].plot(delta_xs, deltas_deg, linewidth=1.0, color="tab:orange")
-    axes[1].set_xlabel("t (s)")
-    axes[1].set_ylabel("delta (deg)")
-    axes[1].grid(True, linewidth=0.3, alpha=0.6)
+            pos_ax.plot(xs, ys, linewidth=1.0)
+            pos_ax.set_ylabel(f"{joint_key}\n{args.signal}")
+            pos_ax.grid(True, linewidth=0.3, alpha=0.6)
+
+            if len(ys) >= 2:
+                delta_xs = xs[1:]
+                deltas, delta_label = delta_values(ys, args.signal)
+                delta_ax.plot(delta_xs, deltas, linewidth=1.0, color="tab:orange")
+            delta_ax.set_ylabel(delta_label.replace(" ", "\n"))
+            delta_ax.grid(True, linewidth=0.3, alpha=0.6)
+
+        axes[rows - 1][0].set_xlabel("t (s)")
+        axes[rows - 1][1].set_xlabel("t (s)")
+        axes[0][0].set_title(args.signal)
+        axes[0][1].set_title("delta")
+        fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.97])
 
     if args.out:
         plt.savefig(args.out, dpi=150)

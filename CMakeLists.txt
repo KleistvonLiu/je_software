@@ -120,6 +120,7 @@ install(PROGRAMS
   scripts/agilex_robot
   scripts/camera_node
   scripts/dynamixel_init_joint_state
+  scripts/read_dynamixel_mode
   scripts/plot_dynamixel_positions
   scripts/joint_rate_monitor
   scripts/manager_node

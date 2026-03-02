@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+THIS_FILE = Path(__file__).resolve()
+SOURCE_ROOT = THIS_FILE.parents[1]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
+
+from je_software.read_dynamixel_mode import main
+
+
+if __name__ == "__main__":
+    sys.exit(main())

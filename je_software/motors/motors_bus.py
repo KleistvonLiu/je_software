@@ -1158,6 +1158,11 @@ class MotorsBus(abc.ABC):
             raise ConnectionError(f"{err_msg} {self.packet_handler.getTxRxResult(comm)}")
 
         values = {id_: self.sync_reader.getData(id_, addr, length) for id_ in motor_ids}
+        #TODO 以比特位的形式显示values的value部分
+        # bit_width = length << 3
+        # bit_format = f"0{bit_width}b"
+        # values_bits = {id_: format(value, bit_format) for id_, value in values.items()}
+        # print("sync read values(bits): %s", values_bits, flush=True)
         return values, comm
 
     def _setup_sync_reader(self, motor_ids: list[int], addr: int, length: int) -> None:
