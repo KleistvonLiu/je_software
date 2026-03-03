@@ -22,6 +22,8 @@ def generate_launch_description():
         'oculus_controllers_topic', default_value='/oculus_controllers')
     oculus_init_joint_state_topic_arg = DeclareLaunchArgument(
         'oculus_init_joint_state_topic', default_value='/joint_cmd_double_arm')
+    target_string_arg = DeclareLaunchArgument(
+        'target_string', default_value='cmd')
 
     # -------------------- Pose options --------------------
     frame_id_arg = DeclareLaunchArgument('frame_id', default_value='base_link')
@@ -55,6 +57,7 @@ def generate_launch_description():
                 ),
                 "oculus_controllers_topic": LaunchConfiguration("oculus_controllers_topic"),
                 "oculus_init_joint_state_topic": LaunchConfiguration("oculus_init_joint_state_topic"),
+                "target_string": LaunchConfiguration("target_string"),
                 "frame_id": LaunchConfiguration("frame_id"),
                 "pose_field": LaunchConfiguration("pose_field"),
                 "pose_left_valid": ParameterValue(LaunchConfiguration("pose_left_valid"), value_type=bool),
@@ -91,6 +94,7 @@ def generate_launch_description():
     init_repeat_count_arg,
         oculus_controllers_topic_arg,
         oculus_init_joint_state_topic_arg,
+        target_string_arg,
         frame_id_arg,
         pose_field_arg,
         pose_left_valid_arg,

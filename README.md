@@ -27,11 +27,12 @@ fps:=30 \
 dt_init:=5
 ros2 run je_software end_effector_cli --ros-args -p hand:=left
 ros2 launch je_software jsonl_replayer_node.launch.py\
-  jsonl_path:=/home/kleist/Documents/temp/meta.jsonl\
+  jsonl_path:=/media/kleist/NewNTFS/20260225log/episode_000000/meta.jsonl\
   rate_hz:=30.0\
   loop:=false     \
   send_arm:=left \
-  dt_init:=5
+  dt_init:=5 \
+  target_string:=cmd
 
 # 设置串口低延迟模式
 sudo apt install setserial

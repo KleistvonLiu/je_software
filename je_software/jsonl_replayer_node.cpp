@@ -50,6 +50,7 @@ public:
         this->declare_parameter<std::string>("output_type", "oculus_joint");
         this->declare_parameter<std::string>("oculus_controllers_topic", "/oculus_controllers");
         this->declare_parameter<std::string>("oculus_init_joint_state_topic", "/oculus_init_joint_state");
+        this->declare_parameter<std::string>("target_string", "cmd");
 
         // use file stamp
         this->declare_parameter<bool>("use_file_stamp", true);
@@ -88,10 +89,12 @@ public:
         output_type_ = this->get_parameter("output_type").as_string();
         oculus_controllers_topic_ = this->get_parameter("oculus_controllers_topic").as_string();
         oculus_init_joint_state_topic_ = this->get_parameter("oculus_init_joint_state_topic").as_string();
+        target_string_ = this->get_parameter("target_string").as_string();
         use_file_stamp_ = this->get_parameter("use_file_stamp").as_bool();
         init_delay_sec_ = this->get_parameter("dt_init").as_double();
-    init_repeat_count_ = this->get_parameter("init_repeat_count").as_int();
+        init_repeat_count_ = this->get_parameter("init_repeat_count").as_int();
         to_lower_inplace(output_type_);
+        to_lower_inplace(target_string_);
 
         frame_id_ = this->get_parameter("frame_id").as_string();
         pose_field_ = this->get_parameter("pose_field").as_string();
@@ -298,14 +301,30 @@ private:
         return v;
     }
 
-    static bool is_left_topic(const std::string &topic)
+    static bool is_left_topic(const std::string &topic, const std::string &contains_token)
     {
-        return topic.find("left") != std::string::npos;
+        if (topic.find("left") == std::string::npos)
+        {
+            return false;
+        }
+        if (contains_token.empty())
+        {
+            return true;
+        }
+        return topic.find(contains_token) != std::string::npos;
     }
 
-    static bool is_right_topic(const std::string &topic)
+    static bool is_right_topic(const std::string &topic, const std::string &contains_token)
     {
-        return topic.find("right") != std::string::npos;
+        if (topic.find("right") == std::string::npos)
+        {
+            return false;
+        }
+        if (contains_token.empty())
+        {
+            return true;
+        }
+        return topic.find(contains_token) != std::string::npos;
     }
 
     static bool fill_joint_from_meta_entry(const json &entry,
@@ -383,17 +402,19 @@ private:
             {
                 topic = entry["topic"].get<std::string>();
             }
-
-            if (is_left_topic(topic))
+            
+            if (is_left_topic(topic, target_string_))
             {
+                std::cout << "topic left: " << topic << std::endl;
                 if (fill_joint_from_meta_entry(entry, msg.left, false))
                 {
                     msg.left_valid = true;
                 }
                 parse_gripper_value(entry, msg.left_gripper);
             }
-            else if (is_right_topic(topic))
+            else if (is_right_topic(topic, target_string_))
             {
+                std::cout << "topic right: " << topic << std::endl;
                 if (fill_joint_from_meta_entry(entry, msg.right, false))
                 {
                     msg.right_valid = true;
@@ -766,6 +787,7 @@ private:
     std::string output_type_{"oculus_joint"};
     std::string oculus_controllers_topic_{"/oculus_controllers"};
     std::string oculus_init_joint_state_topic_{"/oculus_init_joint_state"};
+    std::string target_string_{"cmd"};
     bool use_file_stamp_{true};
 
     // pose params
