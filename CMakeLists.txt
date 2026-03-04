@@ -234,6 +234,7 @@ target_include_directories(ik_solver
 target_link_libraries(ik_solver
   Eigen3::Eigen
   pinocchio::pinocchio
+  nlohmann_json::nlohmann_json
 )
 
 # ----------------------------

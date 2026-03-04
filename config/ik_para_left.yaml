@@ -24,5 +24,5 @@ planning:
 	numeric_fallback_after_rejects: 3
 	numeric_fallback_duration: 10
 	ik_step_size: 1.0
-	joint_limits_min: [-2.96, -2.18, -2.96, -3.13, -2.96, -1.83, -1.83]
-	joint_limits_max: [2.96, 2.18, 2.96, 3.13, 2.96, 1.83, 1.83]
+	joint_limits_min: [-3.14, -1.85, -2.96, -2.26, -2.96, -1.6, -2.96]
+  joint_limits_max: [3.14, 1.8, 2.96, 1.82, 2.96, 1.55, 2.96]

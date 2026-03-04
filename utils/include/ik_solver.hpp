@@ -157,8 +157,6 @@ private:
   // internal solver (time-bounded)
   Result solveInternal(const SE3 &target, Eigen::VectorXd q_init, const std::chrono::steady_clock::time_point &deadline);
 
-  void clampToJointLimits(Eigen::VectorXd &q);
-
   // Pinocchio model/data are implementation details; store via pointers to avoid exposing headers here.
   std::unique_ptr<pinocchio::Model> model_;
   std::unique_ptr<pinocchio::Data> data_; // reused across solves

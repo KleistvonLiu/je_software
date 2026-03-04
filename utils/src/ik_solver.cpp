@@ -393,18 +393,7 @@ Eigen::MatrixXd IkSolver::getFrameJacobian(const Eigen::VectorXd &q) {
   return J;
 }
 
-void IkSolver::clampToJointLimits(Eigen::VectorXd &q) {
-  std::lock_guard<std::mutex> lk(mutex_);
-  if (params_.joint_limits_min.size() == (size_t)q.size() && params_.joint_limits_max.size() == (size_t)q.size()) {
-    for (int i = 0; i < q.size(); ++i) {
-      double lo = params_.joint_limits_min[i];
-      double hi = params_.joint_limits_max[i];
-      if (lo >= hi) continue;
-      if (q[i] < lo) q[i] = lo;
-      if (q[i] > hi) q[i] = hi;
-    }
-  }
-}
+
 
 IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd q_init, const std::chrono::steady_clock::time_point &deadline) {
   Result res;
