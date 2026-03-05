@@ -43,6 +43,12 @@ public:
     double ang_weight = 1.0;
     double max_delta = 0.03;
     double max_delta_min = 1e-6;
+    // Two-stage solve: after first convergence, refine to a nearby joint solution
+    // while allowing error within a relaxed bound.
+    bool enable_post_converged_refine = true;
+    int post_converged_refine_iters = 30;
+    double post_converged_joint_weight = 1e-3;
+    double post_converged_error_slack_ratio = 5.0;
     std::vector<double> joint_limits_min;
     std::vector<double> joint_limits_max;
 
@@ -68,6 +74,9 @@ public:
     int iterations = 0;
     double elapsed_ms = 0.0;
     std::string diagnostic;
+    double precise_q_delta = 0.0;  // ||q_precise - q_init||
+    double refine_q_delta = 0.0;   // ||q_refined - q_init||
+    int refine_iters = 0;          // 精修阶段的迭代次数
   };
 
   using IterCallback = std::function<void(int, const Eigen::VectorXd&, double)>;

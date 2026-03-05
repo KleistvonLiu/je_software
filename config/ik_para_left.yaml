@@ -24,5 +24,9 @@ planning:
 	numeric_fallback_after_rejects: 3
 	numeric_fallback_duration: 10
 	ik_step_size: 1.0
+	enable_post_converged_refine: true
+	post_converged_refine_iters: 30
+	post_converged_joint_weight: 1e-3
+	post_converged_error_slack_ratio: 5.0
 	joint_limits_min: [-3.14, -1.85, -2.96, -2.26, -2.96, -1.6, -2.96]
   joint_limits_max: [3.14, 1.8, 2.96, 1.82, 2.96, 1.55, 2.96]

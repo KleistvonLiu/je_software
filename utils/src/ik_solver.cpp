@@ -119,6 +119,14 @@ void apply_key_value(const std::string &key,
     cfg.params.max_delta = std::stod(val);
   } else if (key == "max_delta_min") {
     cfg.params.max_delta_min = std::stod(val);
+  } else if (key == "enable_post_converged_refine") {
+    cfg.params.enable_post_converged_refine = parse_bool(val);
+  } else if (key == "post_converged_refine_iters") {
+    cfg.params.post_converged_refine_iters = std::stoi(val);
+  } else if (key == "post_converged_joint_weight") {
+    cfg.params.post_converged_joint_weight = std::stod(val);
+  } else if (key == "post_converged_error_slack_ratio") {
+    cfg.params.post_converged_error_slack_ratio = std::stod(val);
   } else if (key == "nullspace_penalty_scale") {
     cfg.params.nullspace_penalty_scale = std::stod(val);
   } else if (key == "joint4_penalty_threshold") {
@@ -415,6 +423,7 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
 
   const int nv = model_->nv;
   Eigen::VectorXd q_solution = q_init;
+  const Eigen::VectorXd q_seed = q_init;
   pinocchio::Data data_local(*model_);
 
   double best_error = 1e300;
@@ -425,6 +434,18 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
   int precise_iter = -1;
   Eigen::VectorXd precise_q;
   double precise_error = 0.0;
+
+  bool refine_mode = false;
+  int refine_iters_left = std::max(0, p.post_converged_refine_iters);
+  const double relaxed_threshold = (p.eps_relaxed_6d > 0.0) ? p.eps_relaxed_6d : (p.eps * 100.0);
+  const double refine_error_limit = std::max(
+      p.eps,
+      std::min(relaxed_threshold, p.eps * std::max(1.0, p.post_converged_error_slack_ratio)));
+  const double refine_joint_weight = std::max(0.0, p.post_converged_joint_weight);
+  Eigen::VectorXd nearest_q;
+  double nearest_err = 1e300;
+  double nearest_joint_dist = 1e300;
+  int nearest_iter = -1;
 
   Eigen::Matrix<double,6,1> err6;
 
@@ -459,7 +480,34 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
 
     if (cur_err < best_error) { best_error = cur_err; best_q = q_solution; best_iter = it; }
     if (cur_err < p.eps) {
-      precise_success = true; precise_iter = it; precise_q = q_solution; precise_error = cur_err; break; }
+      if (!precise_success) {
+        precise_success = true;
+        precise_iter = it;
+        precise_q = q_solution;
+        precise_error = cur_err;
+        nearest_q = q_solution;
+        nearest_err = cur_err;
+        nearest_joint_dist = (q_solution - q_seed).squaredNorm();
+        nearest_iter = it;
+        if (p.enable_post_converged_refine && refine_iters_left > 0) {
+          refine_mode = true;
+        } else {
+          break;
+        }
+      }
+    }
+
+    if (refine_mode) {
+      const double joint_dist = (q_solution - q_seed).squaredNorm();
+      if ((cur_err <= refine_error_limit) &&
+          ((joint_dist < nearest_joint_dist - 1e-14) ||
+           (std::abs(joint_dist - nearest_joint_dist) <= 1e-14 && cur_err < nearest_err))) {
+        nearest_q = q_solution;
+        nearest_err = cur_err;
+        nearest_joint_dist = joint_dist;
+        nearest_iter = it;
+      }
+    }
 
     pinocchio::computeJointJacobians(*model_, data_local, q_solution);
     const int fid = static_cast<int>(std::max<size_t>(1, model_->nframes) - 1);
@@ -525,6 +573,11 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
 
     MatrixXd A = Jw.transpose() * Jw;
     Eigen::VectorXd g = Jw.transpose() * errw;
+
+    if (refine_mode && (refine_joint_weight > 0.0)) {
+      A.diagonal().array() += refine_joint_weight;
+      g += refine_joint_weight * (q_solution - q_seed);
+    }
 
     double alpha_ns = 0.0;
     if (sn>0) {
@@ -599,14 +652,32 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
       err6_try.head<3>() = pos_err_try;
       err6_try.tail<3>() = ang_err_try;
       double err_try = err6_try.norm();
-      if (err_try < cur_err) {
-        accepted = true;
-        q_candidate = q_try;
-        best_trial_err = err_try;
-        best_trial_q = q_try;
-        break;
+      if (!refine_mode) {
+        if (err_try < cur_err) {
+          accepted = true;
+          q_candidate = q_try;
+          best_trial_err = err_try;
+          best_trial_q = q_try;
+          break;
+        } else {
+          if (err_try < best_trial_err) { best_trial_err = err_try; best_trial_q = q_try; }
+        }
       } else {
-        if (err_try < best_trial_err) { best_trial_err = err_try; best_trial_q = q_try; }
+        const double joint_dist_cur = (q_solution - q_seed).squaredNorm();
+        const double joint_dist_try = (q_try - q_seed).squaredNorm();
+        const bool within_err = (err_try <= refine_error_limit);
+        const bool better_joint = (joint_dist_try < joint_dist_cur - 1e-14);
+        const bool tie_better_err = (std::abs(joint_dist_try - joint_dist_cur) <= 1e-14) && (err_try < cur_err);
+        if (within_err && (better_joint || tie_better_err)) {
+          accepted = true;
+          q_candidate = q_try;
+          best_trial_err = err_try;
+          best_trial_q = q_try;
+          break;
+        }
+        if (within_err) {
+          if (err_try < best_trial_err) { best_trial_err = err_try; best_trial_q = q_try; }
+        }
       }
     }
 
@@ -621,7 +692,16 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
       if (rel_red > p.ik_svd_min_rel_reduction) {
         p.ik_svd_damping = std::max(p.ik_svd_damping_min, p.ik_svd_damping * p.ik_svd_damping_reduce_factor);
       }
+      if (refine_mode) {
+        --refine_iters_left;
+        if (refine_iters_left <= 0) {
+          break;
+        }
+      }
     } else {
+      if (refine_mode) {
+        break;
+      }
       ++consecutive_ls_rejects;
       if (!numeric_force_active && numeric_computed && consecutive_ls_rejects >= p.numeric_fallback_after_rejects) {
         numeric_force_active=true;
@@ -638,7 +718,6 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
         if (p.ik_svd_damping > p.ik_svd_damping_max) p.ik_svd_damping = p.ik_svd_damping_max;
         if (p.ik_svd_damping >= p.ik_svd_damping_max * 0.999) ++consecutive_max_damping_rejections; else consecutive_max_damping_rejections = 0;
         if (consecutive_max_damping_rejections >= 3) {
-          double old_max_delta = p.max_delta;
           p.max_delta = std::max(p.max_delta_min, p.max_delta * 0.5);
           p.ik_svd_damping = std::max(p.ik_svd_damping_min, p.ik_svd_damping * p.ik_svd_damping_reduce_factor);
           consecutive_max_damping_rejections = 0;
@@ -655,17 +734,29 @@ IkSolver::Result IkSolver::solveInternal(const SE3 &target_se3, Eigen::VectorXd 
   if (precise_success) {
     res.success = true;
     res.status = 1; // precise success
-    res.q = precise_q;
-    res.final_error = precise_error;
-    res.iterations = precise_iter;
+    res.precise_q_delta = (precise_q - q_seed).norm();  // 首次收敛时的q差值
+    if (nearest_iter >= 0) {
+      res.q = nearest_q;
+      res.final_error = nearest_err;
+      res.iterations = nearest_iter;
+      res.refine_q_delta = (nearest_q - q_seed).norm();  // 精修后的q差值
+      res.refine_iters = nearest_iter - precise_iter;    // 精修阶段的迭代次数
+      if ((nearest_err > p.eps) && (nearest_err <= refine_error_limit)) {
+        res.diagnostic = "refined_nearest_with_relaxed_error";
+      }
+    } else {
+      res.q = precise_q;
+      res.final_error = precise_error;
+      res.iterations = precise_iter;
+      res.refine_q_delta = 0.0;  // 没有精修，设为0
+      res.refine_iters = 0;       // 没有精修，设为0
+    }
     return res;
   }
 
   res.q = best_q;
   res.final_error = best_error;
   res.iterations = (best_iter >= 0) ? best_iter : 0;
-  double relaxed_threshold = p.eps_relaxed_6d;
-  if (relaxed_threshold <= 0.0) relaxed_threshold = p.eps * 100.0;
   res.success = (best_error < relaxed_threshold);
   res.status = res.success ? 2 : 0;
   return res;
@@ -738,6 +829,7 @@ std::string IkSolver::makeInitLog(const geometry_msgs::msg::Pose &pose_msg, cons
    oss << "init_err=" << init_err << " init_fk=pos(" << pos_init.x() << "," << pos_init.y() << "," << pos_init.z() << ") rpy(" << r_init << "," << p_init << "," << y_init << ")";
    oss << " target=pos(" << pos_tgt.x() << "," << pos_tgt.y() << "," << pos_tgt.z() << ") rpy(" << r_t << "," << p_t << "," << y_t << ")";
    oss << " result=time_ms=" << std::fixed << std::setprecision(3) << r.elapsed_ms << " success=" << (int)r.success << " iters=" << r.iterations << " final_err=" << std::setprecision(6) << r.final_error;
+   oss << " q_delta_precise=" << std::setprecision(6) << r.precise_q_delta << " q_delta_refine=" << r.refine_q_delta << " refine_iters=" << r.refine_iters;
    if (include_solution && r.q.size()>0) {
      oss << " q=[";
      for (int i=0;i<r.q.size();++i) { if (i) oss<<", "; oss<<std::fixed<<std::setprecision(6)<<r.q[i]; }
