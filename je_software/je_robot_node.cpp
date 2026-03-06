@@ -8,12 +8,14 @@
 #include <algorithm>
 #include <iostream>
 #include <atomic>
+#include <mutex>
 #include <cerrno>
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
 #include <iomanip>
 #include <sstream>
+#include <cstdio>
 
 // ===== NEW: logging =====
 #include <fstream>
@@ -28,6 +30,7 @@
 #include "common/msg/oculus_controllers.hpp"
 #include "common/msg/oculus_init_joint_state.hpp"
 #include "ros2_qos.hpp"
+#include "ik_solver.hpp"
 
 #include <zmq.hpp>
 #include "nlohmann/json.hpp"
@@ -52,6 +55,7 @@ public:
           joint_cmd_received_(false),
           state_thread_running_(false)
     {
+
         // ---------- 声明 & 获取参数 ----------
         this->declare_parameter<std::string>("joint_sub_topic", "/joint_cmd");
         this->declare_parameter<std::string>("end_pose_topic", "/end_pose");
@@ -81,6 +85,8 @@ public:
         this->declare_parameter<std::string>("state_log_dir", "./je_robot_logs");
         this->declare_parameter<std::string>("state_log_prefix", "robot_state");
         this->declare_parameter<int>("state_log_flush_every_n", 10);
+        // per-solve IK console logging
+        this->declare_parameter<bool>("ik_log", false);
         // ========================================
 
         std::string joint_sub_topic =
@@ -131,12 +137,48 @@ public:
             }
         }
 
+        // IK solver parameters (per-arm, optional)
+        this->declare_parameter<std::string>("ik_left_yaml_path", "");
+        this->declare_parameter<std::string>("ik_right_yaml_path", "");
+
+        std::string ik_left_yaml_path = this->get_parameter("ik_left_yaml_path").as_string();
+        std::string ik_right_yaml_path = this->get_parameter("ik_right_yaml_path").as_string();
+
+        if (!ik_left_yaml_path.empty()) {
+            try {
+                ik_solver_left_ = std::make_unique<ros2_ik_cpp::IkSolver>(ik_left_yaml_path);
+                ik_left_timeout_ms_ = ik_solver_left_->getParams().timeout_ms;
+                RCLCPP_INFO(this->get_logger(),
+                            "IkSolver left initialized from YAML: %s",
+                            ik_left_yaml_path.c_str());
+            } catch (const std::exception &e) {
+                RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver left: %s", e.what());
+            }
+        } else {
+            RCLCPP_WARN(this->get_logger(), "No ik_left_yaml_path provided; left IK disabled.");
+        }
+
+        if (!ik_right_yaml_path.empty()) {
+            try {
+                ik_solver_right_ = std::make_unique<ros2_ik_cpp::IkSolver>(ik_right_yaml_path);
+                ik_right_timeout_ms_ = ik_solver_right_->getParams().timeout_ms;
+                RCLCPP_INFO(this->get_logger(),
+                            "IkSolver right initialized from YAML: %s",
+                            ik_right_yaml_path.c_str());
+            } catch (const std::exception &e) {
+                RCLCPP_WARN(this->get_logger(), "Failed to create IkSolver right: %s", e.what());
+            }
+        } else {
+            RCLCPP_WARN(this->get_logger(), "No ik_right_yaml_path provided; right IK disabled.");
+        }
+
         // ===== NEW: read logging params =====
         log_enabled_ = this->get_parameter("state_log_enable").as_bool();
         log_dir_ = this->get_parameter("state_log_dir").as_string();
         log_prefix_ = this->get_parameter("state_log_prefix").as_string();
         flush_every_n_ = this->get_parameter("state_log_flush_every_n").as_int();
         if (flush_every_n_ <= 0) flush_every_n_ = 1;
+        ik_log_ = this->get_parameter("ik_log").as_bool();
         // ==================================
 
         if (fps <= 0.0)
@@ -170,8 +212,12 @@ public:
         std::this_thread::sleep_for(500ms);
 
         // 先拉一次状态，得到初始关节/位姿
-        last_state_json_ = get_robot_state_blocking();
-        if (last_state_json_.is_null())
+        nlohmann::json initial_state = get_robot_state_blocking();
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            last_state_json_ = initial_state;
+        }
+        if (initial_state.is_null())
         {
             RCLCPP_WARN(this->get_logger(),
                         "Failed to get initial robot state (timeout or invalid).");
@@ -782,60 +828,88 @@ private:
 
     void oculus_controllers_callback(const common::msg::OculusControllers::SharedPtr msg)
     {
-        if (!msg)
-            return;
+        if (!msg) return;
 
-        const bool left_ok = msg->left_valid;
-        const bool right_ok = msg->right_valid;
-        if (!left_ok && !right_ok)
-        {
-            return;
-        }
+    bool left_ok = msg->left_valid;
+    bool right_ok = msg->right_valid;
+        if (!left_ok && !right_ok) return;
 
         global_time_ += dt_;
-        nlohmann::json data;
 
-        if (left_ok)
+        // Local snapshot of last_state_json_
+        nlohmann::json state_snapshot;
         {
-            data["Robot0"]["time"] = global_time_;
-            const auto cartesian = pose_to_cartesian(msg->left_pose);
-            if (pose_jump_threshold_pos_ > 0.0 || pose_jump_threshold_rpy_ > 0.0)
-            {
-                check_and_update_pose_jump(
-                    "Left",
-                    cartesian,
-                    prev_cart_left_,
-                    prev_left_pose_valid_);
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            state_snapshot = last_state_json_;
+        }
+
+        // Process left
+        if (left_ok) {
+            if (ik_solver_left_) {
+                // Set q_init from last reported robot joints if available
+                if (state_snapshot.contains("Robot0") && state_snapshot["Robot0"].contains("Joint")) {
+                    ik_solver_left_->setQInit(state_snapshot["Robot0"]["Joint"]);
+                }
+
+                ros2_ik_cpp::IkSolver::Result r;
+                try { r = ik_solver_left_->solvePose(msg->left_pose, ik_left_timeout_ms_); }
+                catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK left threw: %s", e.what()); }
+
+                if (ik_log_) {
+                    std::string summary = ik_solver_left_->makeInitLog(msg->left_pose, r, true);
+                    RCLCPP_INFO(this->get_logger(), "[IK LEFT] %s", summary.c_str());
+                }
+
+                if (r.success && r.q.size() > 0) {
+                    std::vector<double> joints(r.q.size());
+                    for (int i = 0; i < r.q.size(); ++i) joints[i] = r.q[i];
+                    set_robot_joint(joints, 0);
+                } else {
+                    // fallback: send cartesian
+                    left_ok = false;
+                    RCLCPP_INFO(this->get_logger(), "No IK solution for left arm. Skipping IK.");
+                    // set_robot_cartesian(pose_to_cartesian(msg->left_pose), 0);
+                }
+            } else {
+                left_ok = false;
+                RCLCPP_INFO(this->get_logger(), "No IK solver for left arm, skipping IK.");
+                // set_robot_cartesian(pose_to_cartesian(msg->left_pose), 0);
             }
-            data["Robot0"]["cartesian"] = cartesian;
         }
 
-        if (right_ok)
-        {
-            data["Robot1"]["time"] = global_time_;
-            const auto cartesian = pose_to_cartesian(msg->right_pose);
-            if (pose_jump_threshold_pos_ > 0.0 || pose_jump_threshold_rpy_ > 0.0)
-            {
-                check_and_update_pose_jump(
-                    "Right",
-                    cartesian,
-                    prev_cart_right_,
-                    prev_right_pose_valid_);
+        // Process right
+        if (right_ok) {
+            if (ik_solver_right_) {
+                // Set q_init from last reported robot joints if available
+                if (state_snapshot.contains("Robot1") && state_snapshot["Robot1"].contains("Joint")) {
+                    ik_solver_right_->setQInit(state_snapshot["Robot1"]["Joint"]);
+                }
+
+                ros2_ik_cpp::IkSolver::Result r;
+                try { r = ik_solver_right_->solvePose(msg->right_pose, ik_right_timeout_ms_); }
+                catch (const std::exception &e) { RCLCPP_WARN(this->get_logger(), "IK right threw: %s", e.what()); }
+
+                if (ik_log_) {
+                    std::string summary = ik_solver_right_->makeInitLog(msg->right_pose, r, true);
+                    RCLCPP_INFO(this->get_logger(), "[IK RIGHT] %s", summary.c_str());
+                }
+
+                if (r.success && r.q.size() > 0) {
+                    std::vector<double> joints(r.q.size());
+                    for (int i = 0; i < r.q.size(); ++i) joints[i] = r.q[i];
+                    set_robot_joint(joints, 1);
+                } else {
+                    right_ok = false;
+                    RCLCPP_INFO(this->get_logger(), "No IK solver for right arm, skipping IK.");
+                    // set_robot_cartesian(pose_to_cartesian(msg->right_pose), 1);
+                }
+            } else {
+                right_ok = false;
+                RCLCPP_INFO(this->get_logger(), "No IK solver for right arm, skipping IK.");
+                // set_robot_cartesian(pose_to_cartesian(msg->right_pose), 1);
             }
-            data["Robot1"]["cartesian"] = cartesian;
         }
-
-        if (left_ok)
-        {
-            append_gripper_from_command(data, 0);
-        }
-        if (right_ok)
-        {
-            append_gripper_from_command(data, 1);
-        }
-
-        publisher_.send(zmq::buffer("Cartesian " + data.dump()));
-    }
+     }
 
     void oculus_init_joint_state_callback(const common::msg::OculusInitJointState::SharedPtr msg)
     {
@@ -962,6 +1036,11 @@ private:
                 this->get_logger(), *this->get_clock(), 5000,
                 "No valid robot state received (timeout or invalid).");
             return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            last_state_json_ = state_json;
         }
 
         // ===== NEW: log raw state (with stamp) =====
@@ -1223,6 +1302,7 @@ private:
     zmq::context_t context_;
     zmq::socket_t publisher_;
     zmq::socket_t subscriber_;
+    std::mutex state_mutex_;
     nlohmann::json last_state_json_;
 
     // End-effector command cache from ROS2
@@ -1259,7 +1339,15 @@ private:
     int flush_every_n_{10};
     std::ofstream state_log_;
     size_t log_count_{0};
+    bool ik_log_{false};
     // ==============================
+    std::unique_ptr<ros2_ik_cpp::IkSolver> ik_solver_left_;
+    std::unique_ptr<ros2_ik_cpp::IkSolver> ik_solver_right_;
+
+    // ===== NEW: IK timeout parameters =====
+    int ik_left_timeout_ms_{100};
+    int ik_right_timeout_ms_{100};
+    // ====================================
 };
 
 int main(int argc, char *argv[])

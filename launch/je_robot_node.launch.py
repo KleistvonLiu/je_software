@@ -24,11 +24,21 @@ def generate_launch_description():
     jump_thr_arg        = DeclareLaunchArgument('oculus_joint_jump_threshold', default_value='0.174') # 5 deg --> 5 / 180 * 3.14 rad
     pose_jump_pos_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_pos', default_value='0.02') # 0.02 m
     pose_jump_rpy_arg   = DeclareLaunchArgument('oculus_pose_jump_threshold_rpy', default_value='0.0348') # 2 deg --> 2 / 180 * 3.14 rad
+    # per-solve IK console logging
+    ik_log_arg = DeclareLaunchArgument('ik_log', default_value='true')
 
     # -------------------- ZMQ params --------------------
     robot_ip_arg  = DeclareLaunchArgument('robot_ip',  default_value='192.168.0.99')
     pub_port_arg  = DeclareLaunchArgument('pub_port',  default_value='8001')
     sub_port_arg  = DeclareLaunchArgument('sub_port',  default_value='8000')
+
+    # -------------------- IK YAML paths (per-arm) --------------------
+    ik_left_yaml_path_arg = DeclareLaunchArgument(
+        'ik_left_yaml_path',
+        default_value='/home/test/ros2_ws/src/je_software/config/ik_para_left.yaml')
+    ik_right_yaml_path_arg = DeclareLaunchArgument(
+        'ik_right_yaml_path',
+        default_value='/home/test/ros2_ws/src/je_software/config/ik_para_right.yaml')
 
     # 你的节点（按需改 package / executable）
     node = Node(
@@ -57,6 +67,9 @@ def generate_launch_description():
                 "robot_ip": LaunchConfiguration("robot_ip"),
                 "pub_port": LaunchConfiguration("pub_port"),
                 "sub_port": LaunchConfiguration("sub_port"),
+                "ik_log": ParameterValue(LaunchConfiguration("ik_log"), value_type=bool),
+                "ik_left_yaml_path": LaunchConfiguration("ik_left_yaml_path"),
+                "ik_right_yaml_path": LaunchConfiguration("ik_right_yaml_path"),
             }
         ],
         # 如需 remap，可加：remappings=[('/joint_cmd','/xxx'), ...]
@@ -85,12 +98,15 @@ def generate_launch_description():
         fps_arg,
         dt_arg,
         dt_init_arg,
+        ik_log_arg,
         jump_thr_arg,
         pose_jump_pos_arg,
         pose_jump_rpy_arg,
         robot_ip_arg,
         pub_port_arg,
         sub_port_arg,
+        ik_left_yaml_path_arg,
+        ik_right_yaml_path_arg,
 
         node
     ])

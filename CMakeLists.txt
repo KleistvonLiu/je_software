@@ -97,6 +97,7 @@ list(REMOVE_DUPLICATES JE_ZMQ_INCLUDE_DIRS)
 
 find_package(nlohmann_json REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(pinocchio REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 # ----------------------------
@@ -172,6 +173,7 @@ target_link_libraries(je_robot_node
   PkgConfig::ZMQ
   nlohmann_json::nlohmann_json
   Eigen3::Eigen
+  ik_solver
   ${cpp_typesupport_target}
 )
 
@@ -214,6 +216,27 @@ target_include_directories(jsonl_replayer_node
     ${common_INCLUDE_DIRS}
 )
 
+# ik_solver library
+add_library(ik_solver
+  utils/src/ik_solver.cpp
+)
+
+# Make ik_solver depend on ROS message packages so their headers (e.g. geometry_msgs) are available
+ament_target_dependencies(ik_solver
+  geometry_msgs
+)
+
+target_include_directories(ik_solver
+  PUBLIC
+    utils/include
+  )
+
+target_link_libraries(ik_solver
+  Eigen3::Eigen
+  pinocchio::pinocchio
+  nlohmann_json::nlohmann_json
+)
+
 # ----------------------------
 # Install
 # ----------------------------
@@ -222,6 +245,7 @@ install(TARGETS
   cli_target_publisher
   end_effector_cli
   jsonl_replayer_node
+  ik_solver
   DESTINATION lib/${PROJECT_NAME}
 )
 

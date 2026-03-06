@@ -5,7 +5,10 @@ source /opt/ros/humble/setup.bash
 
 2. 编译
 cd ~/ros2_ws
-colcon build --symlink-install --packages-select je_software je_common
+colcon build --symlink-install --packages-select je_software
+# 带pinocchio的版本
+conda deactivate
+colcon build --symlink-install --packages-select jecommon je_software --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
 
 3. 运行程序
 编译完之后需要
