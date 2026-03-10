@@ -120,6 +120,7 @@ install(PROGRAMS
   scripts/camera_node
   scripts/dynamixel_init_joint_state
   scripts/read_dynamixel_mode
+  scripts/orbbec_intrinsics_validator
   scripts/plot_dynamixel_positions
   scripts/joint_rate_monitor
   scripts/manager_node

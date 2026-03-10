@@ -34,6 +34,7 @@ setup(
             'koch_leader_teleop = je_software.koch_leader_node:main',
             'dynamixel_init_joint_state = je_software.dynamixel_init_joint_state_node:main',
             'camera_node = je_software.camera_node:main',
+            'orbbec_intrinsics_validator = je_software.orbbec_intrinsics_validator_node:main',
             'agilex_robot = je_software.robot_node:main',
             'tactile_sensor = je_software.tactile_sensor_node:main',
             'manager_node = je_software.recorder_manager_node:main',
