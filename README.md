@@ -1,5 +1,5 @@
 1. 进入环境
-conda activate ros2-humble-py310-new
+conda activate ros2-humble-py310
 source ~/ros2_ws/install/setup.bash
 source /opt/ros/humble/setup.bash
 
@@ -33,6 +33,7 @@ ros2 launch je_software jsonl_replayer_node.launch.py\
   send_arm:=left \
   dt_init:=5 \
   target_string:=cmd
+ros2 run orbbec_camera list_devices_node
 
 # 设置串口低延迟模式
 sudo apt install setserial
