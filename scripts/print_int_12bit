@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+import argparse
+
+
+def to_signed_12bit(value: int) -> int:
+    masked = value & 0xFFF
+    if masked & 0x800:
+        return masked - 0x1000
+    return masked
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Print 12-bit representation (two's complement) for an integer."
+    )
+    parser.add_argument("value", type=int, help="Input integer (positive or negative).")
+    args = parser.parse_args()
+
+    value = args.value
+    masked = value & 0xFFF
+    bitstr = f"{masked:012b}"
+
+    print(f"input: {value}")
+    print(f"12-bit value: 0b{bitstr}")
+    print(f"12-bit signed interpretation: {to_signed_12bit(value)}")
+    print("bits (MSB->LSB):")
+    for bit_index in range(11, -1, -1):
+        bit = (masked >> bit_index) & 1
+        print(f"b{bit_index}: {bit}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

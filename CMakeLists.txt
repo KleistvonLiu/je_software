@@ -119,6 +119,10 @@ install(PROGRAMS
   scripts/agilex_robot
   scripts/camera_node
   scripts/dynamixel_init_joint_state
+  scripts/eye_in_hand_calibration
+  scripts/eye_in_hand_validator
+  scripts/eye_to_hand_calibration
+  scripts/hand_eye_calibration
   scripts/read_dynamixel_mode
   scripts/orbbec_intrinsics_validator
   scripts/plot_dynamixel_positions

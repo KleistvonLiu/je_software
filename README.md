@@ -75,6 +75,80 @@ ros2 run je_software joint_rate_monitor --ros-args \
   -p msg_type:=oculus_init_joint_state \
   -p log_period_s:=1.0
 
+# eye-to-hand 标定（默认左臂）
+ros2 run je_software eye_to_hand_calibration --ros-args \
+  -p image_topic:=/camera/color/image_raw \
+  -p camera_info_topic:=/camera/color/camera_info \
+  -p endpose_sub_topic:=/endpose_states_double_arm \
+  -p arm:=left \
+  -p image_is_rectified:=true \
+  -p hand_eye_method:=all \
+  -p min_samples:=12 \
+  -p charuco_config_path:=/path/to/charuco_board.json
+
+# 运行后按键
+# s 或空格: 保存当前样本
+# c: 执行标定并输出结果到 ~/eye_to_hand_calibration/eye_to_hand_calibration_时间戳/
+# r: 清空当前会话已采样样本
+# q: 退出
+
+# eye-in-hand 标定（默认左臂）
+ros2 run je_software eye_in_hand_calibration --ros-args \
+  -p image_topic:=/camera/color/image_raw \
+  -p camera_info_topic:=/camera/color/camera_info \
+  -p endpose_sub_topic:=/endpose_states_double_arm \
+  -p arm:=left \
+  -p gripper_frame:=gripper_link \
+  -p image_is_rectified:=true \
+  -p hand_eye_method:=all \
+  -p min_samples:=12 \
+  -p charuco_config_path:=/path/to/charuco_board.json
+
+# 输出结果到 ~/eye_in_hand_calibration/eye_in_hand_calibration_时间戳/
+# 结果里会包含 gripper_T_camera、base_T_target 和 static_transform_publisher 命令
+
+# eye-in-hand 外参验证，第一层方程一致性验证
+ros2 run je_software eye_in_hand_validator --ros-args \
+  -p mode:=consistency \
+  -p calibration_result_path:=/path/to/eye_in_hand_result.json \
+  -p image_topic:=/camera/color/image_raw \
+  -p camera_info_topic:=/camera/color/camera_info \
+  -p oculus_topic:=/oculus_controllers \
+  -p arm:=left \
+  -p image_is_rectified:=true
+
+# 按键：
+# s 或空格: 保存一个固定姿态样本
+# c: 生成一致性报告
+# r: 清空当前会话样本
+# q: 退出
+# 输出目录：~/eye_in_hand_validation/eye_in_hand_validation_consistency_时间戳/
+# 结果包含 consistency_samples.json、consistency_summary.json/.txt、
+# consistency_overview.png、consistency_region_heatmap.png 和每个样本的 overlay PNG
+
+# eye-in-hand 外参验证，第五层真实空间点位验证
+ros2 run je_software eye_in_hand_validator --ros-args \
+  -p mode:=point_check \
+  -p calibration_result_path:=/path/to/eye_in_hand_result.json \
+  -p image_topic:=/camera/color/image_raw \
+  -p camera_info_topic:=/camera/color/camera_info \
+  -p oculus_topic:=/oculus_controllers \
+  -p arm:=left \
+  -p image_is_rectified:=true \
+  -p point_set:=center_corners \
+  -p charuco_ids_csv:=1,8,15
+
+# 按键：
+# n/p: 切换当前 board 点
+# l: 锁定当前点对应的 base 目标位置
+# m: 人工对点后记录一次测量
+# c: 生成点位验证报告
+# r: 清空当前会话
+# q: 退出
+# 输出目录：~/eye_in_hand_validation/eye_in_hand_validation_point_check_时间戳/
+# 结果包含 point_check_locks.json、point_check_measurements.json、
+# point_check_summary.json/.txt、point_check_overview.png 和每个 lock 的 overlay PNG
+
 orbbec需要在conda环境之外build
 colcon build --event-handlers console_direct+ --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-up-to orbbec_camera
 
