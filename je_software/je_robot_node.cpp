@@ -46,18 +46,20 @@ class JeRobotNode : public rclcpp::Node
 public:
     JeRobotNode()
         : Node("je_robot_node"),
+          joint_cmd_received_(false),
           context_(1),
           publisher_(context_, zmq::socket_type::pub),
           subscriber_(context_, zmq::socket_type::sub),
-          joint_cmd_received_(false),
           state_thread_running_(false)
     {
         // ---------- 声明 & 获取参数 ----------
         this->declare_parameter<std::string>("joint_sub_topic", "/joint_cmd");
         this->declare_parameter<std::string>("end_pose_topic", "/end_pose");
         this->declare_parameter<std::string>("joint_pub_topic", "/joint_states_double_arm");
+        this->declare_parameter<std::string>("endpose_pub_topic", "/endpose_states_double_arm");
         this->declare_parameter<std::string>("oculus_controllers_topic", "/oculus_controllers");
         this->declare_parameter<std::string>("oculus_init_joint_state_topic", "/oculus_init_joint_state");
+        this->declare_parameter<std::string>("pose_frame_id", "base_link");
         this->declare_parameter<double>("fps", 50.0);
 
         // ZMQ 相关参数
@@ -89,10 +91,14 @@ public:
             this->get_parameter("end_pose_topic").as_string();
         std::string joint_pub_topic =
             this->get_parameter("joint_pub_topic").as_string();
+        std::string endpose_pub_topic =
+            this->get_parameter("endpose_pub_topic").as_string();
         std::string oculus_controllers_topic =
             this->get_parameter("oculus_controllers_topic").as_string();
         std::string oculus_init_joint_state_topic =
             this->get_parameter("oculus_init_joint_state_topic").as_string();
+        pose_frame_id_ =
+            this->get_parameter("pose_frame_id").as_string();
         std::string gripper_sub_topic =
             this->get_parameter("gripper_sub_topic").as_string();
         std::string end_effector_mode =
@@ -233,6 +239,14 @@ public:
             joint_pub_topic,
             reliable_qos);
         RCLCPP_INFO(this->get_logger(), "[PUB] joint state: %s", joint_pub_topic.c_str());
+
+        pub_end_pose_state_ = this->create_publisher<common::msg::OculusControllers>(
+            endpose_pub_topic,
+            reliable_qos);
+        RCLCPP_INFO(this->get_logger(),
+                    "[PUB] end pose state: %s (frame_id=%s)",
+                    endpose_pub_topic.c_str(),
+                    pose_frame_id_.c_str());
 
         // ===== NEW: open log file once (optional) =====
         if (log_enabled_)
@@ -527,6 +541,142 @@ private:
         yaw   = ypr[0];
         pitch = ypr[1];
         roll  = ypr[2];
+    }
+
+    static inline void rpy_to_quat(double roll, double pitch, double yaw,
+                                   double &qx, double &qy, double &qz, double &qw)
+    {
+        const double cy = std::cos(yaw * 0.5);
+        const double sy = std::sin(yaw * 0.5);
+        const double cp = std::cos(pitch * 0.5);
+        const double sp = std::sin(pitch * 0.5);
+        const double cr = std::cos(roll * 0.5);
+        const double sr = std::sin(roll * 0.5);
+
+        qw = cr * cp * cy + sr * sp * sy;
+        qx = sr * cp * cy - cr * sp * sy;
+        qy = cr * sp * cy + sr * cp * sy;
+        qz = cr * cp * sy - sr * sp * cy;
+    }
+
+    bool fill_joint_fields(const nlohmann::json &robot,
+                           sensor_msgs::msg::JointState &out,
+                           const char *label) const
+    {
+        if (!robot.contains("Joint"))
+        {
+            return false;
+        }
+
+        auto joint_vec = robot["Joint"].get<std::vector<double>>();
+        if (joint_vec.size() < 7)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "%s joint vector size %zu < 7", label, joint_vec.size());
+            return false;
+        }
+
+        out.name = expected_names_;
+        out.position = joint_vec;
+
+        if (robot.contains("JointVelocity"))
+        {
+            auto vel_vec = robot["JointVelocity"].get<std::vector<double>>();
+            if (vel_vec.size() >= 7)
+            {
+                out.velocity = vel_vec;
+            }
+        }
+
+        if (robot.contains("JointSensorTorque"))
+        {
+            auto eff_vec = robot["JointSensorTorque"].get<std::vector<double>>();
+            if (eff_vec.size() >= 7)
+            {
+                out.effort = eff_vec;
+            }
+        }
+
+        return true;
+    }
+
+    bool fill_gripper_field(const nlohmann::json &robot,
+                            const char *label,
+                            float &out) const
+    {
+        if (!robot.contains("EndEffector") || !robot["EndEffector"].is_object())
+        {
+            return false;
+        }
+        const auto &ee = robot["EndEffector"];
+        if (ee.contains("Valid"))
+        {
+            const bool valid = ee["Valid"].get<bool>();
+            if (!valid)
+            {
+                return false;
+            }
+        }
+        if (!ee.contains("CurrentPosition"))
+        {
+            return false;
+        }
+
+        try
+        {
+            out = static_cast<float>(ee["CurrentPosition"].get<double>());
+            return true;
+        }
+        catch (const std::exception &e)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "%s EndEffector CurrentPosition parse failed: %s",
+                        label, e.what());
+            return false;
+        }
+    }
+
+    bool fill_pose_field(const nlohmann::json &robot,
+                         geometry_msgs::msg::Pose &out,
+                         const char *label) const
+    {
+        if (!robot.contains("Cartesian"))
+        {
+            return false;
+        }
+
+        try
+        {
+            const auto cart = robot.at("Cartesian").get<std::vector<double>>();
+            if (cart.size() < 6)
+            {
+                RCLCPP_WARN(this->get_logger(),
+                            "%s Cartesian vector size %zu < 6",
+                            label,
+                            cart.size());
+                return false;
+            }
+
+            double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
+            rpy_to_quat(cart[3], cart[4], cart[5], qx, qy, qz, qw);
+
+            out.position.x = cart[0];
+            out.position.y = cart[1];
+            out.position.z = cart[2];
+            out.orientation.x = qx;
+            out.orientation.y = qy;
+            out.orientation.z = qz;
+            out.orientation.w = qw;
+            return true;
+        }
+        catch (const std::exception &e)
+        {
+            RCLCPP_WARN(this->get_logger(),
+                        "%s Cartesian parse failed: %s",
+                        label,
+                        e.what());
+            return false;
+        }
     }
 
 
@@ -971,111 +1121,61 @@ private:
 
         try
         {
-            common::msg::OculusInitJointState msg;
-            msg.header.stamp = stamp;  // 用同一个 stamp，便于和日志对齐
-            msg.init = false;
+            common::msg::OculusInitJointState joint_msg;
+            joint_msg.header.stamp = stamp;  // 用同一个 stamp，便于和日志对齐
+            joint_msg.init = false;
 
-            auto fill_joint_fields = [&](const nlohmann::json &robot,
-                                         sensor_msgs::msg::JointState &out,
-                                         const char *label) -> bool
-            {
-                if (!robot.contains("Joint"))
-                {
-                    return false;
-                }
-                auto joint_vec = robot["Joint"].get<std::vector<double>>();
-                if (joint_vec.size() < 7)
-                {
-                    RCLCPP_WARN(this->get_logger(),
-                                "%s joint vector size %zu < 7", label, joint_vec.size());
-                    return false;
-                }
-
-                out.name = expected_names_;
-                out.position = joint_vec;
-
-                if (robot.contains("JointVelocity"))
-                {
-                    auto vel_vec = robot["JointVelocity"].get<std::vector<double>>();
-                    if (vel_vec.size() >= 7)
-                    {
-                        out.velocity = vel_vec;
-                    }
-                }
-
-                if (robot.contains("JointSensorTorque"))
-                {
-                    auto eff_vec = robot["JointSensorTorque"].get<std::vector<double>>();
-                    if (eff_vec.size() >= 7)
-                    {
-                        out.effort = eff_vec;
-                    }
-                }
-
-                return true;
-            };
-
-            auto fill_gripper_field = [&](const nlohmann::json &robot,
-                                          const char *label,
-                                          float &out) -> bool
-            {
-                if (!robot.contains("EndEffector") || !robot["EndEffector"].is_object())
-                {
-                    return false;
-                }
-                const auto &ee = robot["EndEffector"];
-                if (ee.contains("Valid"))
-                {
-                    const bool valid = ee["Valid"].get<bool>();
-                    if (!valid)
-                    {
-                        return false;
-                    }
-                }
-                if (!ee.contains("CurrentPosition"))
-                {
-                    return false;
-                }
-                try
-                {
-                    out = static_cast<float>(ee["CurrentPosition"].get<double>());
-                    return true;
-                }
-                catch (const std::exception &e)
-                {
-                    RCLCPP_WARN(this->get_logger(),
-                                "%s EndEffector CurrentPosition parse failed: %s",
-                                label, e.what());
-                    return false;
-                }
-            };
+            common::msg::OculusControllers pose_msg;
+            pose_msg.header.stamp = stamp;
+            pose_msg.header.frame_id = pose_frame_id_;
 
             if (state_json.contains("Robot0") && state_json["Robot0"].is_object())
             {
-                if (fill_joint_fields(state_json["Robot0"], msg.left, "Robot0"))
+                if (fill_joint_fields(state_json["Robot0"], joint_msg.left, "Robot0"))
                 {
-                    msg.left_valid = true;
+                    joint_msg.left_valid = true;
                 }
-                fill_gripper_field(state_json["Robot0"], "Robot0", msg.left_gripper);
+                fill_gripper_field(state_json["Robot0"], "Robot0", joint_msg.left_gripper);
+                if (fill_pose_field(state_json["Robot0"], pose_msg.left_pose, "Robot0"))
+                {
+                    pose_msg.left_valid = true;
+                }
             }
 
             if (state_json.contains("Robot1") && state_json["Robot1"].is_object())
             {
-                if (fill_joint_fields(state_json["Robot1"], msg.right, "Robot1"))
+                if (fill_joint_fields(state_json["Robot1"], joint_msg.right, "Robot1"))
                 {
-                    msg.right_valid = true;
+                    joint_msg.right_valid = true;
                 }
-                fill_gripper_field(state_json["Robot1"], "Robot1", msg.right_gripper);
+                fill_gripper_field(state_json["Robot1"], "Robot1", joint_msg.right_gripper);
+                if (fill_pose_field(state_json["Robot1"], pose_msg.right_pose, "Robot1"))
+                {
+                    pose_msg.right_valid = true;
+                }
             }
 
-            if (!msg.left_valid && !msg.right_valid)
+            if (joint_msg.left_valid || joint_msg.right_valid)
             {
-                RCLCPP_WARN(this->get_logger(),
-                            "No valid joint vectors found in robot state.");
-                return;
+                pub_joint_state_->publish(joint_msg);
+            }
+            else
+            {
+                RCLCPP_WARN_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 5000,
+                    "No valid joint vectors found in robot state.");
             }
 
-            pub_joint_state_->publish(msg);
+            if (pose_msg.left_valid || pose_msg.right_valid)
+            {
+                pub_end_pose_state_->publish(pose_msg);
+            }
+            else
+            {
+                RCLCPP_WARN_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 5000,
+                    "No valid Cartesian vectors found in robot state.");
+            }
         }
         catch (const std::exception &e)
         {
@@ -1208,6 +1308,7 @@ private:
     rclcpp::Subscription<common::msg::OculusControllers>::SharedPtr sub_oculus_controllers_;
     rclcpp::Subscription<common::msg::OculusInitJointState>::SharedPtr sub_oculus_init_joint_;
     rclcpp::Publisher<common::msg::OculusInitJointState>::SharedPtr pub_joint_state_;
+    rclcpp::Publisher<common::msg::OculusControllers>::SharedPtr pub_end_pose_state_;
 
     std::vector<std::string> expected_names_;
     std::vector<double> current_cmd_joint_;
@@ -1236,6 +1337,7 @@ private:
     double joint_jump_threshold_{0.0};
     double pose_jump_threshold_pos_{0.0};
     double pose_jump_threshold_rpy_{0.0};
+    std::string pose_frame_id_{"base_link"};
 
     std::vector<double> prev_target_left_;
     std::vector<double> prev_target_right_;

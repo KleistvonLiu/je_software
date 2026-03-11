@@ -11,10 +11,13 @@ def generate_launch_description():
     joint_sub_topic_arg = DeclareLaunchArgument('joint_sub_topic', default_value='/joint_cmd')
     end_pose_topic_arg  = DeclareLaunchArgument('end_pose_topic',  default_value='/end_pose')
     joint_pub_topic_arg = DeclareLaunchArgument('joint_pub_topic', default_value='/joint_states_double_arm')
+    endpose_pub_topic_arg = DeclareLaunchArgument(
+        'endpose_pub_topic', default_value='/endpose_states_double_arm')
     oculus_controllers_topic_arg = DeclareLaunchArgument(
         'oculus_controllers_topic', default_value='/oculus_controllers')
     oculus_init_joint_state_topic_arg = DeclareLaunchArgument(
         'oculus_init_joint_state_topic', default_value='/joint_cmd_double_arm')
+    pose_frame_id_arg = DeclareLaunchArgument('pose_frame_id', default_value='base_link')
     gripper_sub_topic_arg = DeclareLaunchArgument(
         'gripper_sub_topic', default_value='/end_effector_cmd_lr')
     end_effector_mode_arg   = DeclareLaunchArgument('end_effector_mode', default_value='msg') # msg or commnad
@@ -41,8 +44,10 @@ def generate_launch_description():
                 "joint_sub_topic": LaunchConfiguration("joint_sub_topic"),
                 "end_pose_topic": LaunchConfiguration("end_pose_topic"),
                 "joint_pub_topic": LaunchConfiguration("joint_pub_topic"),
+                "endpose_pub_topic": LaunchConfiguration("endpose_pub_topic"),
                 "oculus_controllers_topic": LaunchConfiguration("oculus_controllers_topic"),
                 "oculus_init_joint_state_topic": LaunchConfiguration("oculus_init_joint_state_topic"),
+                "pose_frame_id": LaunchConfiguration("pose_frame_id"),
                 "gripper_sub_topic": LaunchConfiguration("gripper_sub_topic"),
                 "end_effector_mode": LaunchConfiguration("end_effector_mode"),
                 "fps": ParameterValue(LaunchConfiguration("fps"), value_type=float),
@@ -78,8 +83,10 @@ def generate_launch_description():
         joint_sub_topic_arg,
         end_pose_topic_arg,
         joint_pub_topic_arg,
+        endpose_pub_topic_arg,
         oculus_controllers_topic_arg,
         oculus_init_joint_state_topic_arg,
+        pose_frame_id_arg,
         gripper_sub_topic_arg,
         end_effector_mode_arg,
         fps_arg,
