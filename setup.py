@@ -37,6 +37,7 @@ setup(
             'eye_in_hand_calibration = je_software.eye_in_hand_calibration_node:main',
             'eye_in_hand_validator = je_software.eye_in_hand_validator_node:main',
             'eye_to_hand_calibration = je_software.eye_to_hand_calibration_node:main',
+            'eye_to_hand_validator = je_software.eye_to_hand_validator_node:main',
             'hand_eye_calibration = je_software.eye_to_hand_calibration_node:main',
             'orbbec_intrinsics_validator = je_software.orbbec_intrinsics_validator_node:main',
             'agilex_robot = je_software.robot_node:main',
