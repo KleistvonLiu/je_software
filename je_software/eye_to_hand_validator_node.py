@@ -886,7 +886,6 @@ class EyeToHandValidatorNode(Node):
         selected = self.board_points[self.selected_point_index]
         assert observation.rvec is not None
         assert observation.tvec is not None
-        assert observation.pose_snapshot is not None
         assert observation.reproj_mean_px is not None
         assert observation.board_center_x_px is not None
         assert observation.board_center_y_px is not None
@@ -896,6 +895,8 @@ class EyeToHandValidatorNode(Node):
 
         rotation_ct, _ = cv2.Rodrigues(observation.rvec)
         t_cam_target = make_transform(rotation_ct, observation.tvec.reshape(3))
+        # Point-check exports base-frame target poses through the calibrated
+        # base_T_camera chain, so no live end-effector pose is required here.
         t_base_target = self.calibration.t_base_cam @ t_cam_target
         p_base_point = transform_point(
             t_base_target,
