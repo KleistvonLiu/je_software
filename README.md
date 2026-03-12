@@ -98,6 +98,49 @@ ros2 run je_software eye_to_hand_calibration --ros-args \
 # r: 清空当前会话已采样样本
 # q: 退出
 
+# eye-to-hand 外参验证，一致性验证（采新样本验证 gripper_T_target 是否稳定）
+ros2 run je_software eye_to_hand_validator --ros-args \
+  -p mode:=consistency \
+  -p calibration_result_path:=/path/to/eye_to_hand_result.json \
+  -p image_topic:=/camera/color/image_raw \
+  -p camera_info_topic:=/camera/color/camera_info \
+  -p endpose_sub_topic:=/endpose_states_double_arm \
+  -p arm:=left \
+  -p image_is_rectified:=true
+
+# 按键：
+# s 或空格: 保存一个新姿态样本
+# c: 生成一致性报告
+# r: 清空当前会话样本
+# q: 退出
+# 输出目录：~/eye_to_hand_validation/eye_to_hand_validation_consistency_时间戳/
+# 结果包含 consistency_samples.json、consistency_summary.json/.txt、
+# consistency_overview.png、consistency_region_heatmap.png 和每个样本的 overlay PNG
+
+# eye-to-hand 外参验证，point check（选点并导出 base 坐标系下的目标位姿）
+ros2 run je_software eye_to_hand_validator --ros-args \
+  -p mode:=point_check \
+  -p calibration_result_path:=/path/to/eye_to_hand_result.json \
+  -p image_topic:=/camera/color/image_raw \
+  -p camera_info_topic:=/camera/color/camera_info \
+  -p endpose_sub_topic:=/endpose_states_double_arm \
+  -p arm:=left \
+  -p image_is_rectified:=true \
+  -p point_set:=center_corners \
+  -p point_z_offset_m:=0.0 \
+  -p charuco_ids_csv:=1,8,15
+
+# 按键：
+# n/p: 切换当前 board 点
+# l / s / 空格: 保存当前点在 base 坐标系下的目标位姿
+# c: 生成目标位姿报告
+# r: 清空当前会话已保存目标
+# q: 退出
+# 输出目录：~/eye_to_hand_validation/eye_to_hand_validation_point_check_时间戳/
+# 结果包含 point_check_targets.json、point_check_summary.json/.txt、
+# point_check_overview.png 和每个目标样本的 overlay PNG
+# point_z_offset_m 会把所有候选点的 z 一起平移到同一个值，适合板前方固定高度的工具点
+
 # eye-in-hand 标定（默认左臂）
 ros2 run je_software eye_in_hand_calibration --ros-args \
   -p image_topic:=/camera/color/image_raw \
@@ -142,6 +185,7 @@ ros2 run je_software eye_in_hand_validator --ros-args \
   -p arm:=left \
   -p image_is_rectified:=true \
   -p point_set:=center_corners \
+  -p point_z_offset_m:=0.0 \
   -p charuco_ids_csv:=1,8,15
 
 # 按键：
@@ -154,6 +198,7 @@ ros2 run je_software eye_in_hand_validator --ros-args \
 # 输出目录：~/eye_in_hand_validation/eye_in_hand_validation_point_check_时间戳/
 # 结果包含 point_check_locks.json、point_check_measurements.json、
 # point_check_summary.json/.txt、point_check_overview.png 和每个 lock 的 overlay PNG
+# point_z_offset_m 会把所有候选点的 z 一起平移到同一个值
 
 orbbec需要在conda环境之外build
 colcon build --event-handlers console_direct+ --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-up-to orbbec_camera

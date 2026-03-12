@@ -69,6 +69,19 @@ class EyeInHandCalibrationResult:
     raw: dict[str, Any]
 
 
+@dataclass
+class EyeToHandCalibrationResult:
+    calibration_path: Path
+    pose_frame_id: str
+    camera_frame_id: str
+    board_config: dict[str, Any]
+    t_base_cam: np.ndarray
+    t_cam_base: np.ndarray
+    t_gripper_target: np.ndarray
+    t_target_gripper: np.ndarray
+    raw: dict[str, Any]
+
+
 def stamp_to_seconds(stamp: Any) -> float:
     return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
@@ -588,16 +601,26 @@ class CharucoBoardHelper:
         *,
         point_set: str,
         extra_charuco_ids: list[int] | None = None,
+        point_z_offset_m: float = 0.0,
     ) -> list[BoardPoint]:
         if point_set != 'center_corners':
             raise ValueError("Only point_set='center_corners' is currently supported.")
 
+        z_offset_m = float(point_z_offset_m)
+
+        def apply_z_offset(point_xyz: np.ndarray) -> np.ndarray:
+            point = np.asarray(point_xyz, dtype=np.float64).reshape(3).copy()
+            point[2] += z_offset_m
+            return point
+
         points = [
             BoardPoint(
                 name='board_center',
-                point_t=np.asarray(
-                    [self.board_width_m * 0.5, self.board_height_m * 0.5, 0.0],
-                    dtype=np.float64,
+                point_t=apply_z_offset(
+                    np.asarray(
+                        [self.board_width_m * 0.5, self.board_height_m * 0.5, 0.0],
+                        dtype=np.float64,
+                    )
                 ),
                 kind='board_center',
             ),
@@ -606,7 +629,7 @@ class CharucoBoardHelper:
             points.append(
                 BoardPoint(
                     name=name,
-                    point_t=np.asarray(point, dtype=np.float64).reshape(3),
+                    point_t=apply_z_offset(point),
                     kind='board_corner',
                 )
             )
@@ -616,7 +639,9 @@ class CharucoBoardHelper:
                 points.append(
                     BoardPoint(
                         name=f'charuco_id_{charuco_id:03d}',
-                        point_t=self.get_charuco_corner_by_id(charuco_id),
+                        point_t=apply_z_offset(
+                            self.get_charuco_corner_by_id(charuco_id)
+                        ),
                         kind='charuco_corner',
                         source_id=int(charuco_id),
                     )
@@ -728,5 +753,50 @@ def load_eye_in_hand_calibration_result(
         board_config=board_config,
         t_gripper_cam=t_gripper_cam,
         t_cam_gripper=invert_transform(t_gripper_cam),
+        raw=payload,
+    )
+
+
+def load_eye_to_hand_calibration_result(
+    calibration_result_path: str | Path,
+) -> EyeToHandCalibrationResult:
+    path = Path(calibration_result_path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f'Calibration result not found: {path}')
+
+    with path.open('r', encoding='utf-8') as file_obj:
+        payload = json.load(file_obj)
+
+    best_result = payload.get('best_result')
+    if not isinstance(best_result, dict):
+        raise ValueError('Calibration result missing best_result.')
+    if 't_base_cam' not in best_result:
+        raise ValueError('Calibration result missing best_result.t_base_cam.')
+    if 't_gripper_target' not in best_result:
+        raise ValueError('Calibration result missing best_result.t_gripper_target.')
+
+    board_config = payload.get('board')
+    if not isinstance(board_config, dict):
+        raise ValueError('Calibration result missing board config.')
+
+    pose_frame_id = str(payload.get('pose_frame_id', '')).strip()
+    camera_frame_id = str(payload.get('camera_frame_id', '')).strip()
+    if not pose_frame_id:
+        raise ValueError('Calibration result missing pose_frame_id.')
+    if not camera_frame_id:
+        raise ValueError('Calibration result missing camera_frame_id.')
+
+    t_base_cam = transform_from_json_dict(best_result['t_base_cam'])
+    t_gripper_target = transform_from_json_dict(best_result['t_gripper_target'])
+
+    return EyeToHandCalibrationResult(
+        calibration_path=path,
+        pose_frame_id=pose_frame_id,
+        camera_frame_id=camera_frame_id,
+        board_config=board_config,
+        t_base_cam=t_base_cam,
+        t_cam_base=invert_transform(t_base_cam),
+        t_gripper_target=t_gripper_target,
+        t_target_gripper=invert_transform(t_gripper_target),
         raw=payload,
     )

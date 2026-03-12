@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,13 +29,13 @@ from je_software.calibration_common import (
     draw_detection_overlay,
     draw_projected_board_point,
     image_msg_to_bgr,
-    load_eye_in_hand_calibration_result,
+    invert_transform,
+    load_eye_to_hand_calibration_result,
     make_transform,
     opencv_supports_charuco,
     pose_to_transform,
     region_bucket_name,
     rotation_error_deg,
-    rotation_matrix_to_quaternion,
     rotation_matrix_to_rpy_deg,
     stamp_to_seconds,
     transform_point,
@@ -46,8 +46,8 @@ matplotlib.use('Agg')
 from matplotlib import pyplot as plt  # noqa: E402
 
 
-SUPPORTED_MODES = ('consistency', 'point_check')
 TOP_WORST_COUNT = 5
+SUPPORTED_MODES = ('consistency', 'point_check')
 
 
 @dataclass
@@ -89,22 +89,19 @@ class ConsistencySample:
     gripper_rpy_deg: np.ndarray
     t_base_gripper: np.ndarray
     t_cam_target: np.ndarray
-    t_base_target: np.ndarray
+    t_gripper_target: np.ndarray
     raw_image_path: str
     overlay_image_path: str
 
 
 @dataclass
-class PointLock:
-    lock_id: int
+class PointTarget:
+    target_index: int
     point_name: str
     point_kind: str
     point_source_id: int | None
     point_t: np.ndarray
     image_stamp_s: float
-    pose_stamp_s: float
-    pose_offset_s: float
-    pose_frame_id: str
     image_width: int
     image_height: int
     charuco_count: int
@@ -115,25 +112,11 @@ class PointLock:
     center_y_norm: float
     center_radius_norm: float
     region_bucket: str
-    t_base_gripper_lock: np.ndarray
-    t_cam_target_lock: np.ndarray
-    p_base_target: np.ndarray
+    t_cam_target: np.ndarray
+    t_base_target: np.ndarray
+    t_base_point: np.ndarray
     raw_image_path: str
     overlay_image_path: str
-
-
-@dataclass
-class PointMeasurement:
-    measurement_index: int
-    lock_id: int
-    point_name: str
-    point_kind: str
-    point_source_id: int | None
-    pose_stamp_s: float
-    pose_frame_id: str
-    p_base_measured: np.ndarray
-    t_base_gripper_meas: np.ndarray
-    error_m: np.ndarray
 
 
 def _stats_mean_std_max(values: np.ndarray) -> dict[str, float]:
@@ -165,9 +148,9 @@ def _float_list(values: np.ndarray) -> list[float]:
     return [float(value) for value in np.asarray(values, dtype=np.float64).reshape(-1)]
 
 
-class EyeInHandValidatorNode(Node):
+class EyeToHandValidatorNode(Node):
     def __init__(self) -> None:
-        super().__init__('eye_in_hand_validator')
+        super().__init__('eye_to_hand_validator')
 
         self._declare_parameters()
 
@@ -182,7 +165,9 @@ class EyeInHandValidatorNode(Node):
         ).strip()
         self.image_topic = str(self.get_parameter('image_topic').value)
         self.camera_info_topic = str(self.get_parameter('camera_info_topic').value)
-        self.oculus_topic = str(self.get_parameter('oculus_topic').value)
+        self.endpose_sub_topic = str(
+            self.get_parameter('endpose_sub_topic').value
+        ).strip()
         self.arm = str(self.get_parameter('arm').value).strip().lower()
         self.output_root = Path(
             str(self.get_parameter('output_dir').value)
@@ -213,21 +198,21 @@ class EyeInHandValidatorNode(Node):
         ).strip()
 
         self._validate_parameters()
-        self.calibration = load_eye_in_hand_calibration_result(
+        self.calibration = load_eye_to_hand_calibration_result(
             self.calibration_result_path
         )
         self.charuco_helper = CharucoBoardHelper.from_board_config(
             self.calibration.board_config
         )
         self._extra_charuco_ids = self._parse_charuco_ids_csv()
-        self.board_points = self.charuco_helper.default_point_set(
+        self.board_points: list[BoardPoint] = self.charuco_helper.default_point_set(
             point_set=self.point_set,
             extra_charuco_ids=self._extra_charuco_ids,
             point_z_offset_m=self.point_z_offset_m,
         )
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        session_name = f'eye_in_hand_validation_{self.mode}_{timestamp}'
+        session_name = f'eye_to_hand_validation_{self.mode}_{timestamp}'
         self.session_dir = self.output_root / session_name
         self.images_dir = self.session_dir / 'images'
         self.images_dir.mkdir(parents=True, exist_ok=True)
@@ -240,16 +225,12 @@ class EyeInHandValidatorNode(Node):
         self.camera_frame_id_live = ''
         self.last_process_time_s = 0.0
         self.total_image_msgs = 0
-        self.last_live_observation: LiveObservation | None = None
-        self.last_status_log_s = 0.0
         self._printed_help = False
         self._fatal_error_message = ''
 
         self.consistency_samples: list[ConsistencySample] = []
-        self.point_locks: list[PointLock] = []
-        self.point_measurements: list[PointMeasurement] = []
+        self.point_targets: list[PointTarget] = []
         self.selected_point_index = 0
-        self.active_lock_id: int | None = None
 
         self.info_sub = self.create_subscription(
             CameraInfo,
@@ -263,20 +244,22 @@ class EyeInHandValidatorNode(Node):
             self._image_callback,
             qos_profile_sensor_data,
         )
-        self.oculus_sub = self.create_subscription(
-            OculusControllers,
-            self.oculus_topic,
-            self._oculus_callback,
-            qos_profile_sensor_data,
-        )
+        self.endpose_sub = None
+        if self.mode == 'consistency':
+            self.endpose_sub = self.create_subscription(
+                OculusControllers,
+                self.endpose_sub_topic,
+                self._endpose_callback,
+                qos_profile_sensor_data,
+            )
         self.status_timer = self.create_timer(2.0, self._status_timer_callback)
 
         self.get_logger().info(
-            'Eye-in-hand validator started: '
+            'Eye-to-hand validator started: '
             f'mode={self.mode}, '
             f'image_topic={self.image_topic}, '
             f'camera_info_topic={self.camera_info_topic}, '
-            f'oculus_topic={self.oculus_topic}, '
+            f'endpose_sub_topic={self.endpose_sub_topic}, '
             f'arm={self.arm}, '
             f'calibration_result={self.calibration.calibration_path}, '
             f'output_dir={self.session_dir}'
@@ -284,7 +267,6 @@ class EyeInHandValidatorNode(Node):
         self.get_logger().info(
             'Loaded calibration frames: '
             f'pose_frame={self.calibration.pose_frame_id}, '
-            f'gripper_frame={self.calibration.gripper_frame}, '
             f'camera_frame={self.calibration.camera_frame_id}'
         )
         if self.mode == 'point_check':
@@ -305,11 +287,11 @@ class EyeInHandValidatorNode(Node):
             'camera_info_topic',
             '/camera/color/camera_info',
         )
-        self.declare_parameter('oculus_topic', '/oculus_controllers')
+        self.declare_parameter('endpose_sub_topic', '/endpose_states_double_arm')
         self.declare_parameter('arm', 'left')
         self.declare_parameter(
             'output_dir',
-            str(Path.home() / 'eye_in_hand_validation'),
+            str(Path.home() / 'eye_to_hand_validation'),
         )
         self.declare_parameter('show_preview', True)
         self.declare_parameter('preview_max_width', 1280)
@@ -328,6 +310,8 @@ class EyeInHandValidatorNode(Node):
             raise ValueError(f'Unsupported mode. Supported values: {supported}.')
         if not self.calibration_result_path:
             raise ValueError('calibration_result_path must not be empty.')
+        if self.mode == 'consistency' and not self.endpose_sub_topic:
+            raise ValueError('endpose_sub_topic must not be empty.')
         if self.arm not in ('left', 'right'):
             raise ValueError("arm must be 'left' or 'right'.")
         if self.process_interval_s <= 0.0:
@@ -347,7 +331,9 @@ class EyeInHandValidatorNode(Node):
         if not self.charuco_ids_csv:
             return []
         values = []
-        max_id = int(self.charuco_helper.charuco_corner_object_points.shape[0]) - 1
+        max_id = int(
+            self.charuco_helper.charuco_corner_object_points.shape[0]
+        ) - 1
         for token in self.charuco_ids_csv.split(','):
             token = token.strip()
             if not token:
@@ -394,7 +380,7 @@ class EyeInHandValidatorNode(Node):
                 f'calibration={self.calibration.camera_frame_id}'
             )
 
-    def _oculus_callback(self, msg: OculusControllers) -> None:
+    def _endpose_callback(self, msg: OculusControllers) -> None:
         use_left = self.arm == 'left'
         pose_valid = bool(msg.left_valid) if use_left else bool(msg.right_valid)
         if not pose_valid:
@@ -443,7 +429,6 @@ class EyeInHandValidatorNode(Node):
 
         preview_image = bgr_image.copy()
         observation = self._build_live_observation(msg, bgr_image)
-        self.last_live_observation = observation
 
         if observation.detection.marker_ids is not None:
             draw_detection_overlay(preview_image, observation.detection)
@@ -475,7 +460,7 @@ class EyeInHandValidatorNode(Node):
         self._draw_status_overlay(preview_image, observation)
         if self.show_preview:
             display_image = self._resize_for_preview(preview_image)
-            cv2.imshow('Eye-In-Hand Validator', display_image)
+            cv2.imshow('Eye-To-Hand Validation', display_image)
             self._handle_preview_key(observation, preview_image)
 
     def _build_live_observation(
@@ -489,10 +474,10 @@ class EyeInHandValidatorNode(Node):
             camera_matrix=self.camera_matrix,
             dist_coeffs=self.dist_coeffs,
         )
-
         rvec: np.ndarray | None = None
         tvec: np.ndarray | None = None
         reproj_mean_px: float | None = None
+
         if (
             self.camera_matrix is not None
             and self.dist_coeffs is not None
@@ -566,27 +551,20 @@ class EyeInHandValidatorNode(Node):
             return None, offset_s
         return best_pose, offset_s
 
-    def _latest_pose(self) -> PoseSnapshot | None:
-        if not self.pose_buffer:
-            return None
-        return self.pose_buffer[-1]
-
     def _status_timer_callback(self) -> None:
         if self._fatal_error_message:
             return
         details = [
             f'camera_info={"yes" if self.camera_matrix is not None else "no"}',
-            f'pose_buffer={len(self.pose_buffer)}',
             f'image_msgs={self.total_image_msgs}',
         ]
         if self.mode == 'consistency':
+            details.append(f'pose_buffer={len(self.pose_buffer)}')
             details.append(f'samples={len(self.consistency_samples)}')
         else:
-            details.append(f'locks={len(self.point_locks)}')
-            details.append(f'measurements={len(self.point_measurements)}')
-            details.append(f'selected={self.board_points[self.selected_point_index].name}')
+            details.append(f'targets={len(self.point_targets)}')
             details.append(
-                f'active_lock={self.active_lock_id if self.active_lock_id is not None else "none"}'
+                f'selected={self.board_points[self.selected_point_index].name}'
             )
         self.get_logger().info('Status: ' + ', '.join(details))
 
@@ -600,14 +578,24 @@ class EyeInHandValidatorNode(Node):
             marker_count = int(observation.detection.marker_ids.shape[0])
 
         lines = [
-            f'mode: {self.mode}',
             f'camera_info: {"ready" if self.camera_matrix is not None else "waiting"}',
-            f'pose_buffer: {len(self.pose_buffer)}  image_msgs: {self.total_image_msgs}',
             f'markers: {marker_count}  charuco: {observation.detection.charuco_count}',
             f'pose_frame: {self.pose_frame_id_live or "waiting"}',
             f'camera_frame: {self.camera_frame_id_live or "waiting"}',
-            f'calib gripper_frame: {self.calibration.gripper_frame}',
         ]
+        if self.mode == 'consistency':
+            lines.insert(
+                1,
+                f'pose_buffer: {len(self.pose_buffer)}  samples: {len(self.consistency_samples)}',
+            )
+        else:
+            lines.insert(
+                1,
+                f'targets: {len(self.point_targets)}',
+            )
+            lines.append(
+                f'selected_point: {self.board_points[self.selected_point_index].name}'
+            )
         if observation.reproj_mean_px is not None:
             lines.append(f'reproj: {observation.reproj_mean_px:.3f}px')
         else:
@@ -616,17 +604,10 @@ class EyeInHandValidatorNode(Node):
             lines.append(f'pose_dt: {observation.pose_offset_s * 1000.0:.1f} ms')
         else:
             lines.append('pose_dt: n/a')
-
         if self.mode == 'consistency':
-            lines.append(f'captured_samples: {len(self.consistency_samples)}')
             lines.append('keys: s/space=sample  c=report  r=reset  q=quit')
         else:
-            selected = self.board_points[self.selected_point_index]
-            lines.append(f'selected_point: {selected.name}')
-            lines.append(f'locks: {len(self.point_locks)}  measures: {len(self.point_measurements)}')
-            lines.append(
-                'keys: n/p=point  l=lock  m=measure  c=report  r=reset  q=quit'
-            )
+            lines.append('keys: n/p=point  s/space/l=save  c=report  r=reset  q=quit')
 
         origin_x = 16
         origin_y = 28
@@ -682,55 +663,54 @@ class EyeInHandValidatorNode(Node):
             self._log_help_once(force=True)
             return
         if key == ord('r'):
-            self._reset_session()
+            if self.mode == 'consistency':
+                self.consistency_samples.clear()
+                self._write_consistency_samples_snapshot()
+                self.get_logger().info('Cleared consistency samples.')
+            else:
+                self.point_targets.clear()
+                self._write_point_target_snapshot()
+                self.get_logger().info('Cleared point-check targets.')
             return
-
         if self.mode == 'consistency':
             if key in (ord('s'), ord(' ')):
                 self._capture_consistency_sample(observation, preview_image)
-            elif key == ord('c'):
+                return
+            if key == ord('c'):
                 self._generate_consistency_report()
-        else:
-            if key == ord('n'):
-                self.selected_point_index = (
-                    self.selected_point_index + 1
-                ) % len(self.board_points)
-                self.get_logger().info(
-                    f'Selected point: {self.board_points[self.selected_point_index].name}'
-                )
-            elif key == ord('p'):
-                self.selected_point_index = (
-                    self.selected_point_index - 1
-                ) % len(self.board_points)
-                self.get_logger().info(
-                    f'Selected point: {self.board_points[self.selected_point_index].name}'
-                )
-            elif key == ord('l'):
-                self._lock_point(observation, preview_image)
-            elif key == ord('m'):
-                self._record_point_measurement()
-            elif key == ord('c'):
-                self._generate_point_check_report()
-
-    def _reset_session(self) -> None:
-        if self.mode == 'consistency':
-            self.consistency_samples.clear()
-            self._write_consistency_samples_snapshot()
-            self.get_logger().info('Cleared consistency samples.')
             return
-        self.point_locks.clear()
-        self.point_measurements.clear()
-        self.active_lock_id = None
-        self._write_point_lock_snapshot()
-        self._write_point_measurement_snapshot()
-        self.get_logger().info('Cleared point-check locks and measurements.')
+
+        if key == ord('n'):
+            self.selected_point_index = (
+                self.selected_point_index + 1
+            ) % len(self.board_points)
+            self.get_logger().info(
+                f'Selected point: {self.board_points[self.selected_point_index].name}'
+            )
+            return
+        if key == ord('p'):
+            self.selected_point_index = (
+                self.selected_point_index - 1
+            ) % len(self.board_points)
+            self.get_logger().info(
+                f'Selected point: {self.board_points[self.selected_point_index].name}'
+            )
+            return
+        if key in (ord('l'), ord('s'), ord(' ')):
+            self._save_point_target(observation, preview_image)
+            return
+        if key == ord('c'):
+            self._generate_point_check_report()
 
     def _capture_consistency_sample(
         self,
         observation: LiveObservation,
         preview_image: np.ndarray,
     ) -> None:
-        rejection = self._validate_visual_sample(observation)
+        rejection = self._validate_visual_sample(
+            observation,
+            require_pose=True,
+        )
         if rejection is not None:
             self.get_logger().warn(f'Capture rejected: {rejection}')
             return
@@ -747,9 +727,9 @@ class EyeInHandValidatorNode(Node):
 
         rotation_ct, _ = cv2.Rodrigues(observation.rvec)
         t_cam_target = make_transform(rotation_ct, observation.tvec.reshape(3))
-        t_base_target = (
-            observation.pose_snapshot.transform
-            @ self.calibration.t_gripper_cam
+        t_gripper_target = (
+            invert_transform(observation.pose_snapshot.transform)
+            @ self.calibration.t_base_cam
             @ t_cam_target
         )
         region_bucket = region_bucket_name(
@@ -761,7 +741,9 @@ class EyeInHandValidatorNode(Node):
         )
 
         sample_index = len(self.consistency_samples)
-        raw_image_path = self.images_dir / f'consistency_sample_{sample_index:03d}_raw.png'
+        raw_image_path = (
+            self.images_dir / f'consistency_sample_{sample_index:03d}_raw.png'
+        )
         overlay_image_path = (
             self.images_dir / f'consistency_sample_{sample_index:03d}_overlay.png'
         )
@@ -787,7 +769,7 @@ class EyeInHandValidatorNode(Node):
             gripper_rpy_deg=gripper_rpy_deg,
             t_base_gripper=observation.pose_snapshot.transform.copy(),
             t_cam_target=t_cam_target,
-            t_base_target=t_base_target,
+            t_gripper_target=t_gripper_target,
             raw_image_path=str(raw_image_path),
             overlay_image_path=str(overlay_image_path),
         )
@@ -801,127 +783,11 @@ class EyeInHandValidatorNode(Node):
             f'region={sample.region_bucket}'
         )
 
-    def _lock_point(
-        self,
-        observation: LiveObservation,
-        preview_image: np.ndarray,
-    ) -> None:
-        rejection = self._validate_visual_sample(observation)
-        if rejection is not None:
-            self.get_logger().warn(f'Lock rejected: {rejection}')
-            return
-
-        selected = self.board_points[self.selected_point_index]
-        assert observation.rvec is not None
-        assert observation.tvec is not None
-        assert observation.pose_snapshot is not None
-        assert observation.reproj_mean_px is not None
-        assert observation.board_center_x_px is not None
-        assert observation.board_center_y_px is not None
-        assert observation.center_x_norm is not None
-        assert observation.center_y_norm is not None
-        assert observation.center_radius_norm is not None
-
-        rotation_ct, _ = cv2.Rodrigues(observation.rvec)
-        t_cam_target = make_transform(rotation_ct, observation.tvec.reshape(3))
-        p_base_target = transform_point(
-            observation.pose_snapshot.transform
-            @ self.calibration.t_gripper_cam
-            @ t_cam_target,
-            selected.point_t,
-        )
-        region_bucket = region_bucket_name(
-            observation.center_x_norm,
-            observation.center_y_norm,
-        )
-
-        lock_id = len(self.point_locks)
-        raw_image_path = self.images_dir / f'point_lock_{lock_id:03d}_raw.png'
-        overlay_image_path = self.images_dir / f'point_lock_{lock_id:03d}_overlay.png'
-        cv2.imwrite(str(raw_image_path), observation.bgr_image)
-        cv2.imwrite(str(overlay_image_path), preview_image)
-
-        lock = PointLock(
-            lock_id=lock_id,
-            point_name=selected.name,
-            point_kind=selected.kind,
-            point_source_id=selected.source_id,
-            point_t=selected.point_t.copy(),
-            image_stamp_s=observation.image_stamp_s,
-            pose_stamp_s=observation.pose_snapshot.stamp_s,
-            pose_offset_s=float(observation.pose_offset_s or 0.0),
-            pose_frame_id=observation.pose_snapshot.frame_id,
-            image_width=observation.image_width,
-            image_height=observation.image_height,
-            charuco_count=int(observation.detection.charuco_count),
-            reproj_mean_px=float(observation.reproj_mean_px),
-            board_center_x_px=float(observation.board_center_x_px),
-            board_center_y_px=float(observation.board_center_y_px),
-            center_x_norm=float(observation.center_x_norm),
-            center_y_norm=float(observation.center_y_norm),
-            center_radius_norm=float(observation.center_radius_norm),
-            region_bucket=region_bucket,
-            t_base_gripper_lock=observation.pose_snapshot.transform.copy(),
-            t_cam_target_lock=t_cam_target,
-            p_base_target=p_base_target,
-            raw_image_path=str(raw_image_path),
-            overlay_image_path=str(overlay_image_path),
-        )
-        self.point_locks.append(lock)
-        self.active_lock_id = lock.lock_id
-        self._write_point_lock_snapshot()
-        self.get_logger().info(
-            'Locked point '
-            f'#{lock.lock_id}: {lock.point_name}, '
-            f'target_base=[{lock.p_base_target[0]:.6f}, '
-            f'{lock.p_base_target[1]:.6f}, {lock.p_base_target[2]:.6f}] m'
-        )
-
-    def _record_point_measurement(self) -> None:
-        active_lock = self._active_lock()
-        if active_lock is None:
-            self.get_logger().warn('Measurement rejected: no active lock.')
-            return
-
-        pose_snapshot = self._latest_pose()
-        if pose_snapshot is None:
-            self.get_logger().warn('Measurement rejected: no live end-effector pose.')
-            return
-        if pose_snapshot.frame_id != self.calibration.pose_frame_id:
-            self._shutdown_with_error(
-                'pose_frame_id mismatch during measurement: '
-                f'live={pose_snapshot.frame_id}, '
-                f'calibration={self.calibration.pose_frame_id}'
-            )
-            return
-
-        p_base_measured = pose_snapshot.transform[:3, 3].copy()
-        error_m = p_base_measured - active_lock.p_base_target
-        measurement = PointMeasurement(
-            measurement_index=len(self.point_measurements),
-            lock_id=active_lock.lock_id,
-            point_name=active_lock.point_name,
-            point_kind=active_lock.point_kind,
-            point_source_id=active_lock.point_source_id,
-            pose_stamp_s=pose_snapshot.stamp_s,
-            pose_frame_id=pose_snapshot.frame_id,
-            p_base_measured=p_base_measured,
-            t_base_gripper_meas=pose_snapshot.transform.copy(),
-            error_m=error_m,
-        )
-        self.point_measurements.append(measurement)
-        self._write_point_measurement_snapshot()
-        self.get_logger().info(
-            'Recorded measurement '
-            f'#{measurement.measurement_index} for lock #{measurement.lock_id}: '
-            f'error_mm=[{error_m[0] * 1000.0:.2f}, '
-            f'{error_m[1] * 1000.0:.2f}, {error_m[2] * 1000.0:.2f}], '
-            f'norm={np.linalg.norm(error_m) * 1000.0:.2f}'
-        )
-
     def _validate_visual_sample(
         self,
         observation: LiveObservation,
+        *,
+        require_pose: bool,
     ) -> str | None:
         if observation.rvec is None or observation.tvec is None:
             return 'no valid board pose in current frame'
@@ -932,9 +798,13 @@ class EyeInHandValidatorNode(Node):
                 f'reprojection error {observation.reproj_mean_px:.3f}px > '
                 f'{self.max_reproj_error_px:.3f}px'
             )
-        if observation.pose_snapshot is None:
+        if require_pose and observation.pose_snapshot is None:
             return 'no synchronized end-effector pose'
-        if observation.pose_snapshot.frame_id != self.calibration.pose_frame_id:
+        if (
+            require_pose
+            and observation.pose_snapshot is not None
+            and observation.pose_snapshot.frame_id != self.calibration.pose_frame_id
+        ):
             return (
                 'pose_frame_id mismatch: '
                 f'live={observation.pose_snapshot.frame_id}, '
@@ -954,10 +824,9 @@ class EyeInHandValidatorNode(Node):
             'calibration_result_path': str(self.calibration.calibration_path),
             'image_topic': self.image_topic,
             'camera_info_topic': self.camera_info_topic,
-            'oculus_topic': self.oculus_topic,
+            'endpose_sub_topic': self.endpose_sub_topic,
             'arm': self.arm,
             'pose_frame_id': self.calibration.pose_frame_id,
-            'gripper_frame': self.calibration.gripper_frame,
             'camera_frame_id': self.calibration.camera_frame_id,
             'sample_count': len(self.consistency_samples),
             'samples': [
@@ -993,7 +862,7 @@ class EyeInHandValidatorNode(Node):
             'gripper_rpy_deg': _float_list(sample.gripper_rpy_deg),
             't_base_gripper': transform_to_json_dict(sample.t_base_gripper),
             't_cam_target': transform_to_json_dict(sample.t_cam_target),
-            't_base_target': transform_to_json_dict(sample.t_base_target),
+            't_gripper_target': transform_to_json_dict(sample.t_gripper_target),
             'raw_image_path': sample.raw_image_path,
             'overlay_image_path': sample.overlay_image_path,
         }
@@ -1001,89 +870,135 @@ class EyeInHandValidatorNode(Node):
             payload['report_metrics'] = per_sample_metrics[sample.sample_index]
         return payload
 
-    def _write_point_lock_snapshot(self) -> None:
+    def _save_point_target(
+        self,
+        observation: LiveObservation,
+        preview_image: np.ndarray,
+    ) -> None:
+        rejection = self._validate_visual_sample(
+            observation,
+            require_pose=False,
+        )
+        if rejection is not None:
+            self.get_logger().warn(f'Measurement rejected: {rejection}')
+            return
+
+        selected = self.board_points[self.selected_point_index]
+        assert observation.rvec is not None
+        assert observation.tvec is not None
+        assert observation.pose_snapshot is not None
+        assert observation.reproj_mean_px is not None
+        assert observation.board_center_x_px is not None
+        assert observation.board_center_y_px is not None
+        assert observation.center_x_norm is not None
+        assert observation.center_y_norm is not None
+        assert observation.center_radius_norm is not None
+
+        rotation_ct, _ = cv2.Rodrigues(observation.rvec)
+        t_cam_target = make_transform(rotation_ct, observation.tvec.reshape(3))
+        t_base_target = self.calibration.t_base_cam @ t_cam_target
+        p_base_point = transform_point(
+            t_base_target,
+            selected.point_t,
+        )
+        t_base_point = make_transform(
+            t_base_target[:3, :3],
+            p_base_point,
+        )
+        region_bucket = region_bucket_name(
+            observation.center_x_norm,
+            observation.center_y_norm,
+        )
+
+        target_index = len(self.point_targets)
+        raw_image_path = (
+            self.images_dir / f'point_target_{target_index:03d}_raw.png'
+        )
+        overlay_image_path = (
+            self.images_dir / f'point_target_{target_index:03d}_overlay.png'
+        )
+        cv2.imwrite(str(raw_image_path), observation.bgr_image)
+        cv2.imwrite(str(overlay_image_path), preview_image)
+
+        target = PointTarget(
+            target_index=target_index,
+            point_name=selected.name,
+            point_kind=selected.kind,
+            point_source_id=selected.source_id,
+            point_t=selected.point_t.copy(),
+            image_stamp_s=observation.image_stamp_s,
+            image_width=observation.image_width,
+            image_height=observation.image_height,
+            charuco_count=int(observation.detection.charuco_count),
+            reproj_mean_px=float(observation.reproj_mean_px),
+            board_center_x_px=float(observation.board_center_x_px),
+            board_center_y_px=float(observation.board_center_y_px),
+            center_x_norm=float(observation.center_x_norm),
+            center_y_norm=float(observation.center_y_norm),
+            center_radius_norm=float(observation.center_radius_norm),
+            region_bucket=region_bucket,
+            t_cam_target=t_cam_target,
+            t_base_target=t_base_target,
+            t_base_point=t_base_point,
+            raw_image_path=str(raw_image_path),
+            overlay_image_path=str(overlay_image_path),
+        )
+        self.point_targets.append(target)
+        self._write_point_target_snapshot()
+        self.get_logger().info(
+            'Saved point target '
+            f'#{target.target_index} ({target.point_name}): '
+            f't=[{target.t_base_point[0, 3]:.6f}, '
+            f'{target.t_base_point[1, 3]:.6f}, {target.t_base_point[2, 3]:.6f}] m'
+        )
+
+    def _write_point_target_snapshot(self) -> None:
         payload = {
             'created_at': datetime.now().isoformat(),
             'mode': 'point_check',
             'calibration_result_path': str(self.calibration.calibration_path),
             'image_topic': self.image_topic,
             'camera_info_topic': self.camera_info_topic,
-            'oculus_topic': self.oculus_topic,
             'arm': self.arm,
             'pose_frame_id': self.calibration.pose_frame_id,
-            'gripper_frame': self.calibration.gripper_frame,
             'camera_frame_id': self.calibration.camera_frame_id,
-            'active_lock_id': self.active_lock_id,
-            'lock_count': len(self.point_locks),
-            'locks': [self._point_lock_to_json(lock) for lock in self.point_locks],
-        }
-        output_path = self.session_dir / 'point_check_locks.json'
-        with output_path.open('w', encoding='utf-8') as file_obj:
-            json.dump(payload, file_obj, ensure_ascii=True, indent=2)
-
-    def _point_lock_to_json(self, lock: PointLock) -> dict[str, Any]:
-        return {
-            'lock_id': int(lock.lock_id),
-            'point_name': lock.point_name,
-            'point_kind': lock.point_kind,
-            'point_source_id': lock.point_source_id,
-            'point_t': _float_list(lock.point_t),
-            'image_stamp_s': float(lock.image_stamp_s),
-            'pose_stamp_s': float(lock.pose_stamp_s),
-            'pose_offset_s': float(lock.pose_offset_s),
-            'pose_frame_id': lock.pose_frame_id,
-            'image_width': int(lock.image_width),
-            'image_height': int(lock.image_height),
-            'charuco_count': int(lock.charuco_count),
-            'reproj_mean_px': float(lock.reproj_mean_px),
-            'board_center_x_px': float(lock.board_center_x_px),
-            'board_center_y_px': float(lock.board_center_y_px),
-            'center_x_norm': float(lock.center_x_norm),
-            'center_y_norm': float(lock.center_y_norm),
-            'center_radius_norm': float(lock.center_radius_norm),
-            'region_bucket': lock.region_bucket,
-            't_base_gripper_lock': transform_to_json_dict(lock.t_base_gripper_lock),
-            't_cam_target_lock': transform_to_json_dict(lock.t_cam_target_lock),
-            'p_base_target': _float_list(lock.p_base_target),
-            'raw_image_path': lock.raw_image_path,
-            'overlay_image_path': lock.overlay_image_path,
-        }
-
-    def _write_point_measurement_snapshot(self) -> None:
-        payload = {
-            'created_at': datetime.now().isoformat(),
-            'mode': 'point_check',
-            'calibration_result_path': str(self.calibration.calibration_path),
-            'measurement_count': len(self.point_measurements),
-            'measurements': [
-                self._point_measurement_to_json(measurement)
-                for measurement in self.point_measurements
+            'selected_point_name': self.board_points[self.selected_point_index].name,
+            'target_count': len(self.point_targets),
+            'targets': [
+                self._point_target_to_json(target)
+                for target in self.point_targets
             ],
         }
-        output_path = self.session_dir / 'point_check_measurements.json'
+        output_path = self.session_dir / 'point_check_targets.json'
         with output_path.open('w', encoding='utf-8') as file_obj:
             json.dump(payload, file_obj, ensure_ascii=True, indent=2)
 
-    def _point_measurement_to_json(
+    def _point_target_to_json(
         self,
-        measurement: PointMeasurement,
+        target: PointTarget,
     ) -> dict[str, Any]:
-        error_norm_mm = float(np.linalg.norm(measurement.error_m) * 1000.0)
         return {
-            'measurement_index': int(measurement.measurement_index),
-            'lock_id': int(measurement.lock_id),
-            'point_name': measurement.point_name,
-            'point_kind': measurement.point_kind,
-            'point_source_id': measurement.point_source_id,
-            'pose_stamp_s': float(measurement.pose_stamp_s),
-            'pose_frame_id': measurement.pose_frame_id,
-            'p_base_measured': _float_list(measurement.p_base_measured),
-            't_base_gripper_meas': transform_to_json_dict(
-                measurement.t_base_gripper_meas
-            ),
-            'error_m': _float_list(measurement.error_m),
-            'error_mm': _float_list(measurement.error_m * 1000.0),
-            'error_norm_mm': error_norm_mm,
+            'target_index': int(target.target_index),
+            'point_name': target.point_name,
+            'point_kind': target.point_kind,
+            'point_source_id': target.point_source_id,
+            'point_t': _float_list(target.point_t),
+            'image_stamp_s': float(target.image_stamp_s),
+            'image_width': int(target.image_width),
+            'image_height': int(target.image_height),
+            'charuco_count': int(target.charuco_count),
+            'reproj_mean_px': float(target.reproj_mean_px),
+            'board_center_x_px': float(target.board_center_x_px),
+            'board_center_y_px': float(target.board_center_y_px),
+            'center_x_norm': float(target.center_x_norm),
+            'center_y_norm': float(target.center_y_norm),
+            'center_radius_norm': float(target.center_radius_norm),
+            'region_bucket': target.region_bucket,
+            't_cam_target': transform_to_json_dict(target.t_cam_target),
+            't_base_target': transform_to_json_dict(target.t_base_target),
+            't_base_point': transform_to_json_dict(target.t_base_point),
+            'raw_image_path': target.raw_image_path,
+            'overlay_image_path': target.overlay_image_path,
         }
 
     def _generate_consistency_report(self) -> None:
@@ -1091,36 +1006,92 @@ class EyeInHandValidatorNode(Node):
             self.get_logger().warn('No consistency samples captured yet.')
             return
 
-        transforms = [sample.t_base_target for sample in self.consistency_samples]
+        transforms = [
+            sample.t_gripper_target for sample in self.consistency_samples
+        ]
         t_mean = average_transforms(transforms)
         mean_translation = t_mean[:3, 3]
+        calibration_translation = self.calibration.t_gripper_target[:3, 3]
         residual_vectors_m = np.asarray(
-            [sample.t_base_target[:3, 3] - mean_translation for sample in self.consistency_samples],
+            [
+                sample.t_gripper_target[:3, 3] - mean_translation
+                for sample in self.consistency_samples
+            ],
             dtype=np.float64,
         )
         residual_norms_mm = np.linalg.norm(residual_vectors_m, axis=1) * 1000.0
         rotation_errors_deg = np.asarray(
             [
-                rotation_error_deg(t_mean[:3, :3], sample.t_base_target[:3, :3])
+                rotation_error_deg(
+                    t_mean[:3, :3],
+                    sample.t_gripper_target[:3, :3],
+                )
                 for sample in self.consistency_samples
             ],
             dtype=np.float64,
         )
+        error_to_calibration_mm = np.asarray(
+            [
+                np.linalg.norm(
+                    sample.t_gripper_target[:3, 3] - calibration_translation
+                )
+                * 1000.0
+                for sample in self.consistency_samples
+            ],
+            dtype=np.float64,
+        )
+        rotation_to_calibration_deg = np.asarray(
+            [
+                rotation_error_deg(
+                    self.calibration.t_gripper_target[:3, :3],
+                    sample.t_gripper_target[:3, :3],
+                )
+                for sample in self.consistency_samples
+            ],
+            dtype=np.float64,
+        )
+        mean_to_calibration_vector_m = mean_translation - calibration_translation
+        mean_to_calibration_norm_mm = float(
+            np.linalg.norm(mean_to_calibration_vector_m) * 1000.0
+        )
+        mean_to_calibration_rotation_deg = float(
+            rotation_error_deg(
+                self.calibration.t_gripper_target[:3, :3],
+                t_mean[:3, :3],
+            )
+        )
 
         per_sample_metrics: dict[int, dict[str, Any]] = {}
-        for sample, residual_vector_m, residual_norm_mm, rot_error_deg in zip(
+        for (
+            sample,
+            residual_vector_m,
+            residual_norm_mm,
+            rot_error_deg,
+            translation_to_calibration_mm,
+            rotation_to_calibration_deg,
+        ) in zip(
             self.consistency_samples,
             residual_vectors_m,
             residual_norms_mm,
             rotation_errors_deg,
+            error_to_calibration_mm,
+            rotation_to_calibration_deg,
         ):
             per_sample_metrics[sample.sample_index] = {
                 'translation_residual_mm': _float_list(residual_vector_m * 1000.0),
                 'translation_residual_norm_mm': float(residual_norm_mm),
                 'rotation_error_to_mean_deg': float(rot_error_deg),
+                'translation_error_to_calibration_mm': float(
+                    translation_to_calibration_mm
+                ),
+                'rotation_error_to_calibration_deg': float(
+                    rotation_to_calibration_deg
+                ),
             }
 
-        region_metrics: dict[str, list[float]] = {bucket: [] for bucket in REGION_BUCKETS}
+        region_metrics: dict[str, list[float]] = {
+            bucket: [] for bucket in REGION_BUCKETS
+        }
         for sample, residual_norm_mm in zip(
             self.consistency_samples,
             residual_norms_mm,
@@ -1180,14 +1151,23 @@ class EyeInHandValidatorNode(Node):
             'calibration_result_path': str(self.calibration.calibration_path),
             'image_topic': self.image_topic,
             'camera_info_topic': self.camera_info_topic,
-            'oculus_topic': self.oculus_topic,
+            'endpose_sub_topic': self.endpose_sub_topic,
             'arm': self.arm,
             'pose_frame_id': self.calibration.pose_frame_id,
-            'gripper_frame': self.calibration.gripper_frame,
             'camera_frame_id': self.calibration.camera_frame_id,
             'sample_count': len(self.consistency_samples),
-            't_base_target_mean': transform_to_json_dict(t_mean),
+            'calibration_t_gripper_target': transform_to_json_dict(
+                self.calibration.t_gripper_target
+            ),
+            't_gripper_target_mean': transform_to_json_dict(t_mean),
             'translation_mean_m': _float_list(mean_translation),
+            'translation_mean_to_calibration_mm': _float_list(
+                mean_to_calibration_vector_m * 1000.0
+            ),
+            'translation_mean_to_calibration_norm_mm': (
+                mean_to_calibration_norm_mm
+            ),
+            'rotation_mean_to_calibration_deg': mean_to_calibration_rotation_deg,
             'translation_axis_std_mm': {
                 axis: values['std']
                 for axis, values in _stats_xyz_mm(residual_vectors_m).items()
@@ -1197,10 +1177,13 @@ class EyeInHandValidatorNode(Node):
                 for axis, values in _stats_xyz_mm(residual_vectors_m).items()
             },
             'translation_residual_norm_mm': _stats_mean_std_max(residual_norms_mm),
-            'rotation_mean_quaternion_xyzw': _float_list(
-                rotation_matrix_to_quaternion(t_mean[:3, :3])
-            ),
             'rotation_error_to_mean_deg': _stats_mean_std_max(rotation_errors_deg),
+            'translation_error_to_calibration_mm': _stats_mean_std_max(
+                error_to_calibration_mm
+            ),
+            'rotation_error_to_calibration_deg': _stats_mean_std_max(
+                rotation_to_calibration_deg
+            ),
             'region_stats': region_summary,
             'worst_samples': worst_entries,
         }
@@ -1208,6 +1191,7 @@ class EyeInHandValidatorNode(Node):
         summary_path = self.session_dir / 'consistency_summary.json'
         with summary_path.open('w', encoding='utf-8') as file_obj:
             json.dump(summary, file_obj, ensure_ascii=True, indent=2)
+
         self._write_consistency_samples_snapshot(per_sample_metrics)
         self._write_consistency_summary_text(
             summary=summary,
@@ -1232,15 +1216,25 @@ class EyeInHandValidatorNode(Node):
         axis_max = summary['translation_axis_max_abs_dev_mm']
         trans_norm = summary['translation_residual_norm_mm']
         rot_norm = summary['rotation_error_to_mean_deg']
+        trans_to_cal = summary['translation_error_to_calibration_mm']
+        rot_to_cal = summary['rotation_error_to_calibration_deg']
         lines = [
-            f'mode: consistency',
+            'mode: consistency',
             f'calibration_result_path: {self.calibration.calibration_path}',
             f'sample_count: {summary["sample_count"]}',
             f'pose_frame_id: {self.calibration.pose_frame_id}',
-            f'gripper_frame: {self.calibration.gripper_frame}',
             f'camera_frame_id: {self.calibration.camera_frame_id}',
             'translation_mean_m: '
             + json.dumps(summary['translation_mean_m'], ensure_ascii=True),
+            'translation_mean_to_calibration_mm: '
+            + json.dumps(
+                summary['translation_mean_to_calibration_mm'],
+                ensure_ascii=True,
+            ),
+            'translation_mean_to_calibration_norm_mm: '
+            f'{summary["translation_mean_to_calibration_norm_mm"]:.4f}',
+            'rotation_mean_to_calibration_deg: '
+            f'{summary["rotation_mean_to_calibration_deg"]:.4f}',
             'translation_axis_std_mm: '
             f'x={axis_std["x"]:.4f}, y={axis_std["y"]:.4f}, z={axis_std["z"]:.4f}',
             'translation_axis_max_abs_dev_mm: '
@@ -1251,6 +1245,12 @@ class EyeInHandValidatorNode(Node):
             'rotation_error_to_mean_deg: '
             f'mean={rot_norm["mean"]:.4f}, std={rot_norm["std"]:.4f}, '
             f'max={rot_norm["max"]:.4f}',
+            'translation_error_to_calibration_mm: '
+            f'mean={trans_to_cal["mean"]:.4f}, std={trans_to_cal["std"]:.4f}, '
+            f'max={trans_to_cal["max"]:.4f}',
+            'rotation_error_to_calibration_deg: '
+            f'mean={rot_to_cal["mean"]:.4f}, std={rot_to_cal["std"]:.4f}, '
+            f'max={rot_to_cal["max"]:.4f}',
             'region_stats:',
         ]
         for bucket in REGION_BUCKETS:
@@ -1364,7 +1364,8 @@ class EyeInHandValidatorNode(Node):
                 axis.text(
                     col_index,
                     row_index,
-                    f'{heatmap[row_index, col_index]:.2f}\n(n={counts[row_index, col_index]})',
+                    f'{heatmap[row_index, col_index]:.2f}\n'
+                    f'(n={counts[row_index, col_index]})',
                     ha='center',
                     va='center',
                     color='white',
@@ -1379,62 +1380,52 @@ class EyeInHandValidatorNode(Node):
         plt.close(figure)
 
     def _generate_point_check_report(self) -> None:
-        self._write_point_lock_snapshot()
-        self._write_point_measurement_snapshot()
+        self._write_point_target_snapshot()
 
-        if not self.point_measurements:
-            self.get_logger().warn('No point-check measurements recorded yet.')
+        if not self.point_targets:
+            self.get_logger().warn('No point-check targets saved yet.')
             return
 
-        error_vectors_m = np.asarray(
-            [measurement.error_m for measurement in self.point_measurements],
+        base_positions_m = np.asarray(
+            [target.t_base_point[:3, 3] for target in self.point_targets],
             dtype=np.float64,
         )
-        error_norms_mm = np.linalg.norm(error_vectors_m, axis=1) * 1000.0
-        overall_summary = {
-            'count': len(self.point_measurements),
-            'axis_error_mm': _stats_xyz_mm(error_vectors_m),
-            'error_norm_mm': _stats_mean_std_max(error_norms_mm),
-        }
-
         by_point: dict[str, Any] = {}
-        grouped_indices_by_point: dict[str, list[int]] = defaultdict(list)
-        grouped_indices_by_lock: dict[int, list[int]] = defaultdict(list)
-        for index, measurement in enumerate(self.point_measurements):
-            grouped_indices_by_point[measurement.point_name].append(index)
-            grouped_indices_by_lock[measurement.lock_id].append(index)
-
-        for point_name, indices in grouped_indices_by_point.items():
-            vectors = error_vectors_m[indices]
-            norms = error_norms_mm[indices]
-            by_point[point_name] = {
-                'count': len(indices),
-                'axis_error_mm': _stats_xyz_mm(vectors),
-                'error_norm_mm': _stats_mean_std_max(norms),
-            }
-
-        by_lock: dict[str, Any] = {}
-        repeatability_by_lock: dict[str, Any] = {}
-        lock_lookup = {lock.lock_id: lock for lock in self.point_locks}
-        for lock_id, indices in grouped_indices_by_lock.items():
-            vectors = error_vectors_m[indices]
-            norms = error_norms_mm[indices]
-            lock = lock_lookup[lock_id]
-            by_lock[str(lock_id)] = {
-                'count': len(indices),
-                'point_name': lock.point_name,
-                'axis_error_mm': _stats_xyz_mm(vectors),
-                'error_norm_mm': _stats_mean_std_max(norms),
-            }
-            repeatability_by_lock[str(lock_id)] = {
-                'count': len(indices),
-                'point_name': lock.point_name,
-                'axis_std_mm': {
-                    axis: values['std']
-                    for axis, values in _stats_xyz_mm(vectors).items()
+        for target in self.point_targets:
+            entry = by_point.setdefault(
+                target.point_name,
+                {
+                    'count': 0,
+                    'target_indices': [],
+                    'positions_m': [],
                 },
-                'error_norm_std_mm': float(np.std(norms)),
-            }
+            )
+            entry['count'] += 1
+            entry['target_indices'].append(int(target.target_index))
+            entry['positions_m'].append(
+                [float(value) for value in target.t_base_point[:3, 3]]
+            )
+
+        position_min_m = _float_list(np.min(base_positions_m, axis=0))
+        position_max_m = _float_list(np.max(base_positions_m, axis=0))
+        position_span_m = _float_list(
+            np.max(base_positions_m, axis=0) - np.min(base_positions_m, axis=0)
+        )
+
+        summary_targets = []
+        for target in self.point_targets:
+            summary_targets.append(
+                {
+                    'target_index': int(target.target_index),
+                    'point_name': target.point_name,
+                    'point_kind': target.point_kind,
+                    'point_source_id': target.point_source_id,
+                    't_base_point': transform_to_json_dict(target.t_base_point),
+                    'region_bucket': target.region_bucket,
+                    'reproj_mean_px': float(target.reproj_mean_px),
+                    'overlay_image_path': target.overlay_image_path,
+                }
+            )
 
         summary = {
             'created_at': datetime.now().isoformat(),
@@ -1442,17 +1433,15 @@ class EyeInHandValidatorNode(Node):
             'calibration_result_path': str(self.calibration.calibration_path),
             'image_topic': self.image_topic,
             'camera_info_topic': self.camera_info_topic,
-            'oculus_topic': self.oculus_topic,
             'arm': self.arm,
             'pose_frame_id': self.calibration.pose_frame_id,
-            'gripper_frame': self.calibration.gripper_frame,
             'camera_frame_id': self.calibration.camera_frame_id,
-            'lock_count': len(self.point_locks),
-            'measurement_count': len(self.point_measurements),
-            'overall': overall_summary,
+            'target_count': len(self.point_targets),
+            'position_min_m': position_min_m,
+            'position_max_m': position_max_m,
+            'position_span_m': position_span_m,
             'by_point_name': by_point,
-            'by_lock_id': by_lock,
-            'repeatability_by_lock': repeatability_by_lock,
+            'targets': summary_targets,
         }
 
         output_path = self.session_dir / 'point_check_summary.json'
@@ -1460,51 +1449,32 @@ class EyeInHandValidatorNode(Node):
             json.dump(summary, file_obj, ensure_ascii=True, indent=2)
 
         self._write_point_check_summary_text(summary)
-        self._save_point_check_overview_png(
-            error_vectors_m=error_vectors_m,
-            error_norms_mm=error_norms_mm,
-        )
+        self._save_point_check_overview_png(base_positions_m=base_positions_m)
         self.get_logger().info(
             'Point-check report written to '
             f'{self.session_dir / "point_check_summary.json"}'
         )
 
     def _write_point_check_summary_text(self, summary: dict[str, Any]) -> None:
-        overall = summary['overall']
         lines = [
             'mode: point_check',
             f'calibration_result_path: {self.calibration.calibration_path}',
-            f'lock_count: {summary["lock_count"]}',
-            f'measurement_count: {summary["measurement_count"]}',
-            'overall axis_error_mm:',
+            f'target_count: {summary["target_count"]}',
+            'position_min_m: ' + json.dumps(summary['position_min_m'], ensure_ascii=True),
+            'position_max_m: ' + json.dumps(summary['position_max_m'], ensure_ascii=True),
+            'position_span_m: ' + json.dumps(summary['position_span_m'], ensure_ascii=True),
+            'targets:',
         ]
-        for axis, axis_stats in overall['axis_error_mm'].items():
+        for target in summary['targets']:
+            pose = target['t_base_point']
+            translation = pose['translation_m']
+            quaternion = pose['quaternion_xyzw']
             lines.append(
-                f'  {axis}: mean={axis_stats["mean"]:.4f}, '
-                f'std={axis_stats["std"]:.4f}, max_abs={axis_stats["max_abs"]:.4f}'
-            )
-        lines.append(
-            'overall error_norm_mm: '
-            f'mean={overall["error_norm_mm"]["mean"]:.4f}, '
-            f'std={overall["error_norm_mm"]["std"]:.4f}, '
-            f'max={overall["error_norm_mm"]["max"]:.4f}'
-        )
-        lines.append('by_point_name:')
-        for point_name, point_stats in summary['by_point_name'].items():
-            norm = point_stats['error_norm_mm']
-            lines.append(
-                f'  {point_name}: count={point_stats["count"]}, '
-                f'mean_norm={norm["mean"]:.4f}, std_norm={norm["std"]:.4f}, '
-                f'max_norm={norm["max"]:.4f}'
-            )
-        lines.append('repeatability_by_lock:')
-        for lock_id, lock_stats in summary['repeatability_by_lock'].items():
-            axis_std = lock_stats['axis_std_mm']
-            lines.append(
-                f'  lock={lock_id} ({lock_stats["point_name"]}): '
-                f'count={lock_stats["count"]}, '
-                f'std_mm=[{axis_std["x"]:.4f}, {axis_std["y"]:.4f}, {axis_std["z"]:.4f}], '
-                f'norm_std={lock_stats["error_norm_std_mm"]:.4f}'
+                f'  target={target["target_index"]}, point={target["point_name"]}, '
+                f't=[{translation[0]:.6f}, {translation[1]:.6f}, {translation[2]:.6f}], '
+                f'q=[{quaternion[0]:.6f}, {quaternion[1]:.6f}, {quaternion[2]:.6f}, '
+                f'{quaternion[3]:.6f}], reproj={target["reproj_mean_px"]:.4f}px, '
+                f'region={target["region_bucket"]}'
             )
 
         output_path = self.session_dir / 'point_check_summary.txt'
@@ -1514,12 +1484,11 @@ class EyeInHandValidatorNode(Node):
     def _save_point_check_overview_png(
         self,
         *,
-        error_vectors_m: np.ndarray,
-        error_norms_mm: np.ndarray,
+        base_positions_m: np.ndarray,
     ) -> None:
-        error_vectors_mm = error_vectors_m * 1000.0
-        indices = np.arange(len(self.point_measurements), dtype=np.float64)
-        point_names = [measurement.point_name for measurement in self.point_measurements]
+        positions = np.asarray(base_positions_m, dtype=np.float64).reshape(-1, 3)
+        indices = np.arange(len(self.point_targets), dtype=np.float64)
+        point_names = [target.point_name for target in self.point_targets]
         unique_points = list(dict.fromkeys(point_names))
         colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(unique_points))))
         point_to_color = {
@@ -1528,61 +1497,59 @@ class EyeInHandValidatorNode(Node):
         }
 
         figure, axes = plt.subplots(2, 3, figsize=(18, 10))
-        for axis_index, axis_name in enumerate(('x', 'y', 'z')):
-            axis = axes[0, axis_index]
-            for point_name in unique_points:
-                point_indices = [
-                    index
-                    for index, measurement in enumerate(self.point_measurements)
-                    if measurement.point_name == point_name
-                ]
-                axis.scatter(
-                    indices[point_indices],
-                    error_vectors_mm[point_indices, axis_index],
-                    label=point_name,
-                    color=point_to_color[point_name],
-                )
-            axis.axhline(0.0, color='black', linewidth=1.0)
-            axis.set_title(f'{axis_name.upper()} Error')
-            axis.set_xlabel('measurement_index')
-            axis.set_ylabel('error_mm')
-
-        axes[1, 0].axvline(0.0, color='black', linewidth=1.0)
-        axes[1, 0].axhline(0.0, color='black', linewidth=1.0)
         for point_name in unique_points:
             point_indices = [
                 index
-                for index, measurement in enumerate(self.point_measurements)
-                if measurement.point_name == point_name
+                for index, target in enumerate(self.point_targets)
+                if target.point_name == point_name
             ]
-            axes[1, 0].scatter(
-                error_vectors_mm[point_indices, 0],
-                error_vectors_mm[point_indices, 1],
+            color = point_to_color[point_name]
+            axes[0, 0].scatter(
+                positions[point_indices, 0],
+                positions[point_indices, 1],
                 label=point_name,
-                color=point_to_color[point_name],
+                color=color,
             )
-        axes[1, 0].set_title('XY Error Scatter')
-        axes[1, 0].set_xlabel('x_error_mm')
-        axes[1, 0].set_ylabel('y_error_mm')
-
-        axes[1, 1].plot(indices, error_norms_mm, 'o-', color='tab:red')
-        axes[1, 1].set_title('Error Norm by Measurement')
-        axes[1, 1].set_xlabel('measurement_index')
-        axes[1, 1].set_ylabel('error_norm_mm')
-
-        mean_norms = [
-            np.mean(
-                [
-                    error_norms_mm[index]
-                    for index, measurement in enumerate(self.point_measurements)
-                    if measurement.point_name == point_name
-                ]
+            axes[0, 1].scatter(
+                positions[point_indices, 0],
+                positions[point_indices, 2],
+                label=point_name,
+                color=color,
             )
+            axes[0, 2].scatter(
+                positions[point_indices, 1],
+                positions[point_indices, 2],
+                label=point_name,
+                color=color,
+            )
+
+        axes[0, 0].set_title('Base XY Targets')
+        axes[0, 0].set_xlabel('x_m')
+        axes[0, 0].set_ylabel('y_m')
+        axes[0, 1].set_title('Base XZ Targets')
+        axes[0, 1].set_xlabel('x_m')
+        axes[0, 1].set_ylabel('z_m')
+        axes[0, 2].set_title('Base YZ Targets')
+        axes[0, 2].set_xlabel('y_m')
+        axes[0, 2].set_ylabel('z_m')
+
+        axes[1, 0].plot(indices, positions[:, 0], 'o-', color='tab:red')
+        axes[1, 0].set_title('Target X by Index')
+        axes[1, 0].set_xlabel('target_index')
+        axes[1, 0].set_ylabel('x_m')
+
+        axes[1, 1].plot(indices, positions[:, 1], 'o-', color='tab:green')
+        axes[1, 1].set_title('Target Y by Index')
+        axes[1, 1].set_xlabel('target_index')
+        axes[1, 1].set_ylabel('y_m')
+
+        point_counts = [
+            len([target for target in self.point_targets if target.point_name == point_name])
             for point_name in unique_points
         ]
-        axes[1, 2].bar(unique_points, mean_norms, color=colors[: len(unique_points)])
-        axes[1, 2].set_title('Mean Error Norm by Point')
-        axes[1, 2].set_ylabel('mean_error_norm_mm')
+        axes[1, 2].bar(unique_points, point_counts, color=colors[: len(unique_points)])
+        axes[1, 2].set_title('Saved Targets by Point')
+        axes[1, 2].set_ylabel('count')
         axes[1, 2].tick_params(axis='x', rotation=30)
 
         handles, labels = axes[0, 0].get_legend_handles_labels()
@@ -1595,14 +1562,6 @@ class EyeInHandValidatorNode(Node):
             bbox_inches='tight',
         )
         plt.close(figure)
-
-    def _active_lock(self) -> PointLock | None:
-        if self.active_lock_id is None:
-            return None
-        for lock in self.point_locks:
-            if lock.lock_id == self.active_lock_id:
-                return lock
-        return None
 
     def _shutdown_with_error(self, message: str) -> None:
         if self._fatal_error_message:
@@ -1628,10 +1587,9 @@ class EyeInHandValidatorNode(Node):
             self.get_logger().info(
                 'Controls: '
                 '[n]/[p]=switch point, '
-                '[l]=lock current point, '
-                '[m]=record manual measurement, '
+                '[l]/[s]/[space]=save target pose, '
                 '[c]=generate report, '
-                '[r]=clear session, '
+                '[r]=clear saved targets, '
                 '[q]=quit.'
             )
         if not self.show_preview:
@@ -1643,9 +1601,9 @@ class EyeInHandValidatorNode(Node):
 
 def main(args: list[str] | None = None) -> int:
     rclpy.init(args=args)
-    node: EyeInHandValidatorNode | None = None
+    node: EyeToHandValidatorNode | None = None
     try:
-        node = EyeInHandValidatorNode()
+        node = EyeToHandValidatorNode()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass

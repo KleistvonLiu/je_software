@@ -122,6 +122,7 @@ install(PROGRAMS
   scripts/eye_in_hand_calibration
   scripts/eye_in_hand_validator
   scripts/eye_to_hand_calibration
+  scripts/eye_to_hand_validator
   scripts/hand_eye_calibration
   scripts/read_dynamixel_mode
   scripts/orbbec_intrinsics_validator
