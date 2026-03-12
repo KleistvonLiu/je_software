@@ -117,7 +117,7 @@ ros2 run je_software eye_to_hand_validator --ros-args \
 # 结果包含 consistency_samples.json、consistency_summary.json/.txt、
 # consistency_overview.png、consistency_region_heatmap.png 和每个样本的 overlay PNG
 
-# eye-to-hand 外参验证，point check（新样本上比较视觉链和机器人链的板点 base 坐标）
+# eye-to-hand 外参验证，point check（选点并导出 base 坐标系下的目标位姿）
 ros2 run je_software eye_to_hand_validator --ros-args \
   -p mode:=point_check \
   -p calibration_result_path:=/path/to/eye_to_hand_result.json \
@@ -132,13 +132,13 @@ ros2 run je_software eye_to_hand_validator --ros-args \
 
 # 按键：
 # n/p: 切换当前 board 点
-# m / s / 空格: 记录一个当前点的 point-check 测量
-# c: 生成点位验证报告
-# r: 清空当前会话测量
+# l / s / 空格: 保存当前点在 base 坐标系下的目标位姿
+# c: 生成目标位姿报告
+# r: 清空当前会话已保存目标
 # q: 退出
 # 输出目录：~/eye_to_hand_validation/eye_to_hand_validation_point_check_时间戳/
-# 结果包含 point_check_measurements.json、point_check_summary.json/.txt、
-# point_check_overview.png 和每个测量样本的 overlay PNG
+# 结果包含 point_check_targets.json、point_check_summary.json/.txt、
+# point_check_overview.png 和每个目标样本的 overlay PNG
 # point_z_offset_m 会把所有候选点的 z 一起平移到同一个值，适合板前方固定高度的工具点
 
 # eye-in-hand 标定（默认左臂）

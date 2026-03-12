@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -95,16 +95,13 @@ class ConsistencySample:
 
 
 @dataclass
-class PointMeasurement:
-    measurement_index: int
+class PointTarget:
+    target_index: int
     point_name: str
     point_kind: str
     point_source_id: int | None
     point_t: np.ndarray
     image_stamp_s: float
-    pose_stamp_s: float
-    pose_offset_s: float
-    pose_frame_id: str
     image_width: int
     image_height: int
     charuco_count: int
@@ -115,11 +112,9 @@ class PointMeasurement:
     center_y_norm: float
     center_radius_norm: float
     region_bucket: str
-    t_base_gripper: np.ndarray
     t_cam_target: np.ndarray
-    p_base_from_camera: np.ndarray
-    p_base_from_robot: np.ndarray
-    error_m: np.ndarray
+    t_base_target: np.ndarray
+    t_base_point: np.ndarray
     raw_image_path: str
     overlay_image_path: str
 
@@ -234,7 +229,7 @@ class EyeToHandValidatorNode(Node):
         self._fatal_error_message = ''
 
         self.consistency_samples: list[ConsistencySample] = []
-        self.point_measurements: list[PointMeasurement] = []
+        self.point_targets: list[PointTarget] = []
         self.selected_point_index = 0
 
         self.info_sub = self.create_subscription(
@@ -249,12 +244,14 @@ class EyeToHandValidatorNode(Node):
             self._image_callback,
             qos_profile_sensor_data,
         )
-        self.endpose_sub = self.create_subscription(
-            OculusControllers,
-            self.endpose_sub_topic,
-            self._endpose_callback,
-            qos_profile_sensor_data,
-        )
+        self.endpose_sub = None
+        if self.mode == 'consistency':
+            self.endpose_sub = self.create_subscription(
+                OculusControllers,
+                self.endpose_sub_topic,
+                self._endpose_callback,
+                qos_profile_sensor_data,
+            )
         self.status_timer = self.create_timer(2.0, self._status_timer_callback)
 
         self.get_logger().info(
@@ -313,7 +310,7 @@ class EyeToHandValidatorNode(Node):
             raise ValueError(f'Unsupported mode. Supported values: {supported}.')
         if not self.calibration_result_path:
             raise ValueError('calibration_result_path must not be empty.')
-        if not self.endpose_sub_topic:
+        if self.mode == 'consistency' and not self.endpose_sub_topic:
             raise ValueError('endpose_sub_topic must not be empty.')
         if self.arm not in ('left', 'right'):
             raise ValueError("arm must be 'left' or 'right'.")
@@ -559,13 +556,13 @@ class EyeToHandValidatorNode(Node):
             return
         details = [
             f'camera_info={"yes" if self.camera_matrix is not None else "no"}',
-            f'pose_buffer={len(self.pose_buffer)}',
             f'image_msgs={self.total_image_msgs}',
         ]
         if self.mode == 'consistency':
+            details.append(f'pose_buffer={len(self.pose_buffer)}')
             details.append(f'samples={len(self.consistency_samples)}')
         else:
-            details.append(f'measurements={len(self.point_measurements)}')
+            details.append(f'targets={len(self.point_targets)}')
             details.append(
                 f'selected={self.board_points[self.selected_point_index].name}'
             )
@@ -594,7 +591,7 @@ class EyeToHandValidatorNode(Node):
         else:
             lines.insert(
                 1,
-                f'pose_buffer: {len(self.pose_buffer)}  measures: {len(self.point_measurements)}',
+                f'targets: {len(self.point_targets)}',
             )
             lines.append(
                 f'selected_point: {self.board_points[self.selected_point_index].name}'
@@ -610,7 +607,7 @@ class EyeToHandValidatorNode(Node):
         if self.mode == 'consistency':
             lines.append('keys: s/space=sample  c=report  r=reset  q=quit')
         else:
-            lines.append('keys: n/p=point  m=measure  c=report  r=reset  q=quit')
+            lines.append('keys: n/p=point  s/space/l=save  c=report  r=reset  q=quit')
 
         origin_x = 16
         origin_y = 28
@@ -671,9 +668,9 @@ class EyeToHandValidatorNode(Node):
                 self._write_consistency_samples_snapshot()
                 self.get_logger().info('Cleared consistency samples.')
             else:
-                self.point_measurements.clear()
-                self._write_point_measurement_snapshot()
-                self.get_logger().info('Cleared point-check measurements.')
+                self.point_targets.clear()
+                self._write_point_target_snapshot()
+                self.get_logger().info('Cleared point-check targets.')
             return
         if self.mode == 'consistency':
             if key in (ord('s'), ord(' ')):
@@ -699,8 +696,8 @@ class EyeToHandValidatorNode(Node):
                 f'Selected point: {self.board_points[self.selected_point_index].name}'
             )
             return
-        if key in (ord('m'), ord('s'), ord(' ')):
-            self._record_point_measurement(observation, preview_image)
+        if key in (ord('l'), ord('s'), ord(' ')):
+            self._save_point_target(observation, preview_image)
             return
         if key == ord('c'):
             self._generate_point_check_report()
@@ -710,7 +707,10 @@ class EyeToHandValidatorNode(Node):
         observation: LiveObservation,
         preview_image: np.ndarray,
     ) -> None:
-        rejection = self._validate_visual_sample(observation)
+        rejection = self._validate_visual_sample(
+            observation,
+            require_pose=True,
+        )
         if rejection is not None:
             self.get_logger().warn(f'Capture rejected: {rejection}')
             return
@@ -786,6 +786,8 @@ class EyeToHandValidatorNode(Node):
     def _validate_visual_sample(
         self,
         observation: LiveObservation,
+        *,
+        require_pose: bool,
     ) -> str | None:
         if observation.rvec is None or observation.tvec is None:
             return 'no valid board pose in current frame'
@@ -796,9 +798,13 @@ class EyeToHandValidatorNode(Node):
                 f'reprojection error {observation.reproj_mean_px:.3f}px > '
                 f'{self.max_reproj_error_px:.3f}px'
             )
-        if observation.pose_snapshot is None:
+        if require_pose and observation.pose_snapshot is None:
             return 'no synchronized end-effector pose'
-        if observation.pose_snapshot.frame_id != self.calibration.pose_frame_id:
+        if (
+            require_pose
+            and observation.pose_snapshot is not None
+            and observation.pose_snapshot.frame_id != self.calibration.pose_frame_id
+        ):
             return (
                 'pose_frame_id mismatch: '
                 f'live={observation.pose_snapshot.frame_id}, '
@@ -864,12 +870,15 @@ class EyeToHandValidatorNode(Node):
             payload['report_metrics'] = per_sample_metrics[sample.sample_index]
         return payload
 
-    def _record_point_measurement(
+    def _save_point_target(
         self,
         observation: LiveObservation,
         preview_image: np.ndarray,
     ) -> None:
-        rejection = self._validate_visual_sample(observation)
+        rejection = self._validate_visual_sample(
+            observation,
+            require_pose=False,
+        )
         if rejection is not None:
             self.get_logger().warn(f'Measurement rejected: {rejection}')
             return
@@ -887,40 +896,37 @@ class EyeToHandValidatorNode(Node):
 
         rotation_ct, _ = cv2.Rodrigues(observation.rvec)
         t_cam_target = make_transform(rotation_ct, observation.tvec.reshape(3))
-        p_base_from_camera = transform_point(
-            self.calibration.t_base_cam @ t_cam_target,
+        t_base_target = self.calibration.t_base_cam @ t_cam_target
+        p_base_point = transform_point(
+            t_base_target,
             selected.point_t,
         )
-        p_base_from_robot = transform_point(
-            observation.pose_snapshot.transform @ self.calibration.t_gripper_target,
-            selected.point_t,
+        t_base_point = make_transform(
+            t_base_target[:3, :3],
+            p_base_point,
         )
-        error_m = p_base_from_robot - p_base_from_camera
         region_bucket = region_bucket_name(
             observation.center_x_norm,
             observation.center_y_norm,
         )
 
-        measurement_index = len(self.point_measurements)
+        target_index = len(self.point_targets)
         raw_image_path = (
-            self.images_dir / f'point_measurement_{measurement_index:03d}_raw.png'
+            self.images_dir / f'point_target_{target_index:03d}_raw.png'
         )
         overlay_image_path = (
-            self.images_dir / f'point_measurement_{measurement_index:03d}_overlay.png'
+            self.images_dir / f'point_target_{target_index:03d}_overlay.png'
         )
         cv2.imwrite(str(raw_image_path), observation.bgr_image)
         cv2.imwrite(str(overlay_image_path), preview_image)
 
-        measurement = PointMeasurement(
-            measurement_index=measurement_index,
+        target = PointTarget(
+            target_index=target_index,
             point_name=selected.name,
             point_kind=selected.kind,
             point_source_id=selected.source_id,
             point_t=selected.point_t.copy(),
             image_stamp_s=observation.image_stamp_s,
-            pose_stamp_s=observation.pose_snapshot.stamp_s,
-            pose_offset_s=float(observation.pose_offset_s or 0.0),
-            pose_frame_id=observation.pose_snapshot.frame_id,
             image_width=observation.image_width,
             image_height=observation.image_height,
             charuco_count=int(observation.detection.charuco_count),
@@ -931,80 +937,68 @@ class EyeToHandValidatorNode(Node):
             center_y_norm=float(observation.center_y_norm),
             center_radius_norm=float(observation.center_radius_norm),
             region_bucket=region_bucket,
-            t_base_gripper=observation.pose_snapshot.transform.copy(),
             t_cam_target=t_cam_target,
-            p_base_from_camera=p_base_from_camera,
-            p_base_from_robot=p_base_from_robot,
-            error_m=error_m,
+            t_base_target=t_base_target,
+            t_base_point=t_base_point,
             raw_image_path=str(raw_image_path),
             overlay_image_path=str(overlay_image_path),
         )
-        self.point_measurements.append(measurement)
-        self._write_point_measurement_snapshot()
+        self.point_targets.append(target)
+        self._write_point_target_snapshot()
         self.get_logger().info(
-            'Recorded point measurement '
-            f'#{measurement.measurement_index} ({measurement.point_name}): '
-            f'error_mm=[{error_m[0] * 1000.0:.2f}, '
-            f'{error_m[1] * 1000.0:.2f}, {error_m[2] * 1000.0:.2f}], '
-            f'norm={np.linalg.norm(error_m) * 1000.0:.2f}'
+            'Saved point target '
+            f'#{target.target_index} ({target.point_name}): '
+            f't=[{target.t_base_point[0, 3]:.6f}, '
+            f'{target.t_base_point[1, 3]:.6f}, {target.t_base_point[2, 3]:.6f}] m'
         )
 
-    def _write_point_measurement_snapshot(self) -> None:
+    def _write_point_target_snapshot(self) -> None:
         payload = {
             'created_at': datetime.now().isoformat(),
             'mode': 'point_check',
             'calibration_result_path': str(self.calibration.calibration_path),
             'image_topic': self.image_topic,
             'camera_info_topic': self.camera_info_topic,
-            'endpose_sub_topic': self.endpose_sub_topic,
             'arm': self.arm,
             'pose_frame_id': self.calibration.pose_frame_id,
             'camera_frame_id': self.calibration.camera_frame_id,
             'selected_point_name': self.board_points[self.selected_point_index].name,
-            'measurement_count': len(self.point_measurements),
-            'measurements': [
-                self._point_measurement_to_json(measurement)
-                for measurement in self.point_measurements
+            'target_count': len(self.point_targets),
+            'targets': [
+                self._point_target_to_json(target)
+                for target in self.point_targets
             ],
         }
-        output_path = self.session_dir / 'point_check_measurements.json'
+        output_path = self.session_dir / 'point_check_targets.json'
         with output_path.open('w', encoding='utf-8') as file_obj:
             json.dump(payload, file_obj, ensure_ascii=True, indent=2)
 
-    def _point_measurement_to_json(
+    def _point_target_to_json(
         self,
-        measurement: PointMeasurement,
+        target: PointTarget,
     ) -> dict[str, Any]:
-        error_norm_mm = float(np.linalg.norm(measurement.error_m) * 1000.0)
         return {
-            'measurement_index': int(measurement.measurement_index),
-            'point_name': measurement.point_name,
-            'point_kind': measurement.point_kind,
-            'point_source_id': measurement.point_source_id,
-            'point_t': _float_list(measurement.point_t),
-            'image_stamp_s': float(measurement.image_stamp_s),
-            'pose_stamp_s': float(measurement.pose_stamp_s),
-            'pose_offset_s': float(measurement.pose_offset_s),
-            'pose_frame_id': measurement.pose_frame_id,
-            'image_width': int(measurement.image_width),
-            'image_height': int(measurement.image_height),
-            'charuco_count': int(measurement.charuco_count),
-            'reproj_mean_px': float(measurement.reproj_mean_px),
-            'board_center_x_px': float(measurement.board_center_x_px),
-            'board_center_y_px': float(measurement.board_center_y_px),
-            'center_x_norm': float(measurement.center_x_norm),
-            'center_y_norm': float(measurement.center_y_norm),
-            'center_radius_norm': float(measurement.center_radius_norm),
-            'region_bucket': measurement.region_bucket,
-            't_base_gripper': transform_to_json_dict(measurement.t_base_gripper),
-            't_cam_target': transform_to_json_dict(measurement.t_cam_target),
-            'p_base_from_camera': _float_list(measurement.p_base_from_camera),
-            'p_base_from_robot': _float_list(measurement.p_base_from_robot),
-            'error_m': _float_list(measurement.error_m),
-            'error_mm': _float_list(measurement.error_m * 1000.0),
-            'error_norm_mm': error_norm_mm,
-            'raw_image_path': measurement.raw_image_path,
-            'overlay_image_path': measurement.overlay_image_path,
+            'target_index': int(target.target_index),
+            'point_name': target.point_name,
+            'point_kind': target.point_kind,
+            'point_source_id': target.point_source_id,
+            'point_t': _float_list(target.point_t),
+            'image_stamp_s': float(target.image_stamp_s),
+            'image_width': int(target.image_width),
+            'image_height': int(target.image_height),
+            'charuco_count': int(target.charuco_count),
+            'reproj_mean_px': float(target.reproj_mean_px),
+            'board_center_x_px': float(target.board_center_x_px),
+            'board_center_y_px': float(target.board_center_y_px),
+            'center_x_norm': float(target.center_x_norm),
+            'center_y_norm': float(target.center_y_norm),
+            'center_radius_norm': float(target.center_radius_norm),
+            'region_bucket': target.region_bucket,
+            't_cam_target': transform_to_json_dict(target.t_cam_target),
+            't_base_target': transform_to_json_dict(target.t_base_target),
+            't_base_point': transform_to_json_dict(target.t_base_point),
+            'raw_image_path': target.raw_image_path,
+            'overlay_image_path': target.overlay_image_path,
         }
 
     def _generate_consistency_report(self) -> None:
@@ -1386,46 +1380,52 @@ class EyeToHandValidatorNode(Node):
         plt.close(figure)
 
     def _generate_point_check_report(self) -> None:
-        self._write_point_measurement_snapshot()
+        self._write_point_target_snapshot()
 
-        if not self.point_measurements:
-            self.get_logger().warn('No point-check measurements recorded yet.')
+        if not self.point_targets:
+            self.get_logger().warn('No point-check targets saved yet.')
             return
 
-        error_vectors_m = np.asarray(
-            [measurement.error_m for measurement in self.point_measurements],
+        base_positions_m = np.asarray(
+            [target.t_base_point[:3, 3] for target in self.point_targets],
             dtype=np.float64,
         )
-        error_norms_mm = np.linalg.norm(error_vectors_m, axis=1) * 1000.0
-        overall_summary = {
-            'count': len(self.point_measurements),
-            'axis_error_mm': _stats_xyz_mm(error_vectors_m),
-            'error_norm_mm': _stats_mean_std_max(error_norms_mm),
-        }
-
         by_point: dict[str, Any] = {}
-        repeatability_by_point: dict[str, Any] = {}
-        grouped_indices_by_point: dict[str, list[int]] = defaultdict(list)
-        for index, measurement in enumerate(self.point_measurements):
-            grouped_indices_by_point[measurement.point_name].append(index)
-
-        for point_name, indices in grouped_indices_by_point.items():
-            vectors = error_vectors_m[indices]
-            norms = error_norms_mm[indices]
-            axis_stats = _stats_xyz_mm(vectors)
-            by_point[point_name] = {
-                'count': len(indices),
-                'axis_error_mm': axis_stats,
-                'error_norm_mm': _stats_mean_std_max(norms),
-            }
-            repeatability_by_point[point_name] = {
-                'count': len(indices),
-                'axis_std_mm': {
-                    axis: values['std']
-                    for axis, values in axis_stats.items()
+        for target in self.point_targets:
+            entry = by_point.setdefault(
+                target.point_name,
+                {
+                    'count': 0,
+                    'target_indices': [],
+                    'positions_m': [],
                 },
-                'error_norm_std_mm': float(np.std(norms)),
-            }
+            )
+            entry['count'] += 1
+            entry['target_indices'].append(int(target.target_index))
+            entry['positions_m'].append(
+                [float(value) for value in target.t_base_point[:3, 3]]
+            )
+
+        position_min_m = _float_list(np.min(base_positions_m, axis=0))
+        position_max_m = _float_list(np.max(base_positions_m, axis=0))
+        position_span_m = _float_list(
+            np.max(base_positions_m, axis=0) - np.min(base_positions_m, axis=0)
+        )
+
+        summary_targets = []
+        for target in self.point_targets:
+            summary_targets.append(
+                {
+                    'target_index': int(target.target_index),
+                    'point_name': target.point_name,
+                    'point_kind': target.point_kind,
+                    'point_source_id': target.point_source_id,
+                    't_base_point': transform_to_json_dict(target.t_base_point),
+                    'region_bucket': target.region_bucket,
+                    'reproj_mean_px': float(target.reproj_mean_px),
+                    'overlay_image_path': target.overlay_image_path,
+                }
+            )
 
         summary = {
             'created_at': datetime.now().isoformat(),
@@ -1433,14 +1433,15 @@ class EyeToHandValidatorNode(Node):
             'calibration_result_path': str(self.calibration.calibration_path),
             'image_topic': self.image_topic,
             'camera_info_topic': self.camera_info_topic,
-            'endpose_sub_topic': self.endpose_sub_topic,
             'arm': self.arm,
             'pose_frame_id': self.calibration.pose_frame_id,
             'camera_frame_id': self.calibration.camera_frame_id,
-            'measurement_count': len(self.point_measurements),
-            'overall': overall_summary,
+            'target_count': len(self.point_targets),
+            'position_min_m': position_min_m,
+            'position_max_m': position_max_m,
+            'position_span_m': position_span_m,
             'by_point_name': by_point,
-            'repeatability_by_point': repeatability_by_point,
+            'targets': summary_targets,
         }
 
         output_path = self.session_dir / 'point_check_summary.json'
@@ -1448,49 +1449,32 @@ class EyeToHandValidatorNode(Node):
             json.dump(summary, file_obj, ensure_ascii=True, indent=2)
 
         self._write_point_check_summary_text(summary)
-        self._save_point_check_overview_png(
-            error_vectors_m=error_vectors_m,
-            error_norms_mm=error_norms_mm,
-        )
+        self._save_point_check_overview_png(base_positions_m=base_positions_m)
         self.get_logger().info(
             'Point-check report written to '
             f'{self.session_dir / "point_check_summary.json"}'
         )
 
     def _write_point_check_summary_text(self, summary: dict[str, Any]) -> None:
-        overall = summary['overall']
         lines = [
             'mode: point_check',
             f'calibration_result_path: {self.calibration.calibration_path}',
-            f'measurement_count: {summary["measurement_count"]}',
-            'overall axis_error_mm:',
+            f'target_count: {summary["target_count"]}',
+            'position_min_m: ' + json.dumps(summary['position_min_m'], ensure_ascii=True),
+            'position_max_m: ' + json.dumps(summary['position_max_m'], ensure_ascii=True),
+            'position_span_m: ' + json.dumps(summary['position_span_m'], ensure_ascii=True),
+            'targets:',
         ]
-        for axis, axis_stats in overall['axis_error_mm'].items():
+        for target in summary['targets']:
+            pose = target['t_base_point']
+            translation = pose['translation_m']
+            quaternion = pose['quaternion_xyzw']
             lines.append(
-                f'  {axis}: mean={axis_stats["mean"]:.4f}, '
-                f'std={axis_stats["std"]:.4f}, max_abs={axis_stats["max_abs"]:.4f}'
-            )
-        lines.append(
-            'overall error_norm_mm: '
-            f'mean={overall["error_norm_mm"]["mean"]:.4f}, '
-            f'std={overall["error_norm_mm"]["std"]:.4f}, '
-            f'max={overall["error_norm_mm"]["max"]:.4f}'
-        )
-        lines.append('by_point_name:')
-        for point_name, point_stats in summary['by_point_name'].items():
-            norm = point_stats['error_norm_mm']
-            lines.append(
-                f'  {point_name}: count={point_stats["count"]}, '
-                f'mean_norm={norm["mean"]:.4f}, std_norm={norm["std"]:.4f}, '
-                f'max_norm={norm["max"]:.4f}'
-            )
-        lines.append('repeatability_by_point:')
-        for point_name, point_stats in summary['repeatability_by_point'].items():
-            axis_std = point_stats['axis_std_mm']
-            lines.append(
-                f'  {point_name}: count={point_stats["count"]}, '
-                f'std_mm=[{axis_std["x"]:.4f}, {axis_std["y"]:.4f}, '
-                f'{axis_std["z"]:.4f}], norm_std={point_stats["error_norm_std_mm"]:.4f}'
+                f'  target={target["target_index"]}, point={target["point_name"]}, '
+                f't=[{translation[0]:.6f}, {translation[1]:.6f}, {translation[2]:.6f}], '
+                f'q=[{quaternion[0]:.6f}, {quaternion[1]:.6f}, {quaternion[2]:.6f}, '
+                f'{quaternion[3]:.6f}], reproj={target["reproj_mean_px"]:.4f}px, '
+                f'region={target["region_bucket"]}'
             )
 
         output_path = self.session_dir / 'point_check_summary.txt'
@@ -1500,12 +1484,11 @@ class EyeToHandValidatorNode(Node):
     def _save_point_check_overview_png(
         self,
         *,
-        error_vectors_m: np.ndarray,
-        error_norms_mm: np.ndarray,
+        base_positions_m: np.ndarray,
     ) -> None:
-        error_vectors_mm = error_vectors_m * 1000.0
-        indices = np.arange(len(self.point_measurements), dtype=np.float64)
-        point_names = [measurement.point_name for measurement in self.point_measurements]
+        positions = np.asarray(base_positions_m, dtype=np.float64).reshape(-1, 3)
+        indices = np.arange(len(self.point_targets), dtype=np.float64)
+        point_names = [target.point_name for target in self.point_targets]
         unique_points = list(dict.fromkeys(point_names))
         colors = plt.cm.tab10(np.linspace(0.0, 1.0, max(1, len(unique_points))))
         point_to_color = {
@@ -1514,61 +1497,59 @@ class EyeToHandValidatorNode(Node):
         }
 
         figure, axes = plt.subplots(2, 3, figsize=(18, 10))
-        for axis_index, axis_name in enumerate(('x', 'y', 'z')):
-            axis = axes[0, axis_index]
-            for point_name in unique_points:
-                point_indices = [
-                    index
-                    for index, measurement in enumerate(self.point_measurements)
-                    if measurement.point_name == point_name
-                ]
-                axis.scatter(
-                    indices[point_indices],
-                    error_vectors_mm[point_indices, axis_index],
-                    label=point_name,
-                    color=point_to_color[point_name],
-                )
-            axis.axhline(0.0, color='black', linewidth=1.0)
-            axis.set_title(f'{axis_name.upper()} Error')
-            axis.set_xlabel('measurement_index')
-            axis.set_ylabel('error_mm')
-
-        axes[1, 0].axvline(0.0, color='black', linewidth=1.0)
-        axes[1, 0].axhline(0.0, color='black', linewidth=1.0)
         for point_name in unique_points:
             point_indices = [
                 index
-                for index, measurement in enumerate(self.point_measurements)
-                if measurement.point_name == point_name
+                for index, target in enumerate(self.point_targets)
+                if target.point_name == point_name
             ]
-            axes[1, 0].scatter(
-                error_vectors_mm[point_indices, 0],
-                error_vectors_mm[point_indices, 1],
+            color = point_to_color[point_name]
+            axes[0, 0].scatter(
+                positions[point_indices, 0],
+                positions[point_indices, 1],
                 label=point_name,
-                color=point_to_color[point_name],
+                color=color,
             )
-        axes[1, 0].set_title('XY Error Scatter')
-        axes[1, 0].set_xlabel('x_error_mm')
-        axes[1, 0].set_ylabel('y_error_mm')
-
-        axes[1, 1].plot(indices, error_norms_mm, 'o-', color='tab:red')
-        axes[1, 1].set_title('Error Norm by Measurement')
-        axes[1, 1].set_xlabel('measurement_index')
-        axes[1, 1].set_ylabel('error_norm_mm')
-
-        mean_norms = [
-            np.mean(
-                [
-                    error_norms_mm[index]
-                    for index, measurement in enumerate(self.point_measurements)
-                    if measurement.point_name == point_name
-                ]
+            axes[0, 1].scatter(
+                positions[point_indices, 0],
+                positions[point_indices, 2],
+                label=point_name,
+                color=color,
             )
+            axes[0, 2].scatter(
+                positions[point_indices, 1],
+                positions[point_indices, 2],
+                label=point_name,
+                color=color,
+            )
+
+        axes[0, 0].set_title('Base XY Targets')
+        axes[0, 0].set_xlabel('x_m')
+        axes[0, 0].set_ylabel('y_m')
+        axes[0, 1].set_title('Base XZ Targets')
+        axes[0, 1].set_xlabel('x_m')
+        axes[0, 1].set_ylabel('z_m')
+        axes[0, 2].set_title('Base YZ Targets')
+        axes[0, 2].set_xlabel('y_m')
+        axes[0, 2].set_ylabel('z_m')
+
+        axes[1, 0].plot(indices, positions[:, 0], 'o-', color='tab:red')
+        axes[1, 0].set_title('Target X by Index')
+        axes[1, 0].set_xlabel('target_index')
+        axes[1, 0].set_ylabel('x_m')
+
+        axes[1, 1].plot(indices, positions[:, 1], 'o-', color='tab:green')
+        axes[1, 1].set_title('Target Y by Index')
+        axes[1, 1].set_xlabel('target_index')
+        axes[1, 1].set_ylabel('y_m')
+
+        point_counts = [
+            len([target for target in self.point_targets if target.point_name == point_name])
             for point_name in unique_points
         ]
-        axes[1, 2].bar(unique_points, mean_norms, color=colors[: len(unique_points)])
-        axes[1, 2].set_title('Mean Error Norm by Point')
-        axes[1, 2].set_ylabel('mean_error_norm_mm')
+        axes[1, 2].bar(unique_points, point_counts, color=colors[: len(unique_points)])
+        axes[1, 2].set_title('Saved Targets by Point')
+        axes[1, 2].set_ylabel('count')
         axes[1, 2].tick_params(axis='x', rotation=30)
 
         handles, labels = axes[0, 0].get_legend_handles_labels()
@@ -1606,9 +1587,9 @@ class EyeToHandValidatorNode(Node):
             self.get_logger().info(
                 'Controls: '
                 '[n]/[p]=switch point, '
-                '[m]/[s]/[space]=record measurement, '
+                '[l]/[s]/[space]=save target pose, '
                 '[c]=generate report, '
-                '[r]=clear measurements, '
+                '[r]=clear saved targets, '
                 '[q]=quit.'
             )
         if not self.show_preview:
