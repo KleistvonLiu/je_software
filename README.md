@@ -90,7 +90,7 @@ ros2 run je_software eye_to_hand_calibration --ros-args \
   -p image_is_rectified:=true \
   -p hand_eye_method:=all \
   -p min_samples:=12 \
-  -p charuco_config_path:=/path/to/charuco_board.json
+  -p charuco_config_path:=/home/test/ros2_ws/src/je_software/config/charuco_7x5_sq50mm_mk30mm_DICT_4X4_50_420x297mm_300dpi.json
 
 # 运行后按键
 # s 或空格: 保存当前样本
