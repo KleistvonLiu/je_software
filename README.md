@@ -35,6 +35,12 @@ ros2 launch je_software jsonl_replayer_node.launch.py\
   target_string:=cmd
 ros2 run orbbec_camera list_devices_node
 
+# 相机节点
+# 多个相机
+ros2 launch orbbec_camera 3_cameras.launch.py
+# 单个相机
+ros2 launch orbbec_camera gemini_330_series.launch.py   usb_port:=1-11   enable_color_auto_white_balance:=false   color_width:=1920 color_height:=1080 color_fps:=8
+
 # 设置串口低延迟模式
 sudo apt install setserial
 sudo setserial /dev/serial/by-path/pci-0000:00:14.0-usb-0:6:1.0-port0 low_latency
