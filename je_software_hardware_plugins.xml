@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<library path="je_software_hardware">
+  <class
+    name="je_software/JeZmqSystemHardware"
+    type="je_software::JeZmqSystemHardware"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>ROS2 control SystemInterface for JE robot transport layer.</description>
+  </class>
+</library>
