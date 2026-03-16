@@ -132,6 +132,8 @@ hardware_interface::CallbackReturn JeZmqSystemHardware::on_configure(
     publisher_ = std::make_unique<zmq::socket_t>(*context_, zmq::socket_type::pub);
     subscriber_ = std::make_unique<zmq::socket_t>(*context_, zmq::socket_type::sub);
 
+    // Hardware plugin as publisher: binds on pub_port to send commands
+    // Hardware plugin as subscriber: connects to robot's state port to receive state
     const std::string pub_bind_addr = "tcp://*:" + std::to_string(pub_port_);
     const std::string sub_connect_addr = "tcp://" + robot_ip_ + ":" + std::to_string(sub_port_);
 
@@ -162,8 +164,11 @@ hardware_interface::CallbackReturn JeZmqSystemHardware::on_configure(
 hardware_interface::CallbackReturn JeZmqSystemHardware::on_activate(
   const rclcpp_lifecycle::State &)
 {
-  hw_commands_ = hw_positions_;
   global_time_ = 0.0;
+
+  // Initialize ZMQ connection before starting state thread
+  // Add a small delay to allow ZMQ sockets to fully bind/connect
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
   try
   {
@@ -176,8 +181,52 @@ hardware_interface::CallbackReturn JeZmqSystemHardware::on_activate(
       "Failed to send switch command on activate: %s", ex.what());
   }
 
+  // Small delay after switch command to let robot backend process
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
   state_thread_running_.store(true);
   state_thread_ = std::thread(&JeZmqSystemHardware::state_receive_loop, this);
+
+  // Wait for first valid state before considering hardware ready
+  // Increased timeout to 15 seconds to allow robot backend to establish connection
+  int wait_count = 0;
+  int max_wait = 1500;  // 15 seconds at 10ms intervals
+  while (!has_valid_state_ && wait_count < max_wait)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    wait_count++;
+    
+    // Log progress every 100 iterations (1 second)
+    if (wait_count % 100 == 0)
+    {
+      RCLCPP_INFO(
+        rclcpp::get_logger("JeZmqSystemHardware"),
+        "Waiting for initial state from ZMQ hardware... (%d/%d seconds)",
+        wait_count / 100, max_wait / 100);
+    }
+  }
+
+  if (!has_valid_state_)
+  {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("JeZmqSystemHardware"),
+      "Timeout waiting for initial state from ZMQ hardware after %d seconds",
+      max_wait / 100);
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  // Now initialize hw_positions and hw_commands with the actual state
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    hw_positions_ = latest_positions_;
+  }
+  hw_commands_ = hw_positions_;
+
+  RCLCPP_INFO(
+    rclcpp::get_logger("JeZmqSystemHardware"),
+    "Hardware activated. Initial positions: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+    hw_positions_[0], hw_positions_[1], hw_positions_[2], hw_positions_[3],
+    hw_positions_[4], hw_positions_[5], hw_positions_[6]);
 
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -229,6 +278,11 @@ std::vector<hardware_interface::StateInterface> JeZmqSystemHardware::export_stat
       joint_names_[i], hardware_interface::HW_IF_EFFORT, &hw_efforts_[i]);
   }
 
+  RCLCPP_INFO(
+    rclcpp::get_logger("JeZmqSystemHardware"),
+    "[export_state_interfaces] Exported %zu state interfaces for %zu joints",
+    state_interfaces.size(), joint_names_.size());
+
   return state_interfaces;
 }
 
@@ -251,12 +305,50 @@ hardware_interface::return_type JeZmqSystemHardware::read(
   const rclcpp::Duration &)
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
+  static int read_count = 0;
+  static bool first_valid = true;
+  
   if (has_valid_state_)
   {
-    hw_positions_ = latest_positions_;
-    hw_velocities_ = latest_velocities_;
-    hw_efforts_ = latest_efforts_;
+    // Copy from ZMQ state to hardware interfaces
+    for (size_t i = 0; i < hw_positions_.size(); ++i)
+    {
+      hw_positions_[i] = latest_positions_[i];
+      hw_velocities_[i] = latest_velocities_[i];
+      hw_efforts_[i] = latest_efforts_[i];
+    }
+    
+    if (first_valid)
+    {
+      RCLCPP_INFO(
+        rclcpp::get_logger("JeZmqSystemHardware"),
+        "[read] First valid state received - hardware interfaces active");
+      first_valid = false;
+    }
+    
+    // Log periodically (every 500 reads ≈ 5 seconds at 100Hz)
+    if (++read_count % 500 == 0)
+    {
+      RCLCPP_DEBUG(
+        rclcpp::get_logger("JeZmqSystemHardware"),
+        "[read] Read #%d: positions=[%.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+        read_count,
+        hw_positions_[0], hw_positions_[1], hw_positions_[2], hw_positions_[3],
+        hw_positions_[4], hw_positions_[5], hw_positions_[6]);
+    }
   }
+  else
+  {
+    static bool warned = false;
+    if (!warned)
+    {
+      RCLCPP_WARN(
+        rclcpp::get_logger("JeZmqSystemHardware"),
+        "[read] Waiting for valid ZMQ state from hardware...");
+      warned = true;
+    }
+  }
+  
   return hardware_interface::return_type::OK;
 }
 
@@ -273,12 +365,37 @@ hardware_interface::return_type JeZmqSystemHardware::write(
 
   json payload;
   payload["Robot0"]["time"] = global_time_;
-  payload["Robot0"]["joint"] = hw_commands_;
+  payload["Robot0"]["joint"] = hw_commands_;  // Use lowercase "joint" to match je_robot_node.cpp
+  
+  // Add EndEffector field (required by robot backend for proper message parsing)
+  // Send default gripper state when no specific command is available
+  json ee;
+  ee["mode"] = 0;  // MODE_POSITION = 0
+  ee["position"] = 0.0;
+  payload["Robot0"]["EndEffector"] = ee;
 
   try
   {
+    // Match je_robot_node.cpp format: prefix "Joint " + JSON payload
     const std::string message = "Joint " + payload.dump();
-    publisher_->send(zmq::buffer(message), zmq::send_flags::none);
+    // Send with default blocking behavior to ensure delivery
+    auto result = publisher_->send(zmq::buffer(message));
+    if (!result)
+    {
+      RCLCPP_WARN(
+        rclcpp::get_logger("JeZmqSystemHardware"),
+        "[write] Failed to send message (result is false)");
+    }
+    
+    // Log sent commands periodically (every 100 writes to avoid log spam)
+    static int write_count = 0;
+    if (++write_count % 100 == 0)
+    {
+      RCLCPP_INFO(
+        rclcpp::get_logger("JeZmqSystemHardware"),
+        "[write] Write #%d: Sent message (length=%zu): %s",
+        write_count, message.length(), message.c_str());
+    }
   }
   catch (const std::exception & ex)
   {
@@ -293,6 +410,10 @@ hardware_interface::return_type JeZmqSystemHardware::write(
 
 void JeZmqSystemHardware::state_receive_loop()
 {
+  RCLCPP_INFO(rclcpp::get_logger("JeZmqSystemHardware"), "state_receive_loop started");
+  int msg_count = 0;
+  bool first_message_logged = false;
+  
   while (state_thread_running_.load())
   {
     if (!subscriber_)
@@ -345,21 +466,86 @@ void JeZmqSystemHardware::state_receive_loop()
 
       const auto state_json = json::parse(state_message.substr(pos + 1));
 
+      // Log first message received for diagnostics
+      if (!first_message_logged)
+      {
+        RCLCPP_INFO(
+          rclcpp::get_logger("JeZmqSystemHardware"),
+          "[state_receive_loop] FIRST MESSAGE RECEIVED. Message size: %zu bytes. Full JSON:\n%s",
+          state_message.size(),
+          state_json.dump(2).c_str());
+        first_message_logged = true;
+      }
+
+      // Log every 100 messages with message size and raw data to detect if messages are changing
+      static int size_log_count = 0;
+      if (++size_log_count % 100 == 0)
+      {
+        RCLCPP_INFO(
+          rclcpp::get_logger("JeZmqSystemHardware"),
+          "[state_receive_loop] Message #%d: size=%zu bytes. Payload: %s",
+          size_log_count,
+          state_message.size(),
+          state_message.substr(0, std::min(size_t(200), state_message.size())).c_str());
+      }
+
       std::vector<double> positions(joint_names_.size(), 0.0);
       std::vector<double> velocities(joint_names_.size(), 0.0);
       std::vector<double> efforts(joint_names_.size(), 0.0);
 
       if (!parse_joint_state_from_json(state_json, positions, velocities, efforts))
       {
+        // Log failed parsing every 100 messages to help diagnose format issues
+        static int parse_fail_count = 0;
+        if (++parse_fail_count % 100 == 0)
+        {
+          // Dump the entire JSON to see what we're actually receiving
+          RCLCPP_WARN(
+            rclcpp::get_logger("JeZmqSystemHardware"),
+            "[state_receive_loop] Failed to parse state JSON (fail count=%d). Full message:\n%s",
+            parse_fail_count,
+            state_message.c_str());
+        }
         continue;
+      }
+
+      msg_count++;
+      if (msg_count % 100 == 0)  // Log every 100 messages to reduce spam
+      {
+        RCLCPP_INFO(
+          rclcpp::get_logger("JeZmqSystemHardware"),
+          "[state_receive_loop] Received %d messages. Parsed positions: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+          msg_count,
+          positions[0], positions[1], positions[2], positions[3], 
+          positions[4], positions[5], positions[6]);
       }
 
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
+        // Log before updating
+        if (msg_count % 100 == 0)
+        {
+          RCLCPP_INFO(
+            rclcpp::get_logger("JeZmqSystemHardware"),
+            "[state_receive_loop] Updating latest_positions. Before: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+            latest_positions_[0], latest_positions_[1], latest_positions_[2], latest_positions_[3],
+            latest_positions_[4], latest_positions_[5], latest_positions_[6]);
+        }
+        
         latest_positions_ = std::move(positions);
         latest_velocities_ = std::move(velocities);
         latest_efforts_ = std::move(efforts);
         has_valid_state_ = true;
+        
+        // Log after updating
+        if (msg_count % 100 == 0)
+        {
+          RCLCPP_INFO(
+            rclcpp::get_logger("JeZmqSystemHardware"),
+            "[state_receive_loop] Updated latest_positions. After: [%.4f, %.4f, %.4f, %.4f, %.4f, %.4f, %.4f]",
+            latest_positions_[0], latest_positions_[1], latest_positions_[2], latest_positions_[3],
+            latest_positions_[4], latest_positions_[5], latest_positions_[6]);
+        }
       }
     }
     catch (const std::exception & ex)
@@ -369,6 +555,8 @@ void JeZmqSystemHardware::state_receive_loop()
         "Failed parsing state JSON: %s", ex.what());
     }
   }
+  
+  RCLCPP_INFO(rclcpp::get_logger("JeZmqSystemHardware"), "state_receive_loop stopped (total messages: %d)", msg_count);
 }
 
 bool JeZmqSystemHardware::parse_joint_state_from_json(
@@ -383,12 +571,22 @@ bool JeZmqSystemHardware::parse_joint_state_from_json(
   }
 
   const auto & robot = state_json["Robot0"];
-  if (!robot.contains("Joint"))
+  
+  // Try both "joint" (lowercase, new format from je_robot_node) and "Joint" (uppercase, legacy)
+  std::vector<double> joints;
+  if (robot.contains("joint"))
+  {
+    joints = robot["joint"].get<std::vector<double>>();
+  }
+  else if (robot.contains("Joint"))
+  {
+    joints = robot["Joint"].get<std::vector<double>>();
+  }
+  else
   {
     return false;
   }
-
-  const auto joints = robot["Joint"].get<std::vector<double>>();
+  
   if (joints.size() < positions.size())
   {
     return false;
