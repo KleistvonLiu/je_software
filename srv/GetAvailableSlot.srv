@@ -1,0 +1,9 @@
+string box_type
+bool require_empty
+---
+bool success
+string reason
+int32 slot_id
+geometry_msgs/PoseStamped slot_pose_base
+bool slot_empty
+float32 confidence

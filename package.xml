@@ -18,11 +18,15 @@
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>action_msgs</depend>
   <depend>common</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>eigen</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-zmq</exec_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>python3-deepdiff</exec_depend>
   <!-- System deps for je_robot_node.cpp (rosdep keys) -->
@@ -31,6 +35,7 @@
   <depend>nlohmann-json3-dev</depend>
 
   <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>

@@ -1,0 +1,9 @@
+string name
+string command_type
+geometry_msgs/PoseStamped target_pose
+float64[] joint_target
+float64 velocity
+float64 acceleration
+float64 blend_radius
+string gripper_command
+float64 dwell_sec

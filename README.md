@@ -81,6 +81,31 @@ ros2 run je_software joint_rate_monitor --ros-args \
   -p msg_type:=oculus_init_joint_state \
   -p log_period_s:=1.0
 
+# PCBA 固定点闭环流程 demo
+ros2 launch je_software pcb_process_demo.launch.py
+
+# 终端按键：
+# p: 发布 PCBA 到位/静止/可抓取
+# c: 清空到位信号
+# r: 触发“回到初始位置”，动作顺序为 home -> 初始化轨迹倒放 -> 初始检查位
+# q: 退出键盘节点
+#
+# 默认流程：
+# PCB 到位 -> 固定抓取位 -> 固定检测位 -> 固定 good 结果 -> 固定 good 槽位 -> 回 home
+#
+# 默认 ZMQ 后端会 bind 到 tcp://*:8001
+# 如需修改 pose / timing / endpoint，可编辑：
+# config/pcb_process_demo.yaml
+#
+# 当前 PCB 流程状态机图已保存为 Mermaid 文件：
+# docs/pcb_process_state_machine.mmd
+#
+# 可用以下方式打开：
+# 1. 网页：打开 https://mermaid.live ，把 docs/pcb_process_state_machine.mmd 内容粘贴进去
+# 2. draw.io / diagrams.net：插入 Mermaid 后粘贴文件内容
+# 3. VS Code：安装 Mermaid 预览扩展后直接打开 .mmd
+# 4. Typora / Obsidian：新建一个 ```mermaid 代码块并粘贴文件内容
+
 # eye-to-hand 标定（默认左臂）
 ros2 run je_software eye_to_hand_calibration --ros-args \
   -p image_topic:=/camera/color/image_raw \

@@ -1,0 +1,10 @@
+std_msgs/Header header
+bool valid
+int32 robot_id
+bool joint_valid
+float64[] joint_position
+float64[] joint_velocity
+float64[] joint_effort
+bool cartesian_valid
+geometry_msgs/PoseStamped tcp_pose
+string source

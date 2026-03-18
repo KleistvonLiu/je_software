@@ -1,0 +1,4 @@
+---
+bool success
+string reason
+je_software/RobotState state
