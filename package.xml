@@ -16,6 +16,9 @@
 
   <depend>rclpy</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>common</depend>
@@ -38,5 +41,6 @@
   <export>
     <build_type>ament_cmake</build_type>
     <member_of_group>rosidl_interface_packages</member_of_group>
+    <ros2_control plugin="${prefix}/share/je_software/je_software_hardware_plugins.xml"/>
   </export>
 </package>

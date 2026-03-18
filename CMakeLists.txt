@@ -75,6 +75,9 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
+find_package(hardware_interface REQUIRED)
+find_package(pluginlib REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(common REQUIRED)
@@ -220,6 +223,26 @@ target_include_directories(jsonl_replayer_node
     ${common_INCLUDE_DIRS}
 )
 
+add_library(je_software_hardware SHARED
+  je_software/je_zmq_system_hardware.cpp
+)
+ament_target_dependencies(je_software_hardware
+  hardware_interface
+  pluginlib
+  rclcpp
+  rclcpp_lifecycle
+)
+target_include_directories(je_software_hardware
+  PRIVATE
+    ${JE_ZMQ_INCLUDE_DIRS}
+)
+target_link_libraries(je_software_hardware
+  PkgConfig::ZMQ
+  nlohmann_json::nlohmann_json
+)
+
+pluginlib_export_plugin_description_file(hardware_interface je_software_hardware_plugins.xml)
+
 # ----------------------------
 # Install
 # ----------------------------
@@ -229,6 +252,16 @@ install(TARGETS
   end_effector_cli
   jsonl_replayer_node
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(TARGETS
+  je_software_hardware
+  DESTINATION lib
+)
+
+install(FILES
+  je_software_hardware_plugins.xml
+  DESTINATION share/${PROJECT_NAME}
 )
 
 install(DIRECTORY
