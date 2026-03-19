@@ -132,6 +132,7 @@ install(PROGRAMS
   scripts/fixed_line_vision_node
   scripts/fixed_slot_provider_node
   scripts/hand_eye_calibration
+  scripts/jearm_jsonl_replayer_node
   scripts/read_dynamixel_mode
   scripts/orbbec_intrinsics_validator
   scripts/pcb_process_task_manager_node
@@ -286,6 +287,8 @@ install(FILES
 install(DIRECTORY
   launch
   config
+  rviz
+  urdf
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -301,6 +304,7 @@ if(BUILD_TESTING)
     set(_test_command
       "source /opt/ros/humble/setup.bash && "
       "source \"${JE_WORKSPACE_SETUP}\" && "
+      "export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 && "
       "\"${Python3_EXECUTABLE}\" -m pytest "
       "\"${test_file}\" -q"
     )
@@ -325,6 +329,10 @@ if(BUILD_TESTING)
   je_add_pytest_shell_test(
     ${PROJECT_NAME}_pcb_process_flow_test
     "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pcb_process_flow.py"
+  )
+  je_add_pytest_shell_test(
+    ${PROJECT_NAME}_jearm_jsonl_replayer_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/test_jearm_jsonl_replayer_node.py"
   )
   je_add_pytest_shell_test(
     ${PROJECT_NAME}_zmq_motion_backend_test

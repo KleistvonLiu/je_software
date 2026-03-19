@@ -233,3 +233,6 @@ bbcp   -f -P 5 -s 64 -w 128M -v -r   /home/kleist/Documents/Database/test_0207/ 
 
 5. 从服务器下载文件
 bbcp   -f -P 5 -s 64 -w 128M -v  -r -z alice@10.215.247.2:/jedata/jemotor/model/0207_pi05_test/15000/ /目标路径
+
+# rviz可视化机器人
+ros2 launch je_software jearm_rviz_replay.launch.py   jsonl_path:=/home/kleist/ros2_ws/src/je_software/data/robot_state_20260319_150321.jsonl

@@ -1,3 +1,4 @@
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'je_software'
@@ -17,8 +18,11 @@ setup(
         (f'share/{package_name}/launch', ['launch/manager.launch.py']),
         (f'share/{package_name}/launch', ['launch/manager_test.launch.py']),
         (f'share/{package_name}/launch', ['launch/replay_node.launch.py']),
+        (f'share/{package_name}/launch', ['launch/jearm_rviz_replay.launch.py']),
         (f'share/{package_name}/launch', ['launch/pcb_process_demo.launch.py']),
         (f'share/{package_name}/config', ['config/pcb_process_demo.yaml']),
+        (f'share/{package_name}/rviz', glob('rviz/*')),
+        (f'share/{package_name}/urdf', glob('urdf/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -47,6 +51,7 @@ setup(
             'manager_node = je_software.recorder_manager_node:main',
             'test_publisher = je_software.test_publisher_node:main',
             'replay_node = je_software.replay_node:main',
+            'jearm_jsonl_replayer_node = je_software.jearm_jsonl_replayer_node:main',
             'joint_rate_monitor = je_software.joint_rate_monitor_node:main',
             'terminal_key_signal_node = je_software.terminal_key_signal_node:main',
             'fixed_line_vision_node = je_software.fixed_line_vision_node:main',
