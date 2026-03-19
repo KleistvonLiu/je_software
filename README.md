@@ -55,8 +55,8 @@ left_port:=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0   \
 left_enabled:=true \
 right_enabled:=false   \
 left_models:='["xl330-m288","xl330-m288","xl330-m288","xl330-m077","xl330-m288","xl330-m288","xl330-m288","xl330-m288"]'   \
-left_signs:="[1,-1,1,-1,1,1,1,-1]"   \
-right_signs:="[1,1,1,1,1,1,1,1]" \
+left_signs:="[1,-1,1,-1,1,1,1,1]"   \
+right_signs:="[-1,1,-1,-1,-1,1,-1,1]" \
 zero_on_start:=true
 # 启用左右臂
 ros2 launch je_software dynamixel_init_joint_state.launch.py   \
