@@ -1,0 +1,38 @@
+stateDiagram-v2
+    [*] --> IDLE
+
+    IDLE --> WAIT_PCB: startup_complete\n(enable_initialization=false)
+    IDLE --> WAIT_INIT_JOINT_STATE: startup_waiting_robot_state\n(enable_initialization=true)
+
+    WAIT_INIT_JOINT_STATE --> EXECUTE_INITIALIZATION: initial_joint_check_passed
+    EXECUTE_INITIALIZATION --> WAIT_PCB: initialization_sequence_done
+    WAIT_INIT_JOINT_STATE --> ERROR: initial_joint_mismatch / timeout / init_trajectory_points_empty
+
+    WAIT_PCB --> MOVE_HOME_BEFORE_PICK: pcb_ready_edge
+    MOVE_HOME_BEFORE_PICK --> REQUEST_PICK_POSE: home_before_pick_done
+    REQUEST_PICK_POSE --> EXECUTE_PICK: pick_pose_ready
+    EXECUTE_PICK --> MOVE_TO_INSPECTION: pick_sequence_done
+    MOVE_TO_INSPECTION --> TRIGGER_INSPECTION: inspection_pose_reached
+    TRIGGER_INSPECTION --> WAIT_INSPECTION_RESULT: inspection_triggered
+    WAIT_INSPECTION_RESULT --> REQUEST_GOOD_SLOT: inspection_good
+    REQUEST_GOOD_SLOT --> EXECUTE_PLACE: slot_ready
+    EXECUTE_PLACE --> GO_HOME: place_sequence_done
+    GO_HOME --> WAIT_PCB: cycle_reset
+
+    IDLE --> EXECUTE_MANUAL_RECOVERY: RecoverToInitial action
+    WAIT_PCB --> EXECUTE_MANUAL_RECOVERY: RecoverToInitial action
+    ERROR --> EXECUTE_MANUAL_RECOVERY: RecoverToInitial action
+    EXECUTE_MANUAL_RECOVERY --> WAIT_PCB: manual_recovery_sequence_done
+    EXECUTE_MANUAL_RECOVERY --> ERROR: manual_recover failed
+
+    MOVE_HOME_BEFORE_PICK --> ERROR: recoverable error
+    REQUEST_PICK_POSE --> ERROR: recoverable error
+    EXECUTE_PICK --> ERROR: recoverable error
+    MOVE_TO_INSPECTION --> ERROR: recoverable error
+    TRIGGER_INSPECTION --> ERROR: recoverable error
+    WAIT_INSPECTION_RESULT --> ERROR: recoverable error
+    REQUEST_GOOD_SLOT --> ERROR: recoverable error
+    EXECUTE_PLACE --> ERROR: recoverable error
+    GO_HOME --> ERROR: recoverable error
+
+    ERROR --> WAIT_PCB: recover_home done\n(auto error recovery)

@@ -80,6 +80,8 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(common REQUIRED)
 
 find_package(rosidl_default_generators REQUIRED)
@@ -126,15 +128,21 @@ install(PROGRAMS
   scripts/eye_in_hand_validator
   scripts/eye_to_hand_calibration
   scripts/eye_to_hand_validator
+  scripts/fixed_inspection_node
+  scripts/fixed_line_vision_node
+  scripts/fixed_slot_provider_node
   scripts/hand_eye_calibration
   scripts/read_dynamixel_mode
   scripts/orbbec_intrinsics_validator
+  scripts/pcb_process_task_manager_node
   scripts/plot_dynamixel_positions
   scripts/joint_rate_monitor
   scripts/manager_node
   scripts/replay_node
   scripts/tactile_sensor
+  scripts/terminal_key_signal_node
   scripts/test_publisher
+  scripts/zmq_motion_backend_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -144,6 +152,17 @@ install(PROGRAMS
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/EndEffectorCommand.msg"
   "msg/EndEffectorCommandLR.msg"
+  "msg/PcbPresence.msg"
+  "msg/InspectionResult.msg"
+  "msg/MotionStep.msg"
+  "msg/RobotState.msg"
+  "srv/GetPcbPickPose.srv"
+  "srv/GetAvailableSlot.srv"
+  "srv/TriggerInspection.srv"
+  "srv/GetRobotState.srv"
+  "action/ExecuteMotionSequence.action"
+  "action/RecoverToInitial.action"
+  DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
   SKIP_GROUP_MEMBERSHIP_CHECK
 )
 
@@ -269,6 +288,49 @@ install(DIRECTORY
   config
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  get_filename_component(
+    JE_WORKSPACE_ROOT
+    "${CMAKE_CURRENT_BINARY_DIR}/../.."
+    ABSOLUTE
+  )
+  set(JE_WORKSPACE_SETUP "${JE_WORKSPACE_ROOT}/install/setup.bash")
+
+  function(je_add_pytest_shell_test test_name test_file)
+    set(_test_command
+      "source /opt/ros/humble/setup.bash && "
+      "source \"${JE_WORKSPACE_SETUP}\" && "
+      "\"${Python3_EXECUTABLE}\" -m pytest "
+      "\"${test_file}\" -q"
+    )
+    string(CONCAT _test_command ${_test_command})
+
+    add_test(
+      NAME ${test_name}
+      COMMAND /bin/bash -lc "${_test_command}"
+    )
+    set_tests_properties(
+      ${test_name}
+      PROPERTIES
+        TIMEOUT 180
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+  endfunction()
+
+  je_add_pytest_shell_test(
+    ${PROJECT_NAME}_calibration_common_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/test_calibration_common.py"
+  )
+  je_add_pytest_shell_test(
+    ${PROJECT_NAME}_pcb_process_flow_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pcb_process_flow.py"
+  )
+  je_add_pytest_shell_test(
+    ${PROJECT_NAME}_zmq_motion_backend_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/test/test_zmq_motion_backend.py"
+  )
+endif()
 
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()

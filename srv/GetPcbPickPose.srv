@@ -1,0 +1,7 @@
+bool require_stable
+---
+bool success
+string reason
+geometry_msgs/PoseStamped pcb_pose_base
+geometry_msgs/PoseStamped pick_pose_base
+float32 confidence

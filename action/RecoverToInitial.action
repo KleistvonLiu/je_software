@@ -1,0 +1,8 @@
+# 空 goal：调用即触发一次“恢复到初始位置”
+---
+bool success
+string error_code
+---
+string stage
+int32 step_index
+string active_step_name

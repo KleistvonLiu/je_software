@@ -1,0 +1,10 @@
+string sequence_name
+string pcb_id
+je_software/MotionStep[] steps
+---
+bool success
+string error_code
+---
+string stage
+int32 step_index
+string active_step_name

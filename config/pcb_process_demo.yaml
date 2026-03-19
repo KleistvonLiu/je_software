@@ -1,0 +1,103 @@
+terminal_key_signal_node:
+  ros__parameters:
+    presence_topic: /vision/line/pcb_presence
+    publish_hz: 5.0
+    poll_hz: 20.0
+    key_trigger: p
+    key_clear: c
+    key_recover: r
+    key_quit: q
+    recover_action_name: /pcb_process/recover_to_initial
+    source: terminal
+
+fixed_line_vision_node:
+  ros__parameters:
+    presence_topic: /vision/line/pcb_presence
+    service_name: /vision/line/get_pcb_pick_pose
+    frame_id: base_link
+    pcb_pose: [0.45, 0.00, 0.12, 3.1415926, 0.0, 0.0]
+    pick_pose: [0.45, 0.00, 0.12, 3.1415926, 0.0, 0.0]
+    confidence: 1.0
+
+fixed_inspection_node:
+  ros__parameters:
+    service_name: /inspection/trigger
+    result_topic: /inspection/result
+    fixed_result: good
+    response_delay_sec: 0.5
+
+fixed_slot_provider_node:
+  ros__parameters:
+    service_name: /vision/slot/get_available_slot
+    frame_id: base_link
+    fixed_box_type: good
+    fixed_slot_id: 0
+    slot_pose: [0.24, -0.25, 0.08, 3.1415926, 0.0, 0.0]
+    confidence: 1.0
+
+zmq_motion_backend_node:
+  ros__parameters:
+    action_name: /motion_backend/execute_motion_sequence
+    command_endpoint: tcp://*:8001
+    socket_mode: bind
+    robot_id: 0
+    send_timeout_ms: 1000
+    linger_ms: 0
+    startup_delay_sec: 0.2
+    state_endpoint: tcp://192.168.0.99:8000
+    state_socket_mode: connect
+    state_recv_timeout_ms: 100
+    state_poll_hz: 20.0
+    state_topic: /motion_backend/robot_state
+    state_service_name: /motion_backend/get_robot_state
+    movea_joint_targets.pre_grasp: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    movea_joint_targets.inspection_pre: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    movea_joint_targets.pre_place: [0.2, 0.1, 0.0, -0.1, 0.3, 0.2, 0.1]
+    movea_joint_targets.home: [0.0, -0.2, 0.3, 0.0, 0.1, 0.0, 0.0]
+
+pcb_process_task_manager_node:
+  ros__parameters:
+    presence_topic: /vision/line/pcb_presence
+    inspection_result_topic: /inspection/result
+    pick_pose_service: /vision/line/get_pcb_pick_pose
+    slot_service: /vision/slot/get_available_slot
+    inspection_trigger_service: /inspection/trigger
+    motion_action_name: /motion_backend/execute_motion_sequence
+    frame_id: base_link
+    enable_initialization: false
+    robot_state_service: /motion_backend/get_robot_state
+    initial_state_poll_sec: 0.1
+    initial_joint_position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    initial_joint_tolerance: 0.02
+    initial_joint_state_timeout_sec: 5.0
+    init_trajectory_points:
+      - "0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0"
+      - "0.1, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0"
+    target_box_type: good
+    startup_delay_sec: 0.2
+    pick_service_timeout_sec: 1.0
+    slot_service_timeout_sec: 1.0
+    inspection_service_timeout_sec: 1.0
+    motion_server_timeout_sec: 1.0
+    home_pose: [0.32, 0.00, 0.28, 3.1415926, 0.0, 0.0]
+    inspection_pre_pose: [0.18, 0.18, 0.22, 3.1415926, 0.0, 0.0]
+    inspection_pose: [0.18, 0.18, 0.14, 3.1415926, 0.0, 0.0]
+    pick_pre_offset: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
+    pick_retreat_offset: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
+    place_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    place_pre_offset: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
+    place_retreat_offset: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
+    movej_velocity: 0.3
+    movej_acceleration: 0.3
+    movej_blend_radius: 0.0
+    movej_dwell_sec: 5.0
+    init_movej_velocity: 0.2
+    init_movej_acceleration: 0.2
+    init_movej_blend_radius: 0.0
+    init_movej_dwell_sec: 2.0
+    movel_velocity: 0.1
+    movel_acceleration: 0.1
+    movel_blend_radius: 0.0
+    movel_dwell_sec: 1.0
+    gripper_dwell_sec: 0.4
+    inspection_wait_sec: 0.5

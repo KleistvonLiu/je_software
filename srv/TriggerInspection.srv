@@ -1,0 +1,4 @@
+string pcb_id
+---
+bool accepted
+string reason
