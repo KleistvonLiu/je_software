@@ -38,20 +38,14 @@ def test_motion_step_to_payload_formats_movea_when_joint_target_is_configured():
     step = make_motion_step(
         'pre_grasp',
         MOVEJ,
-        target_pose=make_pose_stamped([0.4, 0.0, 0.2, 3.14, 0.0, 0.0], 'base_link'),
+        joint_target=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
         velocity=0.3,
         acceleration=0.2,
         blend_radius=0.01,
         dwell_sec=0.0,
     )
 
-    payload = motion_step_to_payload(
-        step,
-        robot_id=0,
-        movea_joint_targets={
-            'pre_grasp': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
-        },
-    )
+    payload = motion_step_to_payload(step, robot_id=0)
     prefix, json_text = payload.split(' ', 1)
     message = json.loads(json_text)
 
@@ -71,13 +65,7 @@ def test_motion_step_to_payload_prefers_step_joint_target_for_movea():
         dwell_sec=0.0,
     )
 
-    payload = motion_step_to_payload(
-        step,
-        robot_id=0,
-        movea_joint_targets={
-            'init_waypoint_001': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        },
-    )
+    payload = motion_step_to_payload(step, robot_id=0)
     prefix, json_text = payload.split(' ', 1)
     message = json.loads(json_text)
 
@@ -100,7 +88,7 @@ def test_motion_step_to_payload_rejects_movej_without_joint_target():
 
     with pytest.raises(
         ValueError,
-        match='step.joint_target and movea_joint_targets.pre_grasp',
+        match='missing step.joint_target',
     ):
         motion_step_to_payload(step, robot_id=0)
 

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  这份 SRDF 只提供当前 PCB demo 所需的最小语义信息：
+  - 单规划组 jearm_arm
+  - 链路从 base_link 到 Link7
+  - 若后续要加夹具/TCP，可在这里继续扩展 end effector / group state
+-->
+<robot name="RH_JEARM">
+  <group name="jearm_arm">
+    <chain base_link="base_link" tip_link="Link7"/>
+  </group>
+
+  <disable_collisions link1="base_link" link2="Link1" reason="Adjacent"/>
+  <disable_collisions link1="Link1" link2="Link2" reason="Adjacent"/>
+  <disable_collisions link1="Link2" link2="Link3" reason="Adjacent"/>
+  <disable_collisions link1="Link3" link2="Link4" reason="Adjacent"/>
+  <disable_collisions link1="Link4" link2="Link5" reason="Adjacent"/>
+  <disable_collisions link1="Link5" link2="Link6" reason="Adjacent"/>
+  <disable_collisions link1="Link6" link2="Link7" reason="Adjacent"/>
+</robot>

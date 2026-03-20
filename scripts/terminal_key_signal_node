@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import sys
 
-from je_software.terminal_key_signal_node import main
+from je_software.new_system_architecture.terminal_key_signal_node import main
 
 
 if __name__ == '__main__':

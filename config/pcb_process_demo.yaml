@@ -19,11 +19,11 @@ fixed_line_vision_node:
     # 格式: [x, y, z, roll, pitch, yaw]
     # 单位: 平移为米，姿态为弧度。
     # 当前初版流程里它只表示“板子在哪里”，不会直接下发给机器人执行。
-    pcb_pose: [0.45, 0.00, 0.12, 3.1415926, 0.0, 0.0]
+    pcb_pose: [-0.050675, -0.197220, 0.286749, 3.121704, 0.115453, -1.803225]
     # pick_pose: 真正用于生成抓取动作的末端目标位姿。
     # 抓取序列里的 grasp / retreat 这类 MoveL，最终都会基于这个位姿计算。
     # 如果后续要改抓取点，优先改这个值。
-    pick_pose: [-0.4119008203229002,0.009936020178260145,0.33359319843309565,-1.5547984097526857,0.05842961120063412,1.5709242745950034]
+    pick_pose: [-0.050675, -0.197220, 0.286749, 3.121704, 0.115453, -1.803225]
     confidence: 1.0
 
 fixed_inspection_node:
@@ -39,7 +39,7 @@ fixed_slot_provider_node:
     frame_id: base_link
     fixed_box_type: good
     fixed_slot_id: 0
-    slot_pose: [0.24, -0.25, 0.08, 3.1415926, 0.0, 0.0]
+    slot_pose: [-0.051824, -0.193120, 0.360501, 3.050773, 0.557070, -1.719989]
     confidence: 1.0
 
 zmq_motion_backend_node:
@@ -57,16 +57,6 @@ zmq_motion_backend_node:
     state_poll_hz: 20.0
     state_topic: /motion_backend/robot_state
     state_service_name: /motion_backend/get_robot_state
-    # 下面 4 个 movea_joint_targets 是“真正执行的关节位置”。
-    # 每个数组都表示 [joint1, joint2, joint3, joint4, joint5, joint6, joint7]，单位为弧度。
-    # 当前后端对 MOVEJ 的处理是:
-    #   MOVEJ -> jeserver.cpp 的 MoveA
-    # 因此凡是名字分别为 pre_grasp / inspection_pre / pre_place / home 的 MoveJ 步骤，
-    # 最终都会优先使用这里的关节值，而不是使用对应的笛卡尔位姿。
-    movea_joint_targets.pre_grasp: [-0.02455495777758135,-1.1060241165153606,0.02358711177422475,0.9920395169110348,0.017898919265146297,-1.4427003023645169,1.6107037957297377]
-    movea_joint_targets.inspection_pre: [-0.02455495777758135,-1.1060241165153606,0.02358711177422475,0.9920395169110348,0.017898919265146297,-1.4427003023645169,1.6107037957297377]
-    movea_joint_targets.pre_place: [-0.16413738241075262,-1.648686598144775,1.1857563632331884,1.1774939592144396,0.22097448650039114,-1.354674252958688,1.6843109050984377]
-    movea_joint_targets.home: [-0.047564190, -1.082073883, 0.009202207, 0.937263460, 0.044534578, -1.442698625, -0.059825251]
 
 pcb_process_task_manager_node:
   ros__parameters:
@@ -117,22 +107,33 @@ pcb_process_task_manager_node:
     slot_service_timeout_sec: 1.0
     inspection_service_timeout_sec: 1.0
     motion_server_timeout_sec: 1.0
+    # MoveIt2 负责把语义动作解析成最终可执行的关节轨迹。
+    # - MOVEJ + target_pose -> /compute_ik
+    # - MOVEL + target_pose -> /compute_cartesian_path
+    moveit_ik_service: /pcb_moveit/compute_ik
+    moveit_cartesian_service: /pcb_moveit/compute_cartesian_path
+    moveit_group_name: jearm_arm
+    moveit_tip_link: Link7
+    moveit_ik_timeout_sec: 2.0
+    moveit_ik_attempts: 1
+    moveit_cartesian_max_step: 0.01
+    moveit_cartesian_jump_threshold: 0.0
+    moveit_avoid_collisions: false
     # 下面这些是任务层使用的“语义位姿”，格式均为 [x, y, z, roll, pitch, yaw]。
     # 注意：
-    # 1. 对于 MOVEL 步骤，这些位姿会直接成为真正执行的末端目标位姿。
-    # 2. 对于名字为 pre_grasp / inspection_pre / pre_place / home 的 MOVEJ 步骤，
-    #    当前实现最终还是会被 movea_joint_targets.* 里的关节值覆盖。
-    home_pose: [0.32, 0.00, 0.28, 3.1415926, 0.0, 0.0]
-    inspection_pre_pose: [0.18, 0.18, 0.22, 3.1415926, 0.0, 0.0]
-    inspection_pose: [0.18, 0.18, 0.14, 3.1415926, 0.0, 0.0]
+    # 1. 对于 MOVEJ 步骤，MoveIt2 会先对这些位姿做 IK，求出关节目标，再发 MoveA。
+    # 2. 对于 MOVEL 步骤，MoveIt2 会先规划 TCP 直线轨迹，再展开成多条 MoveA。
+    home_pose: [-0.058677, -0.548942, 0.509694, -3.139788, 0.016129, -1.525491]
+    inspection_pre_pose: [-0.073900, -0.586240, 0.537245, 3.074760, -0.017076, -1.521769]
+    inspection_pose: [-0.043063, -0.618770, 0.560808, 3.138551, -0.006561, -1.541514]
 
     # 下面这些 offset 也是笛卡尔偏置，格式同样为 [x, y, z, roll, pitch, yaw]。
     # 它们用于从某个基准位姿推导出 pre-grasp / retreat / pre-place 等语义目标位姿。
-    pick_pre_offset: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
-    pick_retreat_offset: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
+    pick_pre_offset: [0.007778, 0.016093, 0.005258, -0.007410, 0.140389, 0.014340]
+    pick_retreat_offset: [0.007778, 0.016093, 0.005258, -0.007410, 0.140389, 0.014340]
     place_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    place_pre_offset: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
-    place_retreat_offset: [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
+    place_pre_offset: [-0.003358, -0.013371, 0.038215, -0.024126, 0.074323, -0.008615]
+    place_retreat_offset: [-0.003358, -0.013371, 0.038215, -0.024126, 0.074323, -0.008615]
     movej_velocity: 0.3
     movej_acceleration: 0.3
     movej_blend_radius: 0.0

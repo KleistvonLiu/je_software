@@ -1,3 +1,4 @@
+import copy
 from types import MethodType
 
 import pytest
@@ -30,6 +31,60 @@ def rclpy_context():
     rclpy.init()
     yield
     rclpy.shutdown()
+
+
+class FakeMotionResolver:
+    def __init__(self):
+        self.calls = []
+
+    def resolve_steps(self, steps):
+        self.calls.append([step.name for step in steps])
+        resolved_steps = []
+        synthetic_index = 0
+        for step in steps:
+            if step.command_type == MOVEJ and not list(step.joint_target):
+                synthetic_index += 1
+                resolved_step = copy.deepcopy(step)
+                resolved_step.joint_target = [
+                    synthetic_index * 0.1 + axis * 0.01
+                    for axis in range(7)
+                ]
+                resolved_steps.append(resolved_step)
+                continue
+
+            if step.command_type == MOVEL:
+                for point_index in range(2):
+                    synthetic_index += 1
+                    resolved_step = copy.deepcopy(step)
+                    resolved_step.name = f'{step.name}_{point_index + 1:04d}'
+                    resolved_step.command_type = MOVEJ
+                    resolved_step.joint_target = [
+                        synthetic_index * 0.1 + axis * 0.01
+                        for axis in range(7)
+                    ]
+                    resolved_step.dwell_sec = float(step.dwell_sec) / 2.0
+                    resolved_steps.append(resolved_step)
+                continue
+
+            resolved_steps.append(copy.deepcopy(step))
+        return resolved_steps
+
+
+@pytest.fixture(autouse=True)
+def fake_moveit_motion_resolver(monkeypatch):
+    created_resolvers = []
+
+    def _create_motion_resolver(self):
+        resolver = FakeMotionResolver()
+        created_resolvers.append(resolver)
+        return resolver
+
+    monkeypatch.setattr(
+        PcbProcessTaskManagerNode,
+        '_create_motion_resolver',
+        _create_motion_resolver,
+    )
+    return created_resolvers
 
 
 class DummyFuture:
@@ -93,6 +148,26 @@ class DummyRecoverGoalHandle:
 
     def abort(self):
         self.aborted = True
+
+
+class DummyMotionGoalHandle:
+    def __init__(self):
+        self.accepted = True
+
+    def get_result_async(self):
+        return DummyAsyncFuture(DummyMotionWrappedResult())
+
+
+class DummyMotionClient:
+    def __init__(self):
+        self.sent_goal = None
+
+    def wait_for_server(self, timeout_sec=0.0):
+        return True
+
+    def send_goal_async(self, goal, feedback_callback=None):
+        self.sent_goal = goal
+        return DummyAsyncFuture(DummyMotionGoalHandle())
 
 
 def test_motion_sequences_match_expected_order():
@@ -269,6 +344,51 @@ def test_build_recover_to_initial_sequence_rejects_empty_init_path():
             [],
             movej,
         )
+
+
+def test_send_motion_goal_resolves_movej_and_movel_steps_before_dispatch():
+    node = PcbProcessTaskManagerNode()
+    node.motion_client = DummyMotionClient()
+
+    steps = build_pick_sequence(
+        make_pose_stamped([0.45, 0.0, 0.12, 3.14, 0.0, 0.0], 'base_link'),
+        'base_link',
+        [0.0, 0.0, 0.08, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.08, 0.0, 0.0, 0.0],
+        {
+            'velocity': 0.3,
+            'acceleration': 0.3,
+            'blend_radius': 0.0,
+            'dwell_sec': 0.3,
+        },
+        {
+            'velocity': 0.1,
+            'acceleration': 0.1,
+            'blend_radius': 0.0,
+            'dwell_sec': 0.2,
+        },
+        0.4,
+    )
+
+    node._send_motion_goal('probe', 'probe_sequence', steps)
+
+    assert node.motion_client.sent_goal is not None
+    sent_steps = list(node.motion_client.sent_goal.steps)
+    assert [step.name for step in sent_steps] == [
+        'pre_grasp',
+        'grasp_0001',
+        'grasp_0002',
+        'close',
+        'retreat_0001',
+        'retreat_0002',
+    ]
+    assert sent_steps[0].command_type == MOVEJ
+    assert list(sent_steps[0].joint_target)
+    assert sent_steps[1].command_type == MOVEJ
+    assert list(sent_steps[1].joint_target)
+    assert sent_steps[3].command_type == 'GRIPPER'
+
+    node.destroy_node()
 
 
 def test_task_manager_happy_path_state_flow():

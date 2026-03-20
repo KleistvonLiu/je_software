@@ -1,3 +1,4 @@
-"""Backward-compatible alias for the shared calibration helpers."""
+"""兼容转发到 new_system_architecture。"""
 
-from je_software.calibration_common import *  # noqa: F401,F403
+from je_software.new_system_architecture.hand_eye_common import *  # noqa: F401,F403
+

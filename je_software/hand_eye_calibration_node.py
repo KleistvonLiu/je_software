@@ -1,9 +1,4 @@
-"""Backward-compatible alias for the eye-to-hand calibration node."""
+"""兼容转发到 new_system_architecture。"""
 
-from je_software.eye_to_hand_calibration_node import (
-    EyeToHandCalibrationNode,
-    main,
-)
+from je_software.new_system_architecture.hand_eye_calibration_node import *  # noqa: F401,F403
 
-
-HandEyeCalibrationNode = EyeToHandCalibrationNode
