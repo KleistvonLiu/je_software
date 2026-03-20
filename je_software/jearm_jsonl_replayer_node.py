@@ -32,6 +32,12 @@ DEFAULT_JOINT_NAMES = [
     'joint7',
 ]
 DEFAULT_ROBOT_KEY = 'Robot0'
+ANSI_GREEN = '\033[32m'
+ANSI_RESET = '\033[0m'
+
+
+def green_text(text: str) -> str:
+    return f'{ANSI_GREEN}{text}{ANSI_RESET}'
 
 
 @dataclass(frozen=True)
@@ -352,7 +358,7 @@ class JearmJsonlReplayerNode(Node):
             # 恢复播放时重置 tick 基准，避免暂停期间累计的墙钟时间一次性灌进回放时间轴。
             self._last_tick_ns = time.monotonic_ns()
             state = 'PAUSED' if self._paused else 'RUNNING'
-            self.get_logger().info(f'Replay state -> {state}')
+            self.get_logger().info(green_text(f'Replay state -> {state}'))
             return
 
         if key.lower() == 'q':

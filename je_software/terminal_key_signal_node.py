@@ -20,6 +20,13 @@ from rclpy.qos import ReliabilityPolicy
 from je_software.action import RecoverToInitial
 from je_software.msg import PcbPresence
 
+ANSI_GREEN = '\033[32m'
+ANSI_RESET = '\033[0m'
+
+
+def green_text(text: str) -> str:
+    return f'{ANSI_GREEN}{text}{ANSI_RESET}'
+
 
 class TerminalKeySignalNode(Node):
     """Publish fixed PCB presence states from terminal key presses."""
@@ -120,7 +127,7 @@ class TerminalKeySignalNode(Node):
         self._ready = bool(present)
         self._publish_current_state()
         label = 'READY' if present else 'CLEARED'
-        self.get_logger().info(f'PCB signal state -> {label}')
+        self.get_logger().info(green_text(f'PCB signal state -> {label}'))
 
     def _poll_keypress(self) -> None:
         if self._input_stream is None or self._input_fd is None:
@@ -190,7 +197,7 @@ class TerminalKeySignalNode(Node):
             return
 
         self._recover_goal_handle = goal_handle
-        self.get_logger().info('Recover-to-initial goal accepted.')
+        self.get_logger().info(green_text('Recover-to-initial goal accepted.'))
         result_future = goal_handle.get_result_async()
         self._recover_result_future = result_future
         result_future.add_done_callback(self._on_recover_result)
@@ -209,7 +216,9 @@ class TerminalKeySignalNode(Node):
             goal_result.status == GoalStatus.STATUS_SUCCEEDED
             and result.success
         ):
-            self.get_logger().info('Recover-to-initial completed successfully.')
+            self.get_logger().info(
+                green_text('Recover-to-initial completed successfully.')
+            )
             return
 
         self.get_logger().error(

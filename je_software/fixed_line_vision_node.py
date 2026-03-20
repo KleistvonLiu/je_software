@@ -62,7 +62,15 @@ class FixedLineVisionNode(Node):
             str(self.get_parameter('service_name').value),
             self._handle_get_pick_pose,
         )
-        self.get_logger().info('Fixed line vision node ready.')
+        self.get_logger().info(
+            'Fixed line vision node ready. '
+            f'loaded pcb_pose={self._format_values(self._pcb_pose)}, '
+            f'pick_pose={self._format_values(self._pick_pose)}, '
+            f'frame_id={self.frame_id}'
+        )
+
+    def _format_values(self, values) -> str:
+        return '[' + ', '.join(f'{float(value):.6f}' for value in values) + ']'
 
     def _presence_callback(self, msg: PcbPresence) -> None:
         # 持续记录最新状态，供 service 请求时判断是否允许抓取。
@@ -96,6 +104,11 @@ class FixedLineVisionNode(Node):
         response.reason = 'ok'
         response.pcb_pose_base = make_pose_stamped(self._pcb_pose, self.frame_id)
         response.pick_pose_base = make_pose_stamped(self._pick_pose, self.frame_id)
+        self.get_logger().info(
+            'Using preloaded fixed poses for GetPcbPickPose: '
+            f'pcb_pose={self._format_values(self._pcb_pose)}, '
+            f'pick_pose={self._format_values(self._pick_pose)}'
+        )
         response.pcb_pose_base.header.stamp = now
         response.pick_pose_base.header.stamp = now
         response.confidence = self.confidence

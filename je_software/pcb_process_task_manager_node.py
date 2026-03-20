@@ -37,12 +37,20 @@ from je_software.pcb_process_common import build_inspection_sequence
 from je_software.pcb_process_common import build_pick_sequence
 from je_software.pcb_process_common import build_place_sequence
 from je_software.pcb_process_common import build_recover_to_initial_sequence
+from je_software.pcb_process_common import pose_to_rpy_list
 from je_software.pcb_process_common import require_joint_list
 from je_software.pcb_process_common import require_pose_list
 from je_software.srv import GetAvailableSlot
 from je_software.srv import GetPcbPickPose
 from je_software.srv import GetRobotState
 from je_software.srv import TriggerInspection
+
+ANSI_GREEN = '\033[32m'
+ANSI_RESET = '\033[0m'
+
+
+def green_text(text: str) -> str:
+    return f'{ANSI_GREEN}{text}{ANSI_RESET}'
 
 
 class ProcessState(str, Enum):
@@ -271,7 +279,22 @@ class PcbProcessTaskManagerNode(Node):
             max(self.startup_delay_sec, 0.05),
             self._on_startup_timer,
         )
-        self.get_logger().info('PCB process task manager ready.')
+        self.get_logger().info(
+            'PCB process task manager ready. '
+            f'loaded initial_joint_position={self._format_values(self.initial_joint_position)}, '
+            f'home_pose={self._format_values(self.home_pose)}, '
+            f'inspection_pre_pose={self._format_values(self.inspection_pre_pose)}, '
+            f'inspection_pose={self._format_values(self.inspection_pose)}, '
+            f'pick_pre_offset={self._format_values(self.pick_pre_offset)}, '
+            f'pick_retreat_offset={self._format_values(self.pick_retreat_offset)}, '
+            f'place_offset={self._format_values(self.place_offset)}, '
+            f'place_pre_offset={self._format_values(self.place_pre_offset)}, '
+            f'place_retreat_offset={self._format_values(self.place_retreat_offset)}, '
+            f'init_trajectory_points_count={len(self.init_trajectory_points)}'
+        )
+
+    def _format_values(self, values) -> str:
+        return '[' + ', '.join(f'{float(value):.6f}' for value in values) + ']'
 
     def _declare_parameters(self) -> None:
         self.declare_parameter('presence_topic', '/vision/line/pcb_presence')
@@ -474,6 +497,15 @@ class PcbProcessTaskManagerNode(Node):
             return
 
         self._stop_init_check_timer()
+        self.get_logger().info(
+            'Using preloaded init_trajectory_points for initialization: '
+            f'count={len(self.init_trajectory_points)}'
+        )
+        for index, point in enumerate(self.init_trajectory_points, start=1):
+            self.get_logger().info(
+                f'init_trajectory_points[{index}]='
+                f'{self._format_values(point)}'
+            )
         steps = build_joint_trajectory_sequence(
             self.init_trajectory_points,
             self.init_movej_config,
@@ -588,6 +620,12 @@ class PcbProcessTaskManagerNode(Node):
         self._manual_recovery_done.clear()
 
         try:
+            self.get_logger().info(
+                'Using preloaded values for manual recovery: '
+                f'home_pose={self._format_values(self.home_pose)}, '
+                f'initial_joint_position={self._format_values(self.initial_joint_position)}, '
+                f'init_trajectory_points_count={len(self.init_trajectory_points)}'
+            )
             steps = self._build_manual_recovery_steps()
         except Exception as exc:
             error_code = f'manual_recovery_prepare_failed:{exc}'
@@ -630,7 +668,11 @@ class PcbProcessTaskManagerNode(Node):
         # 统一从这里打印状态迁移日志，便于排查流程卡在哪一步。
         if self._state == state:
             return
-        self.get_logger().info(f'STATE {self._state.value} -> {state.value}: {reason}')
+        self.get_logger().info(
+            green_text(
+                f'STATE {self._state.value} -> {state.value}: {reason}'
+            )
+        )
         self._state = state
 
     def _reset_for_next_cycle(self) -> None:
@@ -652,6 +694,10 @@ class PcbProcessTaskManagerNode(Node):
             self._cycle_index += 1
             self._current_pcb_id = f'pcb_{self._cycle_index:06d}'
             self._transition(ProcessState.MOVE_HOME_BEFORE_PICK, 'pcb_ready_edge')
+            self.get_logger().info(
+                'Using preloaded home_pose for home_before_pick: '
+                f'{self._format_values(self.home_pose)}'
+            )
             steps = build_home_sequence(
                 self.frame_id,
                 self.home_pose,
@@ -691,6 +737,12 @@ class PcbProcessTaskManagerNode(Node):
             return
 
         # 感知成功后，立刻把抓取动作序列拼出来并发给运动后端。
+        self.get_logger().info(
+            'Using returned pick_pose_base with preloaded pick offsets: '
+            f'pick_pose={self._format_values(pose_to_rpy_list(response.pick_pose_base))}, '
+            f'pick_pre_offset={self._format_values(self.pick_pre_offset)}, '
+            f'pick_retreat_offset={self._format_values(self.pick_retreat_offset)}'
+        )
         steps = build_pick_sequence(
             response.pick_pose_base,
             self.frame_id,
@@ -806,6 +858,11 @@ class PcbProcessTaskManagerNode(Node):
                 ProcessState.MOVE_TO_INSPECTION,
                 'pick_sequence_done',
             )
+            self.get_logger().info(
+                'Using preloaded inspection poses: '
+                f'inspection_pre_pose={self._format_values(self.inspection_pre_pose)}, '
+                f'inspection_pose={self._format_values(self.inspection_pose)}'
+            )
             steps = build_inspection_sequence(
                 self.frame_id,
                 self.inspection_pre_pose,
@@ -833,6 +890,10 @@ class PcbProcessTaskManagerNode(Node):
         if purpose == 'place':
             # 放置完成后统一回 home，流程才算结束。
             self._transition(ProcessState.GO_HOME, 'place_sequence_done')
+            self.get_logger().info(
+                'Using preloaded home_pose for home_sequence: '
+                f'{self._format_values(self.home_pose)}'
+            )
             steps = build_home_sequence(
                 self.frame_id,
                 self.home_pose,
@@ -929,6 +990,13 @@ class PcbProcessTaskManagerNode(Node):
             return
 
         # 槽位可用后，生成固定放置动作序列。
+        self.get_logger().info(
+            'Using slot_pose_base with preloaded place offsets: '
+            f'slot_pose={self._format_values(pose_to_rpy_list(response.slot_pose_base))}, '
+            f'place_offset={self._format_values(self.place_offset)}, '
+            f'place_pre_offset={self._format_values(self.place_pre_offset)}, '
+            f'place_retreat_offset={self._format_values(self.place_retreat_offset)}'
+        )
         steps = build_place_sequence(
             response.slot_pose_base,
             self.frame_id,
@@ -963,6 +1031,10 @@ class PcbProcessTaskManagerNode(Node):
             self._reset_for_next_cycle()
             return
         self._recovering = True
+        self.get_logger().info(
+            'Using preloaded home_pose for recover_home: '
+            f'{self._format_values(self.home_pose)}'
+        )
         steps = build_home_sequence(
             self.frame_id,
             self.home_pose,

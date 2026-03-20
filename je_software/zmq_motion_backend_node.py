@@ -291,6 +291,14 @@ class ZmqMotionBackendNode(Node):
             f'state={self.get_parameter("state_socket_mode").value}:'
             f'{self.get_parameter("state_endpoint").value}'
         )
+        for name, joint_target in sorted(self._movea_joint_targets.items()):
+            self.get_logger().info(
+                'Loaded movea_joint_targets.'
+                f'{name}={self._format_values(joint_target)}'
+            )
+
+    def _format_values(self, values) -> str:
+        return '[' + ', '.join(f'{float(value):.6f}' for value in values) + ']'
 
     def _create_command_socket(self):
         socket = self._context.socket(zmq.PUB)
@@ -435,6 +443,41 @@ class ZmqMotionBackendNode(Node):
                 feedback.step_index = index
                 feedback.active_step_name = step.name
                 goal_handle.publish_feedback(feedback)
+
+                if step.command_type == MOVEJ:
+                    explicit_joint_target = [float(value) for value in step.joint_target]
+                    if explicit_joint_target:
+                        self.get_logger().info(
+                            f'[{goal_handle.request.sequence_name}] '
+                            f'using step.joint_target for {step.name}: '
+                            f'{self._format_values(explicit_joint_target)}'
+                        )
+                    else:
+                        configured_joint_target = self._movea_joint_targets.get(step.name)
+                        self.get_logger().info(
+                            f'[{goal_handle.request.sequence_name}] '
+                            f'using movea_joint_targets.{step.name} for {step.name}: '
+                            f'{self._format_values(configured_joint_target or [])}'
+                        )
+                elif step.command_type == MOVEL:
+                    cartesian_pose = pose_to_rpy_list(step.target_pose)
+                    self.get_logger().info(
+                        f'[{goal_handle.request.sequence_name}] '
+                        f'using target_pose for {step.name}: '
+                        f'{self._format_values(cartesian_pose)}'
+                    )
+                elif step.command_type == GRIPPER:
+                    self.get_logger().info(
+                        f'[{goal_handle.request.sequence_name}] '
+                        f'using gripper_command for {step.name}: '
+                        f'{step.gripper_command}'
+                    )
+                elif step.command_type == WAIT:
+                    self.get_logger().info(
+                        f'[{goal_handle.request.sequence_name}] '
+                        f'using dwell_sec for {step.name}: '
+                        f'{float(step.dwell_sec):.6f}'
+                    )
 
                 payload = motion_step_to_payload(
                     step,
