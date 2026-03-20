@@ -13,6 +13,16 @@ def _as_bool(text: str) -> bool:
     return text.strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def _prefix_frame(frame_prefix: str, frame_name: str) -> str:
+    """把 frame_prefix 和裸 frame 名拼成最终 TF frame 名。"""
+    prefix = frame_prefix.strip()
+    if not prefix:
+        return frame_name
+    if prefix.endswith('/'):
+        return f'{prefix}{frame_name}'
+    return f'{prefix}/{frame_name}'
+
+
 def _make_nodes(context):
     urdf_path = LaunchConfiguration('urdf_path').perform(context)
     jsonl_path = LaunchConfiguration('jsonl_path').perform(context)
@@ -28,6 +38,13 @@ def _make_nodes(context):
     follow_recorded_timing = _as_bool(
         LaunchConfiguration('follow_recorded_timing').perform(context)
     )
+    base_anchor_frame = LaunchConfiguration('base_anchor_frame').perform(context)
+    base_anchor_x = LaunchConfiguration('base_anchor_x').perform(context)
+    base_anchor_y = LaunchConfiguration('base_anchor_y').perform(context)
+    base_anchor_z = LaunchConfiguration('base_anchor_z').perform(context)
+    base_anchor_roll = LaunchConfiguration('base_anchor_roll').perform(context)
+    base_anchor_pitch = LaunchConfiguration('base_anchor_pitch').perform(context)
+    base_anchor_yaw = LaunchConfiguration('base_anchor_yaw').perform(context)
 
     if launch_replayer and not jsonl_path:
         raise RuntimeError('Launch argument "jsonl_path" must be provided.')
@@ -42,8 +59,33 @@ def _make_nodes(context):
         'rviz',
         'jearm_replay.rviz',
     )
+    prefixed_base_link = _prefix_frame(frame_prefix, 'base_link')
 
     nodes = [
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='jearm_replay_base_anchor_tf',
+            output='screen',
+            arguments=[
+                '--x',
+                base_anchor_x,
+                '--y',
+                base_anchor_y,
+                '--z',
+                base_anchor_z,
+                '--roll',
+                base_anchor_roll,
+                '--pitch',
+                base_anchor_pitch,
+                '--yaw',
+                base_anchor_yaw,
+                '--frame-id',
+                base_anchor_frame,
+                '--child-frame-id',
+                prefixed_base_link,
+            ],
+        ),
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -131,6 +173,41 @@ def generate_launch_description():
                 'frame_prefix',
                 default_value='jearm_replay/',
                 description='TF frame prefix used to isolate replay frames from other robots.',
+            ),
+            DeclareLaunchArgument(
+                'base_anchor_frame',
+                default_value='jearm_replay/base_anchor',
+                description='RViz-only physical base anchor frame.',
+            ),
+            DeclareLaunchArgument(
+                'base_anchor_x',
+                default_value='-0.0445',
+                description='Static base anchor translation X in meters.',
+            ),
+            DeclareLaunchArgument(
+                'base_anchor_y',
+                default_value='-0.2126',
+                description='Static base anchor translation Y in meters.',
+            ),
+            DeclareLaunchArgument(
+                'base_anchor_z',
+                default_value='0.9008',
+                description='Static base anchor translation Z in meters.',
+            ),
+            DeclareLaunchArgument(
+                'base_anchor_roll',
+                default_value='1.5708',
+                description='Static base anchor roll in radians.',
+            ),
+            DeclareLaunchArgument(
+                'base_anchor_pitch',
+                default_value='-1.5708',
+                description='Static base anchor pitch in radians.',
+            ),
+            DeclareLaunchArgument(
+                'base_anchor_yaw',
+                default_value='0.0',
+                description='Static base anchor yaw in radians.',
             ),
             DeclareLaunchArgument(
                 'rate_hz',

@@ -137,6 +137,8 @@ Visualization Manager:
           Value: true
         base_link:
           Value: true
+        base_anchor:
+          Value: true
         world:
           Value: true
       Marker Scale: 0.10000000149011612
@@ -151,7 +153,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: jearm_replay/base_link
+    Fixed Frame: jearm_replay/base_anchor
     Frame Rate: 30
   Name: root
   Tools:
