@@ -73,6 +73,19 @@ def _joint_lists_equal(left: list[float], right: list[float]) -> bool:
     )
 
 
+def _max_joint_delta(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right):
+        raise ValueError(
+            f'joint_length_mismatch:left={len(left)} right={len(right)}'
+        )
+    if not left:
+        return 0.0
+    return max(
+        abs(float(left_value) - float(right_value))
+        for left_value, right_value in zip(left, right)
+    )
+
+
 def _reorder_joint_positions(
     joint_names: list[str],
     positions: list[float],
@@ -143,6 +156,7 @@ class MoveItMotionResolver:
         moveit_ik_timeout_sec: float,
         moveit_ik_attempts: int,
         moveit_cartesian_max_step: float,
+        moveit_movej_max_joint_step: float,
         moveit_cartesian_jump_threshold: float,
         moveit_avoid_collisions: bool,
         robot_state_timeout_sec: float,
@@ -155,6 +169,10 @@ class MoveItMotionResolver:
         self._moveit_ik_timeout_sec = float(moveit_ik_timeout_sec)
         self._moveit_ik_attempts = max(int(moveit_ik_attempts), 1)
         self._moveit_cartesian_max_step = float(moveit_cartesian_max_step)
+        self._moveit_movej_max_joint_step = max(
+            float(moveit_movej_max_joint_step),
+            0.0,
+        )
         self._moveit_cartesian_jump_threshold = float(
             moveit_cartesian_jump_threshold
         )
@@ -269,9 +287,12 @@ class MoveItMotionResolver:
                     step,
                     current_seed,
                 )
-                resolved_step = copy.deepcopy(step)
-                resolved_step.joint_target = resolved_joint_target
-                resolved_steps.append(resolved_step)
+                movej_steps = self._densify_movej_step(
+                    step,
+                    current_seed,
+                    resolved_joint_target,
+                )
+                resolved_steps.extend(movej_steps)
                 current_seed = resolved_joint_target
                 continue
 
@@ -394,6 +415,59 @@ class MoveItMotionResolver:
             f'joint_target={_format_values(resolved_joint_target)}'
         )
         return resolved_joint_target
+
+    def _densify_movej_step(
+        self,
+        step: MotionStep,
+        seed_joint_positions: list[float],
+        resolved_joint_target: list[float],
+    ) -> list[MotionStep]:
+        """把单个 MOVEJ 终点按关节步长插值成多段。
+
+        当前 MOVEJ 语义只有终点，没有完整关节轨迹。
+        这里按“所有关节里最大角度变化”决定分段数，让每一段的最大关节变化
+        不超过 `moveit_movej_max_joint_step`。
+        """
+        max_joint_step = self._moveit_movej_max_joint_step
+        if max_joint_step <= 0.0:
+            resolved_step = copy.deepcopy(step)
+            resolved_step.joint_target = list(resolved_joint_target)
+            return [resolved_step]
+
+        joint_delta = _max_joint_delta(seed_joint_positions, resolved_joint_target)
+        segment_count = max(
+            1,
+            int(math.ceil(joint_delta / max_joint_step)),
+        )
+        if segment_count == 1:
+            resolved_step = copy.deepcopy(step)
+            resolved_step.joint_target = list(resolved_joint_target)
+            return [resolved_step]
+
+        interpolated_steps: list[MotionStep] = []
+        dwell_per_step = max(float(step.dwell_sec), 0.0) / float(segment_count)
+        for index in range(1, segment_count + 1):
+            alpha = float(index) / float(segment_count)
+            joint_target = [
+                float(seed_value)
+                + (float(target_value) - float(seed_value)) * alpha
+                for seed_value, target_value in zip(
+                    seed_joint_positions,
+                    resolved_joint_target,
+                )
+            ]
+            resolved_step = copy.deepcopy(step)
+            resolved_step.name = f'{step.name}_{index:04d}'
+            resolved_step.joint_target = joint_target
+            resolved_step.dwell_sec = dwell_per_step
+            interpolated_steps.append(resolved_step)
+
+        self._logger.info(
+            f'MoveIt MOVEJ densified {step.name}: '
+            f'points={len(interpolated_steps)}, '
+            f'final_joint_target={_format_values(interpolated_steps[-1].joint_target)}'
+        )
+        return interpolated_steps
 
     def _compute_cartesian_steps(
         self,

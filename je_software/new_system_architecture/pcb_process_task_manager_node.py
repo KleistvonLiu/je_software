@@ -182,6 +182,9 @@ class PcbProcessTaskManagerNode(Node):
         self.moveit_cartesian_max_step = float(
             self.get_parameter('moveit_cartesian_max_step').value
         )
+        self.moveit_movej_max_joint_step = float(
+            self.get_parameter('moveit_movej_max_joint_step').value
+        )
         self.moveit_cartesian_jump_threshold = float(
             self.get_parameter('moveit_cartesian_jump_threshold').value
         )
@@ -323,7 +326,8 @@ class PcbProcessTaskManagerNode(Node):
             f'moveit_group_name={self.moveit_group_name}, '
             f'moveit_tip_link={self.moveit_tip_link}, '
             f'moveit_ik_service={self.moveit_ik_service}, '
-            f'moveit_cartesian_service={self.moveit_cartesian_service}'
+            f'moveit_cartesian_service={self.moveit_cartesian_service}, '
+            f'moveit_movej_max_joint_step={self.moveit_movej_max_joint_step:.6f}'
         )
 
     def _format_values(self, values) -> str:
@@ -386,6 +390,7 @@ class PcbProcessTaskManagerNode(Node):
         self.declare_parameter('moveit_ik_timeout_sec', 2.0)
         self.declare_parameter('moveit_ik_attempts', 1)
         self.declare_parameter('moveit_cartesian_max_step', 0.01)
+        self.declare_parameter('moveit_movej_max_joint_step', 0.1)
         self.declare_parameter('moveit_cartesian_jump_threshold', 0.0)
         self.declare_parameter('moveit_avoid_collisions', False)
 
@@ -479,6 +484,7 @@ class PcbProcessTaskManagerNode(Node):
             moveit_ik_timeout_sec=self.moveit_ik_timeout_sec,
             moveit_ik_attempts=self.moveit_ik_attempts,
             moveit_cartesian_max_step=self.moveit_cartesian_max_step,
+            moveit_movej_max_joint_step=self.moveit_movej_max_joint_step,
             moveit_cartesian_jump_threshold=self.moveit_cartesian_jump_threshold,
             moveit_avoid_collisions=self.moveit_avoid_collisions,
             robot_state_timeout_sec=max(

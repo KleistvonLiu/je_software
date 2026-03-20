@@ -125,6 +125,9 @@ pcb_process_task_manager_node:
     moveit_ik_timeout_sec: 2.0
     moveit_ik_attempts: 1
     moveit_cartesian_max_step: 0.01
+    # MOVEJ 在 IK 得到终点后，会继续按关节最大步长做线性插值。
+    # 这个值越小，拆出来的关节路点越密；单位为弧度。
+    moveit_movej_max_joint_step: 0.1
     moveit_cartesian_jump_threshold: 0.0
     moveit_avoid_collisions: false
     # 下面这些是任务层使用的“语义位姿”，格式均为 [x, y, z, roll, pitch, yaw]。
