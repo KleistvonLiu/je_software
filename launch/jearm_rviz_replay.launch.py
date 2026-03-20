@@ -19,6 +19,7 @@ def _make_nodes(context):
     joint_state_topic = LaunchConfiguration('joint_state_topic').perform(context)
     robot_description_topic = LaunchConfiguration('robot_description_topic').perform(context)
     frame_prefix = LaunchConfiguration('frame_prefix').perform(context)
+    launch_replayer = _as_bool(LaunchConfiguration('launch_replayer').perform(context))
     rate_hz = float(LaunchConfiguration('rate_hz').perform(context))
     paused = _as_bool(LaunchConfiguration('paused').perform(context))
     use_recorded_timestamps = _as_bool(
@@ -28,7 +29,7 @@ def _make_nodes(context):
         LaunchConfiguration('follow_recorded_timing').perform(context)
     )
 
-    if not jsonl_path:
+    if launch_replayer and not jsonl_path:
         raise RuntimeError('Launch argument "jsonl_path" must be provided.')
     if not os.path.exists(urdf_path):
         raise FileNotFoundError(f'URDF file does not exist: {urdf_path}')
@@ -42,7 +43,7 @@ def _make_nodes(context):
         'jearm_replay.rviz',
     )
 
-    return [
+    nodes = [
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -60,22 +61,6 @@ def _make_nodes(context):
             ],
         ),
         Node(
-            package='je_software',
-            executable='jearm_jsonl_replayer_node',
-            name='jearm_jsonl_replayer_node',
-            output='screen',
-            parameters=[
-                {
-                    'jsonl_path': jsonl_path,
-                    'joint_state_topic': joint_state_topic,
-                    'rate_hz': rate_hz,
-                    'paused': paused,
-                    'use_recorded_timestamps': use_recorded_timestamps,
-                    'follow_recorded_timing': follow_recorded_timing,
-                }
-            ],
-        ),
-        Node(
             package='rviz2',
             executable='rviz2',
             name='jearm_replay_rviz2',
@@ -83,6 +68,29 @@ def _make_nodes(context):
             arguments=['-d', rviz_config],
         ),
     ]
+
+    if launch_replayer:
+        nodes.insert(
+            1,
+            Node(
+                package='je_software',
+                executable='jearm_jsonl_replayer_node',
+                name='jearm_jsonl_replayer_node',
+                output='screen',
+                parameters=[
+                    {
+                        'jsonl_path': jsonl_path,
+                        'joint_state_topic': joint_state_topic,
+                        'rate_hz': rate_hz,
+                        'paused': paused,
+                        'use_recorded_timestamps': use_recorded_timestamps,
+                        'follow_recorded_timing': follow_recorded_timing,
+                    }
+                ],
+            ),
+        )
+
+    return nodes
 
 
 def generate_launch_description():
@@ -110,6 +118,11 @@ def generate_launch_description():
                 'joint_state_topic',
                 default_value='/jearm_replay/joint_states',
                 description='Dedicated JointState topic for the replay pipeline.',
+            ),
+            DeclareLaunchArgument(
+                'launch_replayer',
+                default_value='true',
+                description='Whether to start the JSONL replayer node. Set false to consume an external JointState topic.',
             ),
             DeclareLaunchArgument(
                 'robot_description_topic',

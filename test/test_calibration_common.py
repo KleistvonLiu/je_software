@@ -4,7 +4,7 @@ import math
 import numpy as np
 import pytest
 
-from je_software.calibration_common import (
+from je_software.new_system_architecture.calibration_common import (
     CharucoBoardHelper,
     invert_transform,
     load_eye_in_hand_calibration_result,

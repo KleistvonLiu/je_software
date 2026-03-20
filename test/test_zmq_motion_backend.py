@@ -4,25 +4,26 @@ import threading
 import pytest
 import rclpy
 
-from je_software.fixed_inspection_node import FixedInspectionNode
-from je_software.fixed_line_vision_node import FixedLineVisionNode
-from je_software.fixed_slot_provider_node import FixedSlotProviderNode
+from je_software.new_system_architecture.fixed_inspection_node import FixedInspectionNode
+from je_software.new_system_architecture.fixed_line_vision_node import FixedLineVisionNode
+from je_software.new_system_architecture.fixed_slot_provider_node import FixedSlotProviderNode
 from je_software.msg import MotionStep
 from je_software.msg import PcbPresence
 from je_software.msg import RobotState
-from je_software.pcb_process_common import GRIPPER
-from je_software.pcb_process_common import GRIPPER_CLOSE
-from je_software.pcb_process_common import MOVEJ
-from je_software.pcb_process_common import make_motion_step
-from je_software.pcb_process_common import make_pose_stamped
-from je_software.pcb_process_common import MOVEL
+from je_software.new_system_architecture.pcb_process_common import GRIPPER
+from je_software.new_system_architecture.pcb_process_common import GRIPPER_CLOSE
+from je_software.new_system_architecture.pcb_process_common import MOVEJ
+from je_software.new_system_architecture.pcb_process_common import make_motion_step
+from je_software.new_system_architecture.pcb_process_common import make_pose_stamped
+from je_software.new_system_architecture.pcb_process_common import MOVEL
 from je_software.srv import GetAvailableSlot
 from je_software.srv import GetPcbPickPose
 from je_software.srv import GetRobotState
-from je_software.zmq_motion_backend_node import build_robot_state_from_json
-from je_software.zmq_motion_backend_node import parse_state_message
-from je_software.zmq_motion_backend_node import motion_step_to_payload
-from je_software.zmq_motion_backend_node import ZmqMotionBackendNode
+from je_software.new_system_architecture.zmq_motion_backend_node import build_robot_state_from_json
+from je_software.new_system_architecture.zmq_motion_backend_node import build_joint_state_message
+from je_software.new_system_architecture.zmq_motion_backend_node import parse_state_message
+from je_software.new_system_architecture.zmq_motion_backend_node import motion_step_to_payload
+from je_software.new_system_architecture.zmq_motion_backend_node import ZmqMotionBackendNode
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -181,6 +182,28 @@ def test_build_robot_state_from_json_marks_cartesian_invalid_when_short():
     assert state.valid
     assert state.joint_valid
     assert not state.cartesian_valid
+
+
+def test_build_joint_state_message_uses_joint_names_and_positions():
+    msg = build_joint_state_message(
+        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
+        ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6', 'joint7'],
+        frame_id='base_link',
+    )
+
+    assert list(msg.name) == [
+        'joint1',
+        'joint2',
+        'joint3',
+        'joint4',
+        'joint5',
+        'joint6',
+        'joint7',
+    ]
+    assert list(msg.position) == pytest.approx(
+        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    )
+    assert msg.header.frame_id == 'base_link'
 
 
 def test_get_robot_state_service_returns_failure_without_cache():

@@ -21,6 +21,7 @@ from rclpy.action import ActionServer
 from rclpy.action import CancelResponse
 from rclpy.action import GoalResponse
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 
 from je_software.action import ExecuteMotionSequence
 from je_software.msg import MotionStep
@@ -42,6 +43,18 @@ except ModuleNotFoundError:  # pragma: no cover - validated at runtime
 STATE_PREFIX = 'State '
 STATE_SOURCE = 'zmq_state'
 STATE_FRAME_ID = 'base_link'
+DEFAULT_JOINT_NAMES = [
+    'joint1',
+    'joint2',
+    'joint3',
+    'joint4',
+    'joint5',
+    'joint6',
+    'joint7',
+]
+OUTPUT_MODE_ZMQ = 'zmq'
+OUTPUT_MODE_TOPIC = 'topic'
+OUTPUT_MODE_BOTH = 'both'
 
 
 def _robot_key(robot_id: int) -> str:
@@ -118,6 +131,23 @@ def build_robot_state_from_json(
 def clone_robot_state(state: RobotState) -> RobotState:
     """返回一份 RobotState 深拷贝，避免共享缓存对象被意外修改。"""
     return copy.deepcopy(state)
+
+
+def build_joint_state_message(
+    joint_positions: list[float],
+    joint_names: list[str],
+    *,
+    stamp=None,
+    frame_id: str = '',
+) -> JointState:
+    """构造一个标准 JointState，供 robot_state_publisher / RViz 使用。"""
+    msg = JointState()
+    msg.name = [str(name) for name in joint_names]
+    msg.position = [float(value) for value in joint_positions]
+    msg.header.frame_id = str(frame_id)
+    if stamp is not None:
+        msg.header.stamp = stamp
+    return msg
 
 
 def _build_movel_payload(step: MotionStep, robot_id: int) -> str:
@@ -208,8 +238,29 @@ class ZmqMotionBackendNode(Node):
             'state_service_name',
             '/motion_backend/get_robot_state',
         )
+        self.declare_parameter('command_output_mode', OUTPUT_MODE_ZMQ)
+        self.declare_parameter(
+            'joint_state_topic',
+            '/jearm_replay/joint_states',
+        )
+        self.declare_parameter('joint_state_names', DEFAULT_JOINT_NAMES)
+        self.declare_parameter('joint_state_frame_id', STATE_FRAME_ID)
 
         self.robot_id = int(self.get_parameter('robot_id').value)
+        self._command_output_mode = self._normalize_output_mode(
+            str(self.get_parameter('command_output_mode').value)
+        )
+        self._joint_state_names = [
+            str(name)
+            for name in self.get_parameter('joint_state_names').value
+        ]
+        if len(self._joint_state_names) != 7:
+            raise ValueError(
+                'Parameter "joint_state_names" must contain exactly 7 names.'
+            )
+        self._joint_state_frame_id = str(
+            self.get_parameter('joint_state_frame_id').value
+        )
         self._publish_period_sec = 0.0
         state_poll_hz = float(self.get_parameter('state_poll_hz').value)
         if state_poll_hz > 0.0:
@@ -229,6 +280,13 @@ class ZmqMotionBackendNode(Node):
             str(self.get_parameter('state_topic').value),
             10,
         )
+        self.joint_state_publisher = None
+        if self._command_output_mode in (OUTPUT_MODE_TOPIC, OUTPUT_MODE_BOTH):
+            self.joint_state_publisher = self.create_publisher(
+                JointState,
+                str(self.get_parameter('joint_state_topic').value),
+                10,
+            )
         self.state_service = self.create_service(
             GetRobotState,
             str(self.get_parameter('state_service_name').value),
@@ -261,11 +319,51 @@ class ZmqMotionBackendNode(Node):
             f'command={self.get_parameter("socket_mode").value}:'
             f'{self.get_parameter("command_endpoint").value}, '
             f'state={self.get_parameter("state_socket_mode").value}:'
-            f'{self.get_parameter("state_endpoint").value}'
+            f'{self.get_parameter("state_endpoint").value}, '
+            f'output_mode={self._command_output_mode}'
         )
 
     def _format_values(self, values) -> str:
         return '[' + ', '.join(f'{float(value):.6f}' for value in values) + ']'
+
+    def _normalize_output_mode(self, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in (OUTPUT_MODE_ZMQ, OUTPUT_MODE_TOPIC, OUTPUT_MODE_BOTH):
+            raise ValueError(
+                'Parameter "command_output_mode" must be one of '
+                f'{OUTPUT_MODE_ZMQ}, {OUTPUT_MODE_TOPIC}, {OUTPUT_MODE_BOTH}.'
+            )
+        return mode
+
+    def _should_send_zmq(self) -> bool:
+        return self._command_output_mode in (OUTPUT_MODE_ZMQ, OUTPUT_MODE_BOTH)
+
+    def _should_publish_joint_topic(self) -> bool:
+        return self._command_output_mode in (OUTPUT_MODE_TOPIC, OUTPUT_MODE_BOTH)
+
+    def _publish_joint_state(
+        self,
+        joint_positions: list[float],
+        *,
+        source: str,
+    ) -> None:
+        """按当前模式发布 JointState，供 RViz 链路订阅。"""
+        if not self._should_publish_joint_topic() or self.joint_state_publisher is None:
+            return
+        if len(joint_positions) != len(self._joint_state_names):
+            self.get_logger().warning(
+                f'Skip JointState publish from {source}: joint count '
+                f'{len(joint_positions)} != {len(self._joint_state_names)}'
+            )
+            return
+
+        msg = build_joint_state_message(
+            joint_positions,
+            self._joint_state_names,
+            stamp=self.get_clock().now().to_msg(),
+            frame_id=self._joint_state_frame_id,
+        )
+        self.joint_state_publisher.publish(msg)
 
     def _create_command_socket(self):
         socket = self._context.socket(zmq.PUB)
@@ -428,12 +526,28 @@ class ZmqMotionBackendNode(Node):
                     step,
                     self.robot_id,
                 )
-                if payload is not None:
+                if payload is not None and self._should_send_zmq():
                     self._command_socket.send_string(payload)
                     self.get_logger().info(
                         f'[{goal_handle.request.sequence_name}] '
                         f'sent {step.command_type}:{step.name}'
                     )
+                elif payload is not None:
+                    self.get_logger().info(
+                        f'[{goal_handle.request.sequence_name}] '
+                        f'skipped ZMQ send for {step.command_type}:{step.name} '
+                        f'because command_output_mode={self._command_output_mode}'
+                    )
+
+                # 额外模式：把关节目标同步发成 JointState，便于 RViz 订阅。
+                # 这里只对 MOVEJ 生效，因为 JointState 天然描述的是关节空间轨迹。
+                if step.command_type == MOVEJ:
+                    joint_target = [float(value) for value in step.joint_target]
+                    if joint_target:
+                        self._publish_joint_state(
+                            joint_target,
+                            source=f'command:{step.name}',
+                        )
 
                 dwell_sec = max(float(step.dwell_sec), 0.0)
                 if dwell_sec > 0.0:

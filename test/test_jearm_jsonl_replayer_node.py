@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 from builtin_interfaces.msg import Time as TimeMsg
 
-from je_software.jearm_jsonl_replayer_node import DEFAULT_JOINT_NAMES
-from je_software.jearm_jsonl_replayer_node import JointFrame
-from je_software.jearm_jsonl_replayer_node import JearmJsonlReplayerNode
-from je_software.jearm_jsonl_replayer_node import load_joint_frames_from_jsonl
-from je_software.jearm_jsonl_replayer_node import make_joint_state_message
+from je_software.new_system_architecture.jearm_jsonl_replayer_node import DEFAULT_JOINT_NAMES
+from je_software.new_system_architecture.jearm_jsonl_replayer_node import JointFrame
+from je_software.new_system_architecture.jearm_jsonl_replayer_node import JearmJsonlReplayerNode
+from je_software.new_system_architecture.jearm_jsonl_replayer_node import load_joint_frames_from_jsonl
+from je_software.new_system_architecture.jearm_jsonl_replayer_node import make_joint_state_message
 
 
 def write_jsonl(tmp_path: Path, lines: list[str]) -> Path:

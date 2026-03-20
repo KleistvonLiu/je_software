@@ -57,6 +57,14 @@ zmq_motion_backend_node:
     state_poll_hz: 20.0
     state_topic: /motion_backend/robot_state
     state_service_name: /motion_backend/get_robot_state
+    # command_output_mode:
+    # - zmq: 只发 ZMQ 给 jeserver.cpp
+    # - topic: 不发 ZMQ，只把 MOVEJ 的 joint_target 发成 JointState topic，供 RViz 订阅
+    # - both: 同时发 ZMQ 和 JointState topic
+    command_output_mode: topic
+    joint_state_topic: /jearm_replay/joint_states
+    joint_state_names: [joint1, joint2, joint3, joint4, joint5, joint6, joint7]
+    joint_state_frame_id: base_link
 
 pcb_process_task_manager_node:
   ros__parameters:
