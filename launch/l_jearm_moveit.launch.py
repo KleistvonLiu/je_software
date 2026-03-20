@@ -25,7 +25,7 @@ def _load_yaml(path: Path):
 def _launch_setup(context, *args, **kwargs):
     share_dir = Path(get_package_share_directory('je_software'))
     urdf_path = Path(LaunchConfiguration('urdf_path').perform(context))
-    srdf_path = share_dir / 'config' / 'moveit' / 'lh_jearm.srdf'
+    srdf_path = share_dir / 'config' / 'moveit' / 'l_jearm.srdf'
     kinematics_path = share_dir / 'config' / 'moveit' / 'kinematics.yaml'
     joint_limits_path = share_dir / 'config' / 'moveit' / 'joint_limits.yaml'
     ompl_path = share_dir / 'config' / 'moveit' / 'ompl_planning.yaml'
@@ -96,9 +96,7 @@ def _launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     share_dir = Path(get_package_share_directory('je_software'))
-    default_urdf = (
-        share_dir / 'urdf' / 'URDF_LAST' / 'LH_JEARM' / 'LH_JEARM.urdf'
-    )
+    default_urdf = share_dir / 'urdf' / 'L_JEARM.urdf'
 
     return LaunchDescription(
         [

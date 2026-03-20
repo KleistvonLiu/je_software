@@ -366,6 +366,9 @@ class ZmqMotionBackendNode(Node):
         self.joint_state_publisher.publish(msg)
 
     def _create_command_socket(self):
+        if not self._should_send_zmq():
+            return None
+
         socket = self._context.socket(zmq.PUB)
         socket.setsockopt(zmq.SNDHWM, 0)
         socket.setsockopt(zmq.IMMEDIATE, 1)
@@ -527,6 +530,11 @@ class ZmqMotionBackendNode(Node):
                     self.robot_id,
                 )
                 if payload is not None and self._should_send_zmq():
+                    if self._command_socket is None:
+                        raise RuntimeError(
+                            'ZMQ command socket is unavailable while '
+                            'command_output_mode requires ZMQ output.'
+                        )
                     self._command_socket.send_string(payload)
                     self.get_logger().info(
                         f'[{goal_handle.request.sequence_name}] '
@@ -569,7 +577,8 @@ class ZmqMotionBackendNode(Node):
         if hasattr(self, '_state_thread'):
             self._state_thread.join(timeout=1.0)
         self._action_server.destroy()
-        self._command_socket.close(0)
+        if self._command_socket is not None:
+            self._command_socket.close(0)
         self._state_socket.close(0)
         self._context.term()
         return super().destroy_node()

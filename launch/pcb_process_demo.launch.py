@@ -27,7 +27,7 @@ def generate_launch_description():
     moveit_launch = os.path.join(
         get_package_share_directory('je_software'),
         'launch',
-        'lh_jearm_moveit.launch.py',
+        'l_jearm_moveit.launch.py',
     )
 
     nodes = [

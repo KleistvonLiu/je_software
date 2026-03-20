@@ -97,9 +97,7 @@ def generate_launch_description():
     default_urdf = os.path.join(
         get_package_share_directory('je_software'),
         'urdf',
-        'URDF_LAST',
-        'LH_JEARM',
-        'LH_JEARM.urdf',
+        'L_JEARM.urdf',
     )
 
     return LaunchDescription(

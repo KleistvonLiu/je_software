@@ -19,7 +19,7 @@ setup(
         (f'share/{package_name}/launch', ['launch/manager_test.launch.py']),
         (f'share/{package_name}/launch', ['launch/replay_node.launch.py']),
         (f'share/{package_name}/launch', ['launch/jearm_rviz_replay.launch.py']),
-        (f'share/{package_name}/launch', ['launch/lh_jearm_moveit.launch.py']),
+        (f'share/{package_name}/launch', ['launch/l_jearm_moveit.launch.py']),
         (f'share/{package_name}/launch', ['launch/pcb_process_demo.launch.py']),
         (f'share/{package_name}/config', ['config/pcb_process_demo.yaml']),
         (f'share/{package_name}/config/moveit', glob('config/moveit/*')),

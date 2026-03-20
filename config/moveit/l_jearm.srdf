@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  这份 SRDF 只提供当前 PCB demo 所需的最小语义信息：
+  这份 SRDF 提供当前 PCB demo 所需的最小语义信息：
   - 单规划组 jearm_arm
   - 链路从 base_link 到 Link7
-  - 若后续要加夹具/TCP，可在这里继续扩展 end effector / group state
+  - 机器人名称与 L_JEARM.urdf 保持一致，避免 MoveIt 启动时的语义警告
 -->
-<robot name="RH_JEARM">
+<robot name="L_JEARM">
   <group name="jearm_arm">
     <chain base_link="base_link" tip_link="Link7"/>
   </group>
