@@ -373,6 +373,12 @@ class MoveItMotionResolver:
         ):
             raise RuntimeError('moveit_ik_service_unavailable')
 
+        self._logger.info(
+            f'MoveIt IK request {step.name}: '
+            f'seed_joint={_format_values(seed_joint_positions)}, '
+            f'target_pose={_format_values(pose_to_rpy_list(step.target_pose))}'
+        )
+
         request = self._moveit_srv.GetPositionIK.Request()
         request.ik_request.group_name = self._moveit_group_name
         request.ik_request.robot_state = self._make_moveit_robot_state(

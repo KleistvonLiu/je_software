@@ -16,6 +16,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from std_msgs.msg import Empty
 
 from je_software.action import RecoverToInitial
 from je_software.msg import PcbPresence
@@ -38,8 +39,10 @@ class TerminalKeySignalNode(Node):
         self.declare_parameter('poll_hz', 20.0)
         self.declare_parameter('key_trigger', 'p')
         self.declare_parameter('key_clear', 'c')
+        self.declare_parameter('key_continue', ' ')
         self.declare_parameter('key_recover', 'r')
         self.declare_parameter('key_quit', 'q')
+        self.declare_parameter('continue_topic', '/pcb_process/continue')
         self.declare_parameter(
             'recover_action_name',
             '/pcb_process/recover_to_initial',
@@ -51,8 +54,10 @@ class TerminalKeySignalNode(Node):
         poll_hz = float(self.get_parameter('poll_hz').value)
         self.key_trigger = str(self.get_parameter('key_trigger').value)
         self.key_clear = str(self.get_parameter('key_clear').value)
+        self.key_continue = str(self.get_parameter('key_continue').value)
         self.key_recover = str(self.get_parameter('key_recover').value)
         self.key_quit = str(self.get_parameter('key_quit').value)
+        self.continue_topic = str(self.get_parameter('continue_topic').value)
         self.recover_action_name = str(
             self.get_parameter('recover_action_name').value
         )
@@ -62,6 +67,11 @@ class TerminalKeySignalNode(Node):
         qos.reliability = ReliabilityPolicy.RELIABLE
         qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.publisher = self.create_publisher(PcbPresence, self.presence_topic, qos)
+        self.continue_publisher = self.create_publisher(
+            Empty,
+            self.continue_topic,
+            10,
+        )
         self.recover_action_client = ActionClient(
             self,
             RecoverToInitial,
@@ -92,6 +102,7 @@ class TerminalKeySignalNode(Node):
             'Keyboard ready: '
             f'{self.key_trigger}=pcb ready, '
             f'{self.key_clear}=clear, '
+            'space=continue, '
             f'{self.key_recover}=recover to initial, '
             f'{self.key_quit}=quit'
         )
@@ -150,11 +161,17 @@ class TerminalKeySignalNode(Node):
             self._set_state(True)
         elif key == self.key_clear:
             self._set_state(False)
+        elif key == self.key_continue:
+            self._publish_continue()
         elif key == self.key_recover:
             self._send_recover_goal()
         elif key == self.key_quit:
             self.get_logger().info('Quit requested from keyboard.')
             rclpy.shutdown()
+
+    def _publish_continue(self) -> None:
+        self.continue_publisher.publish(Empty())
+        self.get_logger().info(green_text('Continue signal published.'))
 
     def _send_recover_goal(self) -> None:
         if self._recover_goal_future is not None or self._recover_result_future is not None:

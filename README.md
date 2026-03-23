@@ -235,4 +235,10 @@ bbcp   -f -P 5 -s 64 -w 128M -v -r   /home/kleist/Documents/Database/test_0207/ 
 bbcp   -f -P 5 -s 64 -w 128M -v  -r -z alice@10.215.247.2:/jedata/jemotor/model/0207_pi05_test/15000/ /目标路径
 
 # rviz可视化机器人
+# 回放json数据
 ros2 launch je_software jearm_rviz_replay.launch.py   jsonl_path:=/home/kleist/ros2_ws/src/je_software/data/robot_state_20260319_150321.jsonl
+# 接受joint state
+ros2 launch je_software jearm_rviz_replay.launch.py   launch_replayer:=false   joint_state_topic:=/jearm_replay/joint_states
+
+# 机器人demo
+ros2 launch je_software pcb_process_demo.launch.py

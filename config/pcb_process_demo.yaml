@@ -5,8 +5,10 @@ terminal_key_signal_node:
     poll_hz: 20.0
     key_trigger: p
     key_clear: c
+    key_continue: " "
     key_recover: r
     key_quit: q
+    continue_topic: /pcb_process/continue
     recover_action_name: /pcb_process/recover_to_initial
     source: terminal
 
@@ -76,6 +78,8 @@ pcb_process_task_manager_node:
     motion_action_name: /motion_backend/execute_motion_sequence
     frame_id: base_link
     enable_initialization: false
+    pause_on_state_transition: true
+    continue_topic: /pcb_process/continue
     robot_state_service: /motion_backend/get_robot_state
     initial_state_poll_sec: 0.1
     # initial_joint_position: 初始化检查时要求机器人当前所处的关节位置。

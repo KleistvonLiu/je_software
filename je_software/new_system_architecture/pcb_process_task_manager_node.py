@@ -26,6 +26,7 @@ from rclpy.action import CancelResponse
 from rclpy.action import GoalResponse
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from std_msgs.msg import Empty
 
 from je_software.action import ExecuteMotionSequence
 from je_software.action import RecoverToInitial
@@ -86,6 +87,12 @@ class PcbProcessTaskManagerNode(Node):
         self.frame_id = str(self.get_parameter('frame_id').value)
         self.enable_initialization = bool(
             self.get_parameter('enable_initialization').value
+        )
+        self.pause_on_state_transition = bool(
+            self.get_parameter('pause_on_state_transition').value
+        )
+        self.continue_topic = str(
+            self.get_parameter('continue_topic').value
         )
         self.robot_state_service_name = str(
             self.get_parameter('robot_state_service').value
@@ -251,6 +258,10 @@ class PcbProcessTaskManagerNode(Node):
         self._manual_recovery_goal_handle = None
         self._manual_recovery_done = threading.Event()
         self._manual_recovery_result: tuple[bool, str] | None = None
+        self._waiting_for_continue = False
+        self._pending_continue_action = None
+        self._buffered_presence_msg = None
+        self._buffered_inspection_msg = None
 
         # 订阅两个高层状态 topic：
         # 1. PCB 到位状态
@@ -259,6 +270,12 @@ class PcbProcessTaskManagerNode(Node):
             PcbPresence,
             str(self.get_parameter('presence_topic').value),
             self._presence_callback,
+            10,
+        )
+        self.create_subscription(
+            Empty,
+            self.continue_topic,
+            self._continue_callback,
             10,
         )
         self.create_subscription(
@@ -327,7 +344,9 @@ class PcbProcessTaskManagerNode(Node):
             f'moveit_tip_link={self.moveit_tip_link}, '
             f'moveit_ik_service={self.moveit_ik_service}, '
             f'moveit_cartesian_service={self.moveit_cartesian_service}, '
-            f'moveit_movej_max_joint_step={self.moveit_movej_max_joint_step:.6f}'
+            f'moveit_movej_max_joint_step={self.moveit_movej_max_joint_step:.6f}, '
+            f'pause_on_state_transition={self.pause_on_state_transition}, '
+            f'continue_topic={self.continue_topic}'
         )
 
     def _format_values(self, values) -> str:
@@ -357,6 +376,8 @@ class PcbProcessTaskManagerNode(Node):
         )
         self.declare_parameter('frame_id', 'base_link')
         self.declare_parameter('enable_initialization', False)
+        self.declare_parameter('pause_on_state_transition', False)
+        self.declare_parameter('continue_topic', '/pcb_process/continue')
         self.declare_parameter(
             'robot_state_service',
             '/motion_backend/get_robot_state',
@@ -493,6 +514,54 @@ class PcbProcessTaskManagerNode(Node):
             ),
         )
 
+    def _run_after_continue(self, action) -> None:
+        """在状态切换后决定是立刻继续，还是先等待用户按空格。"""
+        if self.pause_on_state_transition:
+            self._pending_continue_action = action
+            self._waiting_for_continue = True
+            self.get_logger().info(
+                green_text(
+                    f'Paused at state={self._state.value}. '
+                    'Press space to continue.'
+                )
+            )
+            return
+        action()
+
+    def _continue_callback(self, _msg: Empty) -> None:
+        """消费键盘节点发来的 continue 信号。"""
+        if not self._waiting_for_continue:
+            return
+
+        self._waiting_for_continue = False
+        pending_action = self._pending_continue_action
+        self._pending_continue_action = None
+        self.get_logger().info(
+            green_text(f'Continue accepted in state={self._state.value}.')
+        )
+
+        if pending_action is not None:
+            pending_action()
+        if self._waiting_for_continue:
+            return
+
+        # 某些状态是“等外部事件”的等待态。
+        # 如果等待期间恰好收到了消息，就在恢复后补处理一次。
+        if (
+            self._state == ProcessState.WAIT_PCB
+            and self._buffered_presence_msg is not None
+        ):
+            buffered_msg = self._buffered_presence_msg
+            self._buffered_presence_msg = None
+            self._presence_callback(buffered_msg)
+        if (
+            self._state == ProcessState.WAIT_INSPECTION_RESULT
+            and self._buffered_inspection_msg is not None
+        ):
+            buffered_msg = self._buffered_inspection_msg
+            self._buffered_inspection_msg = None
+            self._inspection_result_callback(buffered_msg)
+
     def _resolve_motion_steps(self, sequence_name: str, steps):
         input_steps = list(steps)
         resolved_steps = self._motion_resolver.resolve_steps(input_steps)
@@ -510,11 +579,14 @@ class PcbProcessTaskManagerNode(Node):
             return
 
         # 初始化模式下，启动后周期性向统一 ZMQ 网关请求当前机器人状态。
-        self._init_wait_started_at = self.get_clock().now()
         self._transition(
             ProcessState.WAIT_INIT_JOINT_STATE,
             'startup_waiting_robot_state',
+            on_continue=self._start_waiting_initial_robot_state,
         )
+
+    def _start_waiting_initial_robot_state(self) -> None:
+        self._init_wait_started_at = self.get_clock().now()
         self._init_check_timer = self.create_timer(
             max(self.initial_state_poll_sec, 0.05),
             self._check_initialization_ready,
@@ -594,11 +666,11 @@ class PcbProcessTaskManagerNode(Node):
         self._transition(
             ProcessState.EXECUTE_INITIALIZATION,
             'initial_joint_check_passed',
-        )
-        self._send_motion_goal(
-            'initialization',
-            'initialization_sequence',
-            steps,
+            on_continue=lambda: self._send_motion_goal(
+                'initialization',
+                'initialization_sequence',
+                steps,
+            ),
         )
 
     def _on_robot_state_response(self, future) -> None:
@@ -716,11 +788,11 @@ class PcbProcessTaskManagerNode(Node):
             self._transition(
                 ProcessState.EXECUTE_MANUAL_RECOVERY,
                 'manual_recovery_requested',
-            )
-            self._send_motion_goal(
-                'manual_recover',
-                'manual_recover_sequence',
-                steps,
+                on_continue=lambda: self._send_motion_goal(
+                    'manual_recover',
+                    'manual_recover_sequence',
+                    steps,
+                ),
             )
 
         while rclpy.ok():
@@ -744,7 +816,13 @@ class PcbProcessTaskManagerNode(Node):
             goal_handle.abort()
         return result
 
-    def _transition(self, state: ProcessState, reason: str) -> None:
+    def _transition(
+        self,
+        state: ProcessState,
+        reason: str,
+        *,
+        on_continue=None,
+    ) -> None:
         # 统一从这里打印状态迁移日志，便于排查流程卡在哪一步。
         if self._state == state:
             return
@@ -754,15 +832,23 @@ class PcbProcessTaskManagerNode(Node):
             )
         )
         self._state = state
+        self._run_after_continue(on_continue)
 
     def _reset_for_next_cycle(self) -> None:
         # 一轮流程完成后，只保留状态机和计数器，把当前板上下文清空。
         self._current_pcb_id = None
         self._recovering = False
         self._robot_state_request_in_flight = False
+        self._waiting_for_continue = False
+        self._pending_continue_action = None
+        self._buffered_presence_msg = None
+        self._buffered_inspection_msg = None
         self._transition(ProcessState.WAIT_PCB, 'cycle_reset')
 
     def _presence_callback(self, msg: PcbPresence) -> None:
+        if self._waiting_for_continue:
+            self._buffered_presence_msg = msg
+            return
         ready = bool(msg.ready_for_pick)
         # 只在 WAIT_PCB 状态下响应“false -> true”的上升沿。
         # 这样键盘节点持续重复发布 ready=true 时，不会重复启动多个流程。
@@ -773,7 +859,6 @@ class PcbProcessTaskManagerNode(Node):
         ):
             self._cycle_index += 1
             self._current_pcb_id = f'pcb_{self._cycle_index:06d}'
-            self._transition(ProcessState.MOVE_HOME_BEFORE_PICK, 'pcb_ready_edge')
             self.get_logger().info(
                 'Using preloaded home_pose for home_before_pick: '
                 f'{self._format_values(self.home_pose)}'
@@ -783,10 +868,14 @@ class PcbProcessTaskManagerNode(Node):
                 self.home_pose,
                 self.movej_config,
             )
-            self._send_motion_goal(
-                'home_before_pick',
-                'home_before_pick_sequence',
-                steps,
+            self._transition(
+                ProcessState.MOVE_HOME_BEFORE_PICK,
+                'pcb_ready_edge',
+                on_continue=lambda: self._send_motion_goal(
+                    'home_before_pick',
+                    'home_before_pick_sequence',
+                    steps,
+                ),
             )
         self._last_ready_for_pick = ready
 
@@ -832,8 +921,15 @@ class PcbProcessTaskManagerNode(Node):
             self.movel_config,
             self.gripper_dwell_sec,
         )
-        self._transition(ProcessState.EXECUTE_PICK, 'pick_pose_ready')
-        self._send_motion_goal('pick', 'pick_sequence', steps)
+        self._transition(
+            ProcessState.EXECUTE_PICK,
+            'pick_pose_ready',
+            on_continue=lambda: self._send_motion_goal(
+                'pick',
+                'pick_sequence',
+                steps,
+            ),
+        )
 
     def _send_motion_goal(
         self,
@@ -934,16 +1030,12 @@ class PcbProcessTaskManagerNode(Node):
             self._transition(
                 ProcessState.REQUEST_PICK_POSE,
                 'home_before_pick_done',
+                on_continue=self._request_pick_pose,
             )
-            self._request_pick_pose()
             return
 
         if purpose == 'pick':
             # 抓取完成后，下一步不是立刻检测，而是先执行“移动到检测位”的动作序列。
-            self._transition(
-                ProcessState.MOVE_TO_INSPECTION,
-                'pick_sequence_done',
-            )
             self.get_logger().info(
                 'Using preloaded inspection poses: '
                 f'inspection_pre_pose={self._format_values(self.inspection_pre_pose)}, '
@@ -957,10 +1049,14 @@ class PcbProcessTaskManagerNode(Node):
                 self.movel_config,
                 self.inspection_wait_sec,
             )
-            self._send_motion_goal(
-                'inspection_move',
-                'inspection_sequence',
-                steps,
+            self._transition(
+                ProcessState.MOVE_TO_INSPECTION,
+                'pick_sequence_done',
+                on_continue=lambda: self._send_motion_goal(
+                    'inspection_move',
+                    'inspection_sequence',
+                    steps,
+                ),
             )
             return
 
@@ -969,13 +1065,12 @@ class PcbProcessTaskManagerNode(Node):
             self._transition(
                 ProcessState.TRIGGER_INSPECTION,
                 'inspection_pose_reached',
+                on_continue=self._trigger_inspection,
             )
-            self._trigger_inspection()
             return
 
         if purpose == 'place':
             # 放置完成后统一回 home，流程才算结束。
-            self._transition(ProcessState.GO_HOME, 'place_sequence_done')
             self.get_logger().info(
                 'Using preloaded home_pose for home_sequence: '
                 f'{self._format_values(self.home_pose)}'
@@ -985,7 +1080,15 @@ class PcbProcessTaskManagerNode(Node):
                 self.home_pose,
                 self.movej_config,
             )
-            self._send_motion_goal('home', 'home_sequence', steps)
+            self._transition(
+                ProcessState.GO_HOME,
+                'place_sequence_done',
+                on_continue=lambda: self._send_motion_goal(
+                    'home',
+                    'home_sequence',
+                    steps,
+                ),
+            )
             return
 
         if purpose == 'manual_recover':
@@ -1030,6 +1133,9 @@ class PcbProcessTaskManagerNode(Node):
         )
 
     def _inspection_result_callback(self, msg: InspectionResult) -> None:
+        if self._waiting_for_continue:
+            self._buffered_inspection_msg = msg
+            return
         # 只有在等待检测结果的阶段，才消费检测 topic。
         if self._state != ProcessState.WAIT_INSPECTION_RESULT:
             return
@@ -1044,8 +1150,11 @@ class PcbProcessTaskManagerNode(Node):
             return
 
         # 初版只接受 good，后续如果要接 bad/retry，可以从这里分叉。
-        self._transition(ProcessState.REQUEST_GOOD_SLOT, 'inspection_good')
-        self._request_good_slot()
+        self._transition(
+            ProcessState.REQUEST_GOOD_SLOT,
+            'inspection_good',
+            on_continue=self._request_good_slot,
+        )
 
     def _request_good_slot(self) -> None:
         # 根据当前检测结果向槽位服务请求一个目标槽位。
@@ -1093,8 +1202,15 @@ class PcbProcessTaskManagerNode(Node):
             self.movel_config,
             self.gripper_dwell_sec,
         )
-        self._transition(ProcessState.EXECUTE_PLACE, 'slot_ready')
-        self._send_motion_goal('place', 'place_sequence', steps)
+        self._transition(
+            ProcessState.EXECUTE_PLACE,
+            'slot_ready',
+            on_continue=lambda: self._send_motion_goal(
+                'place',
+                'place_sequence',
+                steps,
+            ),
+        )
 
     def _enter_error(self, reason: str, *, recover: bool = True) -> None:
         # 所有错误统一走这里：
@@ -1106,27 +1222,31 @@ class PcbProcessTaskManagerNode(Node):
         self.get_logger().error(reason)
         self._stop_init_check_timer()
         self._robot_state_request_in_flight = False
-        self._transition(ProcessState.ERROR, reason)
+        already_recovering = self._recovering
         if self._manual_recovery_active:
             self._finalize_manual_recovery(False, reason)
             recover = False
-        if not recover:
-            # 初始化起点不匹配这类错误，要求“只报错不乱动机器人”。
-            return
-        if self._recovering:
-            self._reset_for_next_cycle()
-            return
-        self._recovering = True
-        self.get_logger().info(
-            'Using preloaded home_pose for recover_home: '
-            f'{self._format_values(self.home_pose)}'
-        )
-        steps = build_home_sequence(
-            self.frame_id,
-            self.home_pose,
-            self.movej_config,
-        )
-        self._send_motion_goal('recover_home', 'recover_home_sequence', steps)
+        recovery_action = None
+        if recover:
+            if already_recovering:
+                recovery_action = self._reset_for_next_cycle
+            else:
+                self._recovering = True
+                self.get_logger().info(
+                    'Using preloaded home_pose for recover_home: '
+                    f'{self._format_values(self.home_pose)}'
+                )
+                steps = build_home_sequence(
+                    self.frame_id,
+                    self.home_pose,
+                    self.movej_config,
+                )
+                recovery_action = lambda: self._send_motion_goal(
+                    'recover_home',
+                    'recover_home_sequence',
+                    steps,
+                )
+        self._transition(ProcessState.ERROR, reason, on_continue=recovery_action)
 
     def destroy_node(self) -> bool:
         self._stop_init_check_timer()

@@ -121,25 +121,23 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        Link1:
+        jearm_replay/Link1:
           Value: true
-        Link2:
+        jearm_replay/Link2:
           Value: true
-        Link3:
+        jearm_replay/Link3:
           Value: true
-        Link4:
+        jearm_replay/Link4:
           Value: true
-        Link5:
+        jearm_replay/Link5:
           Value: true
-        Link6:
+        jearm_replay/Link6:
           Value: true
-        Link7:
+        jearm_replay/Link7:
           Value: true
-        base_link:
+        jearm_replay/base_anchor:
           Value: true
-        base_anchor:
-          Value: true
-        world:
+        jearm_replay/base_link:
           Value: true
       Marker Scale: 0.10000000149011612
       Name: TF
@@ -147,7 +145,16 @@ Visualization Manager:
       Show Axes: true
       Show Names: true
       Tree:
-        {}
+        jearm_replay/base_anchor:
+          jearm_replay/base_link:
+            jearm_replay/Link1:
+              jearm_replay/Link2:
+                jearm_replay/Link3:
+                  jearm_replay/Link4:
+                    jearm_replay/Link5:
+                      jearm_replay/Link6:
+                        jearm_replay/Link7:
+                          {}
       Update Interval: 0
       Value: true
   Enabled: true
@@ -196,7 +203,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/ThirdPersonFollower
-      Distance: 2.960268974304199
+      Distance: 2.4639997482299805
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -211,10 +218,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.030398283153772354
+      Pitch: 0.5553982257843018
       Target Frame: <Fixed Frame>
       Value: ThirdPersonFollower (rviz_default_plugins)
-      Yaw: 1.8903980255126953
+      Yaw: 3.165397882461548
     Saved: ~
 Window Geometry:
   Displays:
