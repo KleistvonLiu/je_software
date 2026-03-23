@@ -326,8 +326,8 @@ hardware_interface::return_type JeZmqSystemHardware::read(
       first_valid = false;
     }
     
-    // Log periodically (every 500 reads ≈ 5 seconds at 100Hz)
-    if (++read_count % 500 == 0)
+    // Log less frequently (every 2000 reads ≈ 20 seconds at 100Hz)
+    if (++read_count % 2000 == 0)
     {
       RCLCPP_DEBUG(
         rclcpp::get_logger("JeZmqSystemHardware"),
@@ -387,9 +387,9 @@ hardware_interface::return_type JeZmqSystemHardware::write(
         "[write] Failed to send message (result is false)");
     }
     
-    // Log sent commands periodically (every 100 writes to avoid log spam)
+    // Log sent commands less frequently (every 500 writes to avoid log spam)
     static int write_count = 0;
-    if (++write_count % 100 == 0)
+    if (++write_count % 500 == 0)
     {
       RCLCPP_INFO(
         rclcpp::get_logger("JeZmqSystemHardware"),
@@ -466,7 +466,7 @@ void JeZmqSystemHardware::state_receive_loop()
 
       const auto state_json = json::parse(state_message.substr(pos + 1));
 
-      // Log first message received for diagnostics
+  // Log first message received for diagnostics
       if (!first_message_logged)
       {
         RCLCPP_INFO(
@@ -477,9 +477,9 @@ void JeZmqSystemHardware::state_receive_loop()
         first_message_logged = true;
       }
 
-      // Log every 100 messages with message size and raw data to detect if messages are changing
+      // Log every 500 messages with message size and raw data to detect if messages are changing
       static int size_log_count = 0;
-      if (++size_log_count % 100 == 0)
+      if (++size_log_count % 500 == 0)
       {
         RCLCPP_INFO(
           rclcpp::get_logger("JeZmqSystemHardware"),
@@ -495,9 +495,9 @@ void JeZmqSystemHardware::state_receive_loop()
 
       if (!parse_joint_state_from_json(state_json, positions, velocities, efforts))
       {
-        // Log failed parsing every 100 messages to help diagnose format issues
+  // Log failed parsing every 500 messages to help diagnose format issues
         static int parse_fail_count = 0;
-        if (++parse_fail_count % 100 == 0)
+  if (++parse_fail_count % 500 == 0)
         {
           // Dump the entire JSON to see what we're actually receiving
           RCLCPP_WARN(
@@ -510,7 +510,7 @@ void JeZmqSystemHardware::state_receive_loop()
       }
 
       msg_count++;
-      if (msg_count % 100 == 0)  // Log every 100 messages to reduce spam
+      if (msg_count % 500 == 0)  // Log every 500 messages to reduce spam
       {
         RCLCPP_INFO(
           rclcpp::get_logger("JeZmqSystemHardware"),
@@ -522,8 +522,8 @@ void JeZmqSystemHardware::state_receive_loop()
 
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        // Log before updating
-        if (msg_count % 100 == 0)
+  // Log before updating
+  if (msg_count % 500 == 0)
         {
           RCLCPP_INFO(
             rclcpp::get_logger("JeZmqSystemHardware"),
@@ -537,8 +537,8 @@ void JeZmqSystemHardware::state_receive_loop()
         latest_efforts_ = std::move(efforts);
         has_valid_state_ = true;
         
-        // Log after updating
-        if (msg_count % 100 == 0)
+  // Log after updating
+  if (msg_count % 500 == 0)
         {
           RCLCPP_INFO(
             rclcpp::get_logger("JeZmqSystemHardware"),
