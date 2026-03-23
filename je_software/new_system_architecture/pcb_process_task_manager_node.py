@@ -245,11 +245,13 @@ class PcbProcessTaskManagerNode(Node):
         # - _current_pcb_id: 当前这块板的流程 ID
         # - _cycle_index: 自增计数，用于生成 pcb_id
         # - _last_ready_for_pick: 用来做 ready 信号上升沿检测
+        # - _pending_ready_for_pick: 非 WAIT_PCB 阶段提前到位的板，等回到 WAIT_PCB 后补消费
         # - _recovering: 避免错误恢复阶段反复进入 recover_home
         self._state = ProcessState.IDLE
         self._current_pcb_id: str | None = None
         self._cycle_index = 0
         self._last_ready_for_pick = False
+        self._pending_ready_for_pick = False
         self._recovering = False
         self._init_wait_started_at = None
         self._init_check_timer = None
@@ -526,6 +528,8 @@ class PcbProcessTaskManagerNode(Node):
                 )
             )
             return
+        if action is None:
+            return
         action()
 
     def _continue_callback(self, _msg: Empty) -> None:
@@ -561,6 +565,54 @@ class PcbProcessTaskManagerNode(Node):
             buffered_msg = self._buffered_inspection_msg
             self._buffered_inspection_msg = None
             self._inspection_result_callback(buffered_msg)
+        self._consume_pending_ready_if_waiting()
+
+    def _start_pick_cycle(self, reason: str) -> None:
+        if self._state != ProcessState.WAIT_PCB:
+            return
+        self._pending_ready_for_pick = False
+        self._cycle_index += 1
+        self._current_pcb_id = f'pcb_{self._cycle_index:06d}'
+        self.get_logger().info(
+            'Using preloaded home_pose for home_before_pick: '
+            f'{self._format_values(self.home_pose)}'
+        )
+        steps = build_home_sequence(
+            self.frame_id,
+            self.home_pose,
+            self.movej_config,
+        )
+        self._transition(
+            ProcessState.MOVE_HOME_BEFORE_PICK,
+            reason,
+            on_continue=lambda: self._send_motion_goal(
+                'home_before_pick',
+                'home_before_pick_sequence',
+                steps,
+            ),
+        )
+
+    def _latch_pending_ready_edge(self) -> None:
+        if self._pending_ready_for_pick:
+            return
+        self._pending_ready_for_pick = True
+        self.get_logger().info(
+            green_text(
+                f'Buffered pcb ready edge while state={self._state.value}.'
+            )
+        )
+
+    def _consume_pending_ready_if_waiting(self) -> None:
+        if (
+            self._state != ProcessState.WAIT_PCB
+            or self._waiting_for_continue
+            or not self._pending_ready_for_pick
+        ):
+            return
+        self.get_logger().info(
+            green_text('Consuming buffered pcb ready edge in WAIT_PCB.')
+        )
+        self._start_pick_cycle('pcb_ready_buffered')
 
     def _resolve_motion_steps(self, sequence_name: str, steps):
         input_steps = list(steps)
@@ -833,6 +885,7 @@ class PcbProcessTaskManagerNode(Node):
         )
         self._state = state
         self._run_after_continue(on_continue)
+        self._consume_pending_ready_if_waiting()
 
     def _reset_for_next_cycle(self) -> None:
         # 一轮流程完成后，只保留状态机和计数器，把当前板上下文清空。
@@ -846,10 +899,16 @@ class PcbProcessTaskManagerNode(Node):
         self._transition(ProcessState.WAIT_PCB, 'cycle_reset')
 
     def _presence_callback(self, msg: PcbPresence) -> None:
+        ready = bool(msg.ready_for_pick)
         if self._waiting_for_continue:
             self._buffered_presence_msg = msg
+            if self._state != ProcessState.WAIT_PCB:
+                if ready and not self._last_ready_for_pick:
+                    self._latch_pending_ready_edge()
+                elif not ready:
+                    self._pending_ready_for_pick = False
+                self._last_ready_for_pick = ready
             return
-        ready = bool(msg.ready_for_pick)
         # 只在 WAIT_PCB 状态下响应“false -> true”的上升沿。
         # 这样键盘节点持续重复发布 ready=true 时，不会重复启动多个流程。
         if (
@@ -857,26 +916,11 @@ class PcbProcessTaskManagerNode(Node):
             and ready
             and not self._last_ready_for_pick
         ):
-            self._cycle_index += 1
-            self._current_pcb_id = f'pcb_{self._cycle_index:06d}'
-            self.get_logger().info(
-                'Using preloaded home_pose for home_before_pick: '
-                f'{self._format_values(self.home_pose)}'
-            )
-            steps = build_home_sequence(
-                self.frame_id,
-                self.home_pose,
-                self.movej_config,
-            )
-            self._transition(
-                ProcessState.MOVE_HOME_BEFORE_PICK,
-                'pcb_ready_edge',
-                on_continue=lambda: self._send_motion_goal(
-                    'home_before_pick',
-                    'home_before_pick_sequence',
-                    steps,
-                ),
-            )
+            self._start_pick_cycle('pcb_ready_edge')
+        elif self._state != ProcessState.WAIT_PCB and ready and not self._last_ready_for_pick:
+            self._latch_pending_ready_edge()
+        elif not ready:
+            self._pending_ready_for_pick = False
         self._last_ready_for_pick = ready
 
     def _request_pick_pose(self) -> None:

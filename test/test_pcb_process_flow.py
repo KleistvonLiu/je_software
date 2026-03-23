@@ -5,6 +5,7 @@ import pytest
 import rclpy
 from action_msgs.msg import GoalStatus
 from rclpy.action import GoalResponse
+from std_msgs.msg import Empty
 
 from je_software.action import RecoverToInitial
 from je_software.msg import InspectionResult
@@ -487,6 +488,97 @@ def test_task_manager_happy_path_state_flow():
     node._on_motion_result('home', DummyFuture(DummyMotionWrappedResult()))
     assert node._state == ProcessState.WAIT_PCB
     assert node._current_pcb_id is None
+
+    node.destroy_node()
+
+
+def test_task_manager_consumes_ready_edge_latched_before_wait_pcb():
+    node = PcbProcessTaskManagerNode()
+    recorded_calls = []
+
+    def record_send_motion_goal(self, purpose, sequence_name, steps):
+        recorded_calls.append((purpose, sequence_name, [step.name for step in steps]))
+
+    node._send_motion_goal = MethodType(record_send_motion_goal, node)
+    node._state = ProcessState.GO_HOME
+    node._last_ready_for_pick = False
+
+    presence = PcbPresence()
+    presence.ready_for_pick = True
+    node._presence_callback(presence)
+
+    assert node._pending_ready_for_pick
+    assert node._state == ProcessState.GO_HOME
+
+    node._reset_for_next_cycle()
+
+    assert not node._pending_ready_for_pick
+    assert node._state == ProcessState.MOVE_HOME_BEFORE_PICK
+    assert recorded_calls[-1][0] == 'home_before_pick'
+    assert node._current_pcb_id is not None
+
+    node.destroy_node()
+
+
+def test_task_manager_clears_latched_ready_edge_when_board_removed_before_wait_pcb():
+    node = PcbProcessTaskManagerNode()
+    recorded_calls = []
+
+    def record_send_motion_goal(self, purpose, sequence_name, steps):
+        recorded_calls.append((purpose, sequence_name, [step.name for step in steps]))
+
+    node._send_motion_goal = MethodType(record_send_motion_goal, node)
+    node._state = ProcessState.GO_HOME
+    node._last_ready_for_pick = False
+
+    ready_msg = PcbPresence()
+    ready_msg.ready_for_pick = True
+    node._presence_callback(ready_msg)
+    assert node._pending_ready_for_pick
+
+    clear_msg = PcbPresence()
+    clear_msg.ready_for_pick = False
+    node._presence_callback(clear_msg)
+    assert not node._pending_ready_for_pick
+
+    node._reset_for_next_cycle()
+
+    assert node._state == ProcessState.WAIT_PCB
+    assert recorded_calls == []
+    assert node._current_pcb_id is None
+
+    node.destroy_node()
+
+
+def test_task_manager_latches_ready_edge_while_waiting_for_continue():
+    node = PcbProcessTaskManagerNode()
+    recorded_calls = []
+
+    def record_send_motion_goal(self, purpose, sequence_name, steps):
+        recorded_calls.append((purpose, sequence_name, [step.name for step in steps]))
+
+    node._send_motion_goal = MethodType(record_send_motion_goal, node)
+    node.pause_on_state_transition = True
+    node._state = ProcessState.GO_HOME
+    node._waiting_for_continue = True
+    node._last_ready_for_pick = False
+
+    presence = PcbPresence()
+    presence.ready_for_pick = True
+    node._presence_callback(presence)
+
+    assert node._pending_ready_for_pick
+    assert node._buffered_presence_msg is presence
+
+    node._reset_for_next_cycle()
+
+    assert node._state == ProcessState.WAIT_PCB
+    assert node._waiting_for_continue
+
+    node._continue_callback(Empty())
+
+    assert node._state == ProcessState.MOVE_HOME_BEFORE_PICK
+    assert recorded_calls[-1][0] == 'home_before_pick'
 
     node.destroy_node()
 

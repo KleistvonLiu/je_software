@@ -24,9 +24,13 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 from je_software.action import ExecuteMotionSequence
+from je_software.msg import EndEffectorCommand
 from je_software.msg import MotionStep
 from je_software.msg import RobotState
 from .pcb_process_common import GRIPPER
+from .pcb_process_common import GRIPPER_CLOSE
+from .pcb_process_common import GRIPPER_NONE
+from .pcb_process_common import GRIPPER_OPEN
 from .pcb_process_common import MOVEJ
 from .pcb_process_common import MOVEL
 from .pcb_process_common import WAIT
@@ -55,6 +59,7 @@ DEFAULT_JOINT_NAMES = [
 OUTPUT_MODE_ZMQ = 'zmq'
 OUTPUT_MODE_TOPIC = 'topic'
 OUTPUT_MODE_BOTH = 'both'
+DEFAULT_COMMAND_DT_SEC = 0.014
 
 
 def _robot_key(robot_id: int) -> str:
@@ -150,62 +155,128 @@ def build_joint_state_message(
     return msg
 
 
-def _build_movel_payload(step: MotionStep, robot_id: int) -> str:
-    """把笛卡尔 MotionStep 转成 jeserver 兼容的 MoveL。"""
-    pose = pose_to_rpy_list(step.target_pose)
-    tra_speed = float(step.velocity)
-    rot_speed = float(step.acceleration)
-    if rot_speed <= 0.0:
-        rot_speed = tra_speed
-
-    payload = {
-        _robot_key(robot_id): {
-            'cartesian': pose,
-            'rot_speed': rot_speed,
-            'tra_speed': tra_speed,
-        }
+def _build_end_effector_payload(position: float) -> dict[str, Any]:
+    return {
+        'mode': int(EndEffectorCommand.MODE_POSITION),
+        'position': float(position),
     }
-    return f'MoveL {json.dumps(payload, separators=(",", ":"))}'
 
 
-def _build_movea_payload(
+def _resolve_gripper_position(
+    gripper_command: str,
+    *,
+    open_position: float,
+    close_position: float,
+) -> float:
+    normalized = str(gripper_command).strip()
+    upper = normalized.upper()
+    if upper == GRIPPER_OPEN:
+        return float(open_position)
+    if upper == GRIPPER_CLOSE:
+        return float(close_position)
+    if upper in ('', GRIPPER_NONE):
+        raise ValueError('gripper_command_is_empty')
+    try:
+        return float(normalized)
+    except ValueError as exc:
+        raise ValueError(
+            f'unsupported_gripper_command:{gripper_command}'
+        ) from exc
+
+
+def _build_cartesian_payload(
     step: MotionStep,
     robot_id: int,
-    joint_target: list[float],
+    *,
+    command_time_sec: float,
+    gripper_position: float | None = None,
 ) -> str:
-    """把关节 MotionStep 转成 jeserver 兼容的 MoveA。"""
+    """把笛卡尔 MotionStep 转成 je_robot / jeserver 兼容的 Cartesian。"""
+    pose = pose_to_rpy_list(step.target_pose)
     payload = {
         _robot_key(robot_id): {
-            'joint': [float(value) for value in joint_target],
-            'speed': float(step.velocity),
+            'time': float(command_time_sec),
+            'cartesian': pose,
         }
     }
-    return f'MoveA {json.dumps(payload, separators=(",", ":"))}'
+    if gripper_position is not None:
+        payload[_robot_key(robot_id)]['EndEffector'] = _build_end_effector_payload(
+            gripper_position
+        )
+    return f'Cartesian {json.dumps(payload, separators=(",", ":"))}'
+
+
+def _build_joint_payload(
+    robot_id: int,
+    joint_target: list[float],
+    *,
+    command_time_sec: float,
+    gripper_position: float | None = None,
+) -> str:
+    """把关节目标转成 je_robot / jeserver 兼容的 Joint。"""
+    payload = {
+        _robot_key(robot_id): {
+            'time': float(command_time_sec),
+            'joint': [float(value) for value in joint_target],
+        }
+    }
+    if gripper_position is not None:
+        payload[_robot_key(robot_id)]['EndEffector'] = _build_end_effector_payload(
+            gripper_position
+        )
+    return f'Joint {json.dumps(payload, separators=(",", ":"))}'
 
 
 def motion_step_to_payload(
     step: MotionStep,
     robot_id: int,
+    *,
+    command_time_sec: float = 0.0,
+    gripper_open_position: float = 1.0,
+    gripper_close_position: float = 0.0,
+    joint_target: list[float] | None = None,
+    gripper_position: float | None = None,
 ) -> str | None:
-    """把 MotionStep 转成发送给 jeserver 的 ZMQ 文本。"""
+    """把 MotionStep 转成发送给 je_robot / jeserver 的 ZMQ 文本。"""
     if step.command_type == WAIT:
         return None
     if step.command_type == MOVEL:
-        return _build_movel_payload(step, robot_id)
+        return _build_cartesian_payload(
+            step,
+            robot_id,
+            command_time_sec=command_time_sec,
+        )
     if step.command_type == MOVEJ:
-        joint_target = [float(value) for value in step.joint_target]
-        if joint_target:
-            return _build_movea_payload(step, robot_id, joint_target)
+        resolved_joint_target = [float(value) for value in step.joint_target]
+        if resolved_joint_target:
+            return _build_joint_payload(
+                robot_id,
+                resolved_joint_target,
+                command_time_sec=command_time_sec,
+            )
         raise ValueError(
             'MOVEJ step '
             f'"{step.name}" is missing step.joint_target'
         )
     if step.command_type == GRIPPER:
-        payload = {
-            'robot_id': int(robot_id),
-            'command': step.gripper_command,
-        }
-        return f'Gripper {json.dumps(payload, separators=(",", ":"))}'
+        resolved_joint_target = [float(value) for value in (joint_target or [])]
+        if not resolved_joint_target:
+            raise ValueError(
+                'GRIPPER step '
+                f'"{step.name}" requires joint_target to build Joint payload'
+            )
+        if gripper_position is None:
+            gripper_position = _resolve_gripper_position(
+                step.gripper_command,
+                open_position=gripper_open_position,
+                close_position=gripper_close_position,
+            )
+        return _build_joint_payload(
+            robot_id,
+            resolved_joint_target,
+            command_time_sec=command_time_sec,
+            gripper_position=gripper_position,
+        )
     raise ValueError(f'Unsupported command_type: {step.command_type}')
 
 
@@ -245,10 +316,23 @@ class ZmqMotionBackendNode(Node):
         )
         self.declare_parameter('joint_state_names', DEFAULT_JOINT_NAMES)
         self.declare_parameter('joint_state_frame_id', STATE_FRAME_ID)
+        self.declare_parameter('command_dt_sec', DEFAULT_COMMAND_DT_SEC)
+        self.declare_parameter('gripper_open_position', 1.0)
+        self.declare_parameter('gripper_close_position', 0.0)
 
         self.robot_id = int(self.get_parameter('robot_id').value)
         self._command_output_mode = self._normalize_output_mode(
             str(self.get_parameter('command_output_mode').value)
+        )
+        self._command_dt_sec = max(
+            float(self.get_parameter('command_dt_sec').value),
+            0.0,
+        )
+        self._gripper_open_position = float(
+            self.get_parameter('gripper_open_position').value
+        )
+        self._gripper_close_position = float(
+            self.get_parameter('gripper_close_position').value
         )
         self._joint_state_names = [
             str(name)
@@ -274,6 +358,8 @@ class ZmqMotionBackendNode(Node):
         self._latest_robot_state: RobotState | None = None
         self._state_thread_running = True
         self._last_state_publish_time = 0.0
+        self._command_time_sec = 0.0
+        self._last_joint_target: list[float] | None = None
 
         self.state_publisher = self.create_publisher(
             RobotState,
@@ -364,6 +450,31 @@ class ZmqMotionBackendNode(Node):
             frame_id=self._joint_state_frame_id,
         )
         self.joint_state_publisher.publish(msg)
+
+    def _advance_command_time(self, delta_sec: float) -> None:
+        self._command_time_sec += max(float(delta_sec), 0.0)
+
+    def _next_command_time(self, delta_sec: float) -> float:
+        self._advance_command_time(delta_sec)
+        return self._command_time_sec
+
+    def _remember_joint_target(self, joint_target: list[float]) -> None:
+        self._last_joint_target = [float(value) for value in joint_target]
+
+    def _get_joint_target_for_gripper(self) -> list[float]:
+        if self._last_joint_target:
+            return [float(value) for value in self._last_joint_target]
+
+        with self._state_lock:
+            state = (
+                clone_robot_state(self._latest_robot_state)
+                if self._latest_robot_state is not None
+                else None
+            )
+        if state is not None and state.joint_valid and len(state.joint_position) >= 7:
+            return [float(value) for value in state.joint_position[:7]]
+
+        raise RuntimeError('gripper_joint_target_unavailable')
 
     def _create_command_socket(self):
         if not self._should_send_zmq():
@@ -513,10 +624,15 @@ class ZmqMotionBackendNode(Node):
                         f'{self._format_values(cartesian_pose)}'
                     )
                 elif step.command_type == GRIPPER:
+                    gripper_position = _resolve_gripper_position(
+                        step.gripper_command,
+                        open_position=self._gripper_open_position,
+                        close_position=self._gripper_close_position,
+                    )
                     self.get_logger().info(
                         f'[{goal_handle.request.sequence_name}] '
                         f'using gripper_command for {step.name}: '
-                        f'{step.gripper_command}'
+                        f'{step.gripper_command} -> position={gripper_position:.6f}'
                     )
                 elif step.command_type == WAIT:
                     self.get_logger().info(
@@ -524,11 +640,37 @@ class ZmqMotionBackendNode(Node):
                         f'using dwell_sec for {step.name}: '
                         f'{float(step.dwell_sec):.6f}'
                     )
+                    dwell_sec = max(float(step.dwell_sec), 0.0)
+                    if dwell_sec > 0.0:
+                        self._advance_command_time(dwell_sec)
+                        time.sleep(dwell_sec)
+                    continue
+
+                payload_joint_target = None
+                payload_gripper_position = None
+                if step.command_type == MOVEJ:
+                    payload_joint_target = [float(value) for value in step.joint_target]
+                elif step.command_type == GRIPPER:
+                    payload_joint_target = self._get_joint_target_for_gripper()
+                    payload_gripper_position = gripper_position
+
+                command_delta_sec = max(
+                    float(step.dwell_sec),
+                    self._command_dt_sec,
+                )
+                command_time_sec = self._next_command_time(command_delta_sec)
 
                 payload = motion_step_to_payload(
                     step,
                     self.robot_id,
+                    command_time_sec=command_time_sec,
+                    gripper_open_position=self._gripper_open_position,
+                    gripper_close_position=self._gripper_close_position,
+                    joint_target=payload_joint_target,
+                    gripper_position=payload_gripper_position,
                 )
+                if payload_joint_target:
+                    self._remember_joint_target(payload_joint_target)
                 if payload is not None and self._should_send_zmq():
                     if self._command_socket is None:
                         raise RuntimeError(
