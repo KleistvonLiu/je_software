@@ -691,22 +691,29 @@ void JeZmqSystemHardware::append_gripper_from_command(nlohmann::json & payload, 
     return;
   }
 
-  nlohmann::json ee;
-  ee["mode"] = gripper_cmd.mode;
-  if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+  auto & robot = payload[(robot_index == 1) ? "Robot1" : "Robot0"];
+  
+  // 扭矩模式: 放在 gripper_piper 下，匹配控制器的期望格式
+  if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_TORQUE)
   {
-    ee["position"] = gripper_cmd.position;
+    robot["gripper_piper"]["command"] = gripper_cmd.command;
+    robot["gripper_piper"]["torque"] = gripper_cmd.torque;
   }
-  else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+  else
   {
-    ee["preset"] = gripper_cmd.preset;
+    // 其他模式: 放在 EndEffector 对象下
+    nlohmann::json ee;
+    ee["mode"] = gripper_cmd.mode;
+    if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+    {
+      ee["position"] = gripper_cmd.position;
+    }
+    else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+    {
+      ee["preset"] = gripper_cmd.preset;
+    }
+    robot["EndEffector"] = ee;
   }
-  else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_TORQUE)
-  {
-    ee["command"] = gripper_cmd.command;
-    ee["torque"] = gripper_cmd.torque;
-  }
-  payload[(robot_index == 1) ? "Robot1" : "Robot0"]["EndEffector"] = ee;
 }
 
 bool JeZmqSystemHardware::parse_joint_state_from_json(
