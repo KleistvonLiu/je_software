@@ -239,6 +239,7 @@ target_include_directories(je_software_hardware
 target_link_libraries(je_software_hardware
   PkgConfig::ZMQ
   nlohmann_json::nlohmann_json
+  ${cpp_typesupport_target}
 )
 
 pluginlib_export_plugin_description_file(hardware_interface je_software_hardware_plugins.xml)

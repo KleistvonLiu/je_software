@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include "hardware_interface/handle.hpp"
@@ -104,11 +105,12 @@ hardware_interface::CallbackReturn JeZmqSystemHardware::on_init(
   get_int_param("pub_port", pub_port_);
   get_int_param("sub_port", sub_port_);
   get_double_param("command_dt", command_dt_);
+  get_string_param("gripper_sub_topic", gripper_sub_topic_);
 
   RCLCPP_INFO(
     rclcpp::get_logger("JeZmqSystemHardware"),
-    "Configured JE hardware transport: robot_ip=%s, pub_port=%d, sub_port=%d, command_dt=%.4f",
-    robot_ip_.c_str(), pub_port_, sub_port_, command_dt_);
+    "Configured JE hardware transport: robot_ip=%s, pub_port=%d, sub_port=%d, command_dt=%.4f, gripper_sub_topic=%s",
+    robot_ip_.c_str(), pub_port_, sub_port_, command_dt_, gripper_sub_topic_.c_str());
 
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -165,6 +167,32 @@ hardware_interface::CallbackReturn JeZmqSystemHardware::on_activate(
   const rclcpp_lifecycle::State &)
 {
   global_time_ = 0.0;
+
+  try
+  {
+    gripper_node_ = std::make_shared<rclcpp::Node>("je_zmq_system_hardware_gripper_bridge");
+    sub_gripper_cmd_ = gripper_node_->create_subscription<je_software::msg::EndEffectorCommandLR>(
+      gripper_sub_topic_,
+      rclcpp::QoS(10).reliable(),
+      std::bind(&JeZmqSystemHardware::gripper_cmd_callback, this, std::placeholders::_1));
+
+    gripper_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    gripper_executor_->add_node(gripper_node_);
+    gripper_thread_running_.store(true);
+    gripper_thread_ = std::thread(&JeZmqSystemHardware::gripper_spin_loop, this);
+
+    RCLCPP_INFO(
+      rclcpp::get_logger("JeZmqSystemHardware"),
+      "Subscribed gripper command topic: %s",
+      gripper_sub_topic_.c_str());
+  }
+  catch (const std::exception & ex)
+  {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("JeZmqSystemHardware"),
+      "Failed to initialize gripper subscriber: %s", ex.what());
+    return hardware_interface::CallbackReturn::ERROR;
+  }
 
   // Initialize ZMQ connection before starting state thread
   // Add a small delay to allow ZMQ sockets to fully bind/connect
@@ -234,6 +262,23 @@ hardware_interface::CallbackReturn JeZmqSystemHardware::on_activate(
 hardware_interface::CallbackReturn JeZmqSystemHardware::on_deactivate(
   const rclcpp_lifecycle::State &)
 {
+  gripper_thread_running_.store(false);
+  if (gripper_executor_)
+  {
+    gripper_executor_->cancel();
+  }
+  if (gripper_thread_.joinable())
+  {
+    gripper_thread_.join();
+  }
+  if (gripper_executor_ && gripper_node_)
+  {
+    gripper_executor_->remove_node(gripper_node_);
+  }
+  sub_gripper_cmd_.reset();
+  gripper_executor_.reset();
+  gripper_node_.reset();
+
   state_thread_running_.store(false);
 
   if (context_)
@@ -366,13 +411,8 @@ hardware_interface::return_type JeZmqSystemHardware::write(
   json payload;
   payload["Robot0"]["time"] = global_time_;
   payload["Robot0"]["joint"] = hw_commands_;  // Use lowercase "joint" to match je_robot_node.cpp
-  
-  // Add EndEffector field (required by robot backend for proper message parsing)
-  // Send default gripper state when no specific command is available
-  json ee;
-  ee["mode"] = 0;  // MODE_POSITION = 0
-  ee["position"] = 0.0;
-  payload["Robot0"]["EndEffector"] = ee;
+
+  append_gripper_from_command(payload, 0);
 
   try
   {
@@ -557,6 +597,123 @@ void JeZmqSystemHardware::state_receive_loop()
   }
   
   RCLCPP_INFO(rclcpp::get_logger("JeZmqSystemHardware"), "state_receive_loop stopped (total messages: %d)", msg_count);
+}
+
+void JeZmqSystemHardware::gripper_spin_loop()
+{
+  while (gripper_thread_running_.load())
+  {
+    if (!gripper_executor_)
+    {
+      break;
+    }
+    gripper_executor_->spin_once(50ms);
+  }
+}
+
+void JeZmqSystemHardware::handle_gripper_cmd(
+  const je_software::msg::EndEffectorCommand & msg,
+  int robot_index)
+{
+  if (msg.mode != je_software::msg::EndEffectorCommand::MODE_POSITION &&
+    msg.mode != je_software::msg::EndEffectorCommand::MODE_PRESET &&
+    msg.mode != je_software::msg::EndEffectorCommand::MODE_TORQUE)
+  {
+    RCLCPP_WARN(
+      rclcpp::get_logger("JeZmqSystemHardware"),
+      "Invalid end effector mode: %d", msg.mode);
+    return;
+  }
+
+  std::string command = msg.command;
+  std::transform(command.begin(), command.end(), command.begin(), ::tolower);
+
+  if (msg.mode == je_software::msg::EndEffectorCommand::MODE_TORQUE)
+  {
+    if (
+      command != je_software::msg::EndEffectorCommand::CMD_OPEN &&
+      command != je_software::msg::EndEffectorCommand::CMD_CLOSE)
+    {
+      RCLCPP_WARN(
+        rclcpp::get_logger("JeZmqSystemHardware"),
+        "Invalid torque gripper command: '%s'", command.c_str());
+      return;
+    }
+
+    if (!std::isfinite(msg.torque) || msg.torque <= 0.0)
+    {
+      RCLCPP_WARN(
+        rclcpp::get_logger("JeZmqSystemHardware"),
+        "Invalid torque value: %.4f", msg.torque);
+      return;
+    }
+  }
+
+  std::lock_guard<std::mutex> lock(gripper_mutex_);
+  auto & target = (robot_index == 1) ? gripper_cmd_right_ : gripper_cmd_left_;
+  target.mode = msg.mode;
+  target.position = msg.position;
+  target.preset = msg.preset;
+  target.command = command;
+  target.torque = msg.torque;
+  target.received = true;
+}
+
+void JeZmqSystemHardware::gripper_cmd_callback(
+  const je_software::msg::EndEffectorCommandLR::SharedPtr msg)
+{
+  if (!msg)
+  {
+    return;
+  }
+
+  if (msg->left_valid)
+  {
+    handle_gripper_cmd(msg->left, 0);
+  }
+  if (msg->right_valid)
+  {
+    handle_gripper_cmd(msg->right, 1);
+  }
+}
+
+const JeZmqSystemHardware::GripperCommand & JeZmqSystemHardware::get_gripper_command(int robot_index) const
+{
+  return (robot_index == 1) ? gripper_cmd_right_ : gripper_cmd_left_;
+}
+
+void JeZmqSystemHardware::append_gripper_from_command(nlohmann::json & payload, int robot_index) const
+{
+  std::lock_guard<std::mutex> lock(gripper_mutex_);
+  const auto & gripper_cmd = get_gripper_command(robot_index);
+  if (!gripper_cmd.received)
+  {
+    return;
+  }
+
+  auto & robot = payload[(robot_index == 1) ? "Robot1" : "Robot0"];
+  
+  // 扭矩模式: 放在 gripper_piper 下，匹配控制器的期望格式
+  if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_TORQUE)
+  {
+    robot["gripper_piper"]["command"] = gripper_cmd.command;
+    robot["gripper_piper"]["torque"] = gripper_cmd.torque;
+  }
+  else
+  {
+    // 其他模式: 放在 EndEffector 对象下
+    nlohmann::json ee;
+    ee["mode"] = gripper_cmd.mode;
+    if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_POSITION)
+    {
+      ee["position"] = gripper_cmd.position;
+    }
+    else if (gripper_cmd.mode == je_software::msg::EndEffectorCommand::MODE_PRESET)
+    {
+      ee["preset"] = gripper_cmd.preset;
+    }
+    robot["EndEffector"] = ee;
+  }
 }
 
 bool JeZmqSystemHardware::parse_joint_state_from_json(

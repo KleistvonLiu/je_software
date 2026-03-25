@@ -6,11 +6,16 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <memory>
 
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
+#include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp/macros.hpp"
+#include "rclcpp/node.hpp"
 #include "rclcpp_lifecycle/state.hpp"
+#include "je_software/msg/end_effector_command.hpp"
+#include "je_software/msg/end_effector_command_lr.hpp"
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
 
@@ -46,10 +51,25 @@ public:
     const rclcpp::Duration & period) override;
 
 private:
+  struct GripperCommand
+  {
+    int mode{je_software::msg::EndEffectorCommand::MODE_POSITION};
+    double position{0.0};
+    int preset{0};
+    std::string command;
+    double torque{0.0};
+    bool received{false};
+  };
+
   void state_receive_loop();
   bool parse_joint_state_from_json(const nlohmann::json & state_json, std::vector<double> & positions,
                                    std::vector<double> & velocities, std::vector<double> & efforts) const;
   void robot_switch(bool value);
+  void gripper_spin_loop();
+  void gripper_cmd_callback(const je_software::msg::EndEffectorCommandLR::SharedPtr msg);
+  void handle_gripper_cmd(const je_software::msg::EndEffectorCommand & msg, int robot_index);
+  const GripperCommand & get_gripper_command(int robot_index) const;
+  void append_gripper_from_command(nlohmann::json & payload, int robot_index) const;
 
   std::vector<std::string> joint_names_;
   std::vector<double> hw_positions_;
@@ -73,6 +93,16 @@ private:
 
   std::atomic_bool state_thread_running_{false};
   std::thread state_thread_;
+
+  mutable std::mutex gripper_mutex_;
+  std::string gripper_sub_topic_{"/end_effector_cmd_lr"};
+  GripperCommand gripper_cmd_left_{};
+  GripperCommand gripper_cmd_right_{};
+  std::shared_ptr<rclcpp::Node> gripper_node_;
+  rclcpp::Subscription<je_software::msg::EndEffectorCommandLR>::SharedPtr sub_gripper_cmd_;
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> gripper_executor_;
+  std::atomic_bool gripper_thread_running_{false};
+  std::thread gripper_thread_;
 
   std::unique_ptr<zmq::context_t> context_;
   std::unique_ptr<zmq::socket_t> publisher_;
