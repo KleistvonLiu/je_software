@@ -68,6 +68,10 @@ private:
   void gripper_spin_loop();
   void gripper_cmd_callback(const je_software::msg::EndEffectorCommandLR::SharedPtr msg);
   void handle_gripper_cmd(const je_software::msg::EndEffectorCommand & msg, int robot_index);
+  bool map_joint_to_robot_slot(
+    const std::string & joint_name,
+    int & robot_index,
+    std::size_t & slot_index) const;
   const GripperCommand & get_gripper_command(int robot_index) const;
   void append_gripper_from_command(nlohmann::json & payload, int robot_index) const;
 

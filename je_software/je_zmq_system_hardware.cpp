@@ -1,6 +1,7 @@
 #include "je_zmq_system_hardware.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -409,10 +410,59 @@ hardware_interface::return_type JeZmqSystemHardware::write(
   global_time_ += command_dt_;
 
   json payload;
-  payload["Robot0"]["time"] = global_time_;
-  payload["Robot0"]["joint"] = hw_commands_;  // Use lowercase "joint" to match je_robot_node.cpp
+  std::vector<double> robot0_joint(7, 0.0);
+  std::vector<double> robot1_joint(7, 0.0);
+  bool has_robot0 = false;
+  bool has_robot1 = false;
 
-  append_gripper_from_command(payload, 0);
+  for (std::size_t i = 0; i < hw_commands_.size() && i < joint_names_.size(); ++i)
+  {
+    int robot_index = 0;
+    std::size_t slot_index = 0;
+    if (!map_joint_to_robot_slot(joint_names_[i], robot_index, slot_index))
+    {
+      if (i < 7)
+      {
+        robot_index = 0;
+        slot_index = i;
+      }
+      else
+      {
+        robot_index = 1;
+        slot_index = i - 7;
+      }
+    }
+
+    if (slot_index >= 7)
+    {
+      continue;
+    }
+
+    if (robot_index == 1)
+    {
+      robot1_joint[slot_index] = hw_commands_[i];
+      has_robot1 = true;
+    }
+    else
+    {
+      robot0_joint[slot_index] = hw_commands_[i];
+      has_robot0 = true;
+    }
+  }
+
+  if (has_robot0)
+  {
+    payload["Robot0"]["time"] = global_time_;
+    payload["Robot0"]["joint"] = robot0_joint;
+    append_gripper_from_command(payload, 0);
+  }
+
+  if (has_robot1)
+  {
+    payload["Robot1"]["time"] = global_time_;
+    payload["Robot1"]["joint"] = robot1_joint;
+    append_gripper_from_command(payload, 1);
+  }
 
   try
   {
@@ -677,6 +727,78 @@ void JeZmqSystemHardware::gripper_cmd_callback(
   }
 }
 
+bool JeZmqSystemHardware::map_joint_to_robot_slot(
+  const std::string & joint_name,
+  int & robot_index,
+  std::size_t & slot_index) const
+{
+  auto parse_number = [](const std::string & name, const std::string & prefix, int & out_value) -> bool
+    {
+      if (name.rfind(prefix, 0) != 0)
+      {
+        return false;
+      }
+      const auto suffix = name.substr(prefix.size());
+      if (suffix.empty())
+      {
+        return false;
+      }
+      if (!std::all_of(suffix.begin(), suffix.end(), [](unsigned char ch) { return std::isdigit(ch); }))
+      {
+        return false;
+      }
+      try
+      {
+        out_value = std::stoi(suffix);
+      }
+      catch (...)
+      {
+        return false;
+      }
+      return true;
+    };
+
+  int value = 0;
+
+  if (parse_number(joint_name, "joint", value))
+  {
+    if (value >= 1 && value <= 7)
+    {
+      robot_index = 0;
+      slot_index = static_cast<std::size_t>(value - 1);
+      return true;
+    }
+    if (value >= 11 && value <= 17)
+    {
+      robot_index = 0;
+      slot_index = static_cast<std::size_t>(value - 11);
+      return true;
+    }
+    if (value >= 21 && value <= 27)
+    {
+      robot_index = 1;
+      slot_index = static_cast<std::size_t>(value - 21);
+      return true;
+    }
+  }
+
+  if (parse_number(joint_name, "l_joint", value) && value >= 1 && value <= 7)
+  {
+    robot_index = 0;
+    slot_index = static_cast<std::size_t>(value - 1);
+    return true;
+  }
+
+  if (parse_number(joint_name, "r_joint", value) && value >= 1 && value <= 7)
+  {
+    robot_index = 1;
+    slot_index = static_cast<std::size_t>(value - 1);
+    return true;
+  }
+
+  return false;
+}
+
 const JeZmqSystemHardware::GripperCommand & JeZmqSystemHardware::get_gripper_command(int robot_index) const
 {
   return (robot_index == 1) ? gripper_cmd_right_ : gripper_cmd_left_;
@@ -727,48 +849,81 @@ bool JeZmqSystemHardware::parse_joint_state_from_json(
     return false;
   }
 
-  const auto & robot = state_json["Robot0"];
-  
-  // Try both "joint" (lowercase, new format from je_robot_node) and "Joint" (uppercase, legacy)
-  std::vector<double> joints;
-  if (robot.contains("joint"))
-  {
-    joints = robot["joint"].get<std::vector<double>>();
-  }
-  else if (robot.contains("Joint"))
-  {
-    joints = robot["Joint"].get<std::vector<double>>();
-  }
-  else
-  {
-    return false;
-  }
-  
-  if (joints.size() < positions.size())
-  {
-    return false;
-  }
-
-  for (size_t i = 0; i < positions.size(); ++i)
-  {
-    positions[i] = joints[i];
-  }
-
-  if (robot.contains("JointVelocity"))
-  {
-    const auto vels = robot["JointVelocity"].get<std::vector<double>>();
-    for (size_t i = 0; i < velocities.size() && i < vels.size(); ++i)
+  const auto fetch_array = [](const nlohmann::json & robot, const char * lower_key, const char * upper_key,
+      std::vector<double> & out) -> bool
     {
-      velocities[i] = vels[i];
+      if (robot.contains(lower_key))
+      {
+        out = robot[lower_key].get<std::vector<double>>();
+        return true;
+      }
+      if (robot.contains(upper_key))
+      {
+        out = robot[upper_key].get<std::vector<double>>();
+        return true;
+      }
+      return false;
+    };
+
+  std::vector<double> joint0;
+  std::vector<double> joint1;
+  std::vector<double> vel0;
+  std::vector<double> vel1;
+  std::vector<double> effort0;
+  std::vector<double> effort1;
+
+  const auto & robot0 = state_json["Robot0"];
+  if (!fetch_array(robot0, "joint", "Joint", joint0))
+  {
+    return false;
+  }
+  fetch_array(robot0, "jointVelocity", "JointVelocity", vel0);
+  fetch_array(robot0, "jointSensorTorque", "JointSensorTorque", effort0);
+
+  const bool has_robot1 = state_json.contains("Robot1") && state_json["Robot1"].is_object();
+  if (has_robot1)
+  {
+    const auto & robot1 = state_json["Robot1"];
+    fetch_array(robot1, "joint", "Joint", joint1);
+    fetch_array(robot1, "jointVelocity", "JointVelocity", vel1);
+    fetch_array(robot1, "jointSensorTorque", "JointSensorTorque", effort1);
+  }
+
+  for (std::size_t i = 0; i < positions.size() && i < joint_names_.size(); ++i)
+  {
+    int robot_index = 0;
+    std::size_t slot_index = 0;
+    if (!map_joint_to_robot_slot(joint_names_[i], robot_index, slot_index))
+    {
+      if (positions.size() <= 7 || i < 7)
+      {
+        robot_index = 0;
+        slot_index = i;
+      }
+      else
+      {
+        robot_index = 1;
+        slot_index = i - 7;
+      }
     }
-  }
 
-  if (robot.contains("JointSensorTorque"))
-  {
-    const auto torques = robot["JointSensorTorque"].get<std::vector<double>>();
-    for (size_t i = 0; i < efforts.size() && i < torques.size(); ++i)
+    const auto * joint_source = (robot_index == 1) ? &joint1 : &joint0;
+    const auto * vel_source = (robot_index == 1) ? &vel1 : &vel0;
+    const auto * effort_source = (robot_index == 1) ? &effort1 : &effort0;
+
+    if (joint_source->empty() || slot_index >= joint_source->size())
     {
-      efforts[i] = torques[i];
+      return false;
+    }
+
+    positions[i] = (*joint_source)[slot_index];
+    if (slot_index < vel_source->size())
+    {
+      velocities[i] = (*vel_source)[slot_index];
+    }
+    if (slot_index < effort_source->size())
+    {
+      efforts[i] = (*effort_source)[slot_index];
     }
   }
 
