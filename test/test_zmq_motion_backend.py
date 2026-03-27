@@ -12,7 +12,6 @@ from je_software.msg import PcbPresence
 from je_software.msg import RobotState
 from je_software.new_system_architecture.pcb_process_common import GRIPPER
 from je_software.new_system_architecture.pcb_process_common import GRIPPER_CLOSE
-from je_software.new_system_architecture.pcb_process_common import GRIPPER_OPEN
 from je_software.new_system_architecture.pcb_process_common import MOVEJ
 from je_software.new_system_architecture.pcb_process_common import make_motion_step
 from je_software.new_system_architecture.pcb_process_common import make_pose_stamped
@@ -115,77 +114,78 @@ def test_motion_step_to_payload_formats_cartesian_for_jeserver():
     assert len(message['Robot1']['cartesian']) == 6
 
 
-def test_motion_step_to_payload_formats_gripper_as_joint_end_effector():
+def test_motion_step_to_payload_formats_gripper_command():
     step = MotionStep()
     step.name = 'close'
     step.command_type = GRIPPER
     step.gripper_command = GRIPPER_CLOSE
 
-    payload = motion_step_to_payload(
-        step,
-        robot_id=2,
-        command_time_sec=0.5,
-        joint_target=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
-        gripper_open_position=0.9,
-        gripper_close_position=0.1,
-    )
+    payload = motion_step_to_payload(step, robot_id=2, command_time_sec=0.5)
     prefix, json_text = payload.split(' ', 1)
     message = json.loads(json_text)
 
-    assert prefix == 'Joint'
-    assert message['Robot2']['time'] == pytest.approx(0.5)
-    assert message['Robot2']['joint'] == pytest.approx(
-        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
-    )
-    assert message['Robot2']['EndEffector'] == {
-        'mode': 0,
-        'position': pytest.approx(0.1),
+    assert prefix == 'Gripper'
+    assert message == {
+        'Robot2': {
+            'command': 'close',
+        }
     }
 
 
-def test_motion_step_to_payload_supports_numeric_gripper_position():
+def test_motion_step_to_payload_formats_gripper_with_torque_suffix():
     step = MotionStep()
-    step.name = 'gripper_half_open'
+    step.name = 'close_soft'
     step.command_type = GRIPPER
-    step.gripper_command = '0.42'
+    step.gripper_command = 'close:0.42'
 
-    payload = motion_step_to_payload(
-        step,
-        robot_id=0,
-        command_time_sec=0.2,
-        joint_target=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    )
+    payload = motion_step_to_payload(step, robot_id=0, command_time_sec=0.2)
     prefix, json_text = payload.split(' ', 1)
     message = json.loads(json_text)
 
-    assert prefix == 'Joint'
-    assert message['Robot0']['EndEffector'] == {
-        'mode': 0,
-        'position': pytest.approx(0.42),
+    assert prefix == 'Gripper'
+    assert message == {
+        'Robot0': {
+            'command': 'close',
+            'torque': pytest.approx(0.42),
+        }
     }
 
 
-def test_motion_step_to_payload_maps_gripper_open_to_configured_position():
+def test_motion_step_to_payload_formats_gripper_from_json_string():
     step = MotionStep()
-    step.name = 'open'
+    step.name = 'open_soft'
     step.command_type = GRIPPER
-    step.gripper_command = GRIPPER_OPEN
+    step.gripper_command = '{"command":"open","torque":1.0}'
 
-    payload = motion_step_to_payload(
-        step,
-        robot_id=1,
-        command_time_sec=0.3,
-        joint_target=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-        gripper_open_position=0.85,
-        gripper_close_position=0.15,
-    )
+    payload = motion_step_to_payload(step, robot_id=1, command_time_sec=0.3)
     prefix, json_text = payload.split(' ', 1)
     message = json.loads(json_text)
 
-    assert prefix == 'Joint'
-    assert message['Robot1']['EndEffector'] == {
-        'mode': 0,
-        'position': pytest.approx(0.85),
+    assert prefix == 'Gripper'
+    assert message == {
+        'Robot1': {
+            'command': 'open',
+            'torque': pytest.approx(1.0),
+        }
+    }
+
+
+def test_motion_step_to_payload_formats_gripper_from_nested_json_string():
+    step = MotionStep()
+    step.name = 'close_nested'
+    step.command_type = GRIPPER
+    step.gripper_command = '{"EndEffector":{"command":"close","torque":0.5}}'
+
+    payload = motion_step_to_payload(step, robot_id=0)
+    prefix, json_text = payload.split(' ', 1)
+    message = json.loads(json_text)
+
+    assert prefix == 'Gripper'
+    assert message == {
+        'Robot0': {
+            'command': 'close',
+            'torque': pytest.approx(0.5),
+        }
     }
 
 

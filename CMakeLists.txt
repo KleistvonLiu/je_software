@@ -140,6 +140,7 @@ install(PROGRAMS
   scripts/joint_rate_monitor
   scripts/manager_node
   scripts/replay_node
+  scripts/ros2bag_parser
   scripts/tactile_sensor
   scripts/terminal_key_signal_node
   scripts/test_publisher

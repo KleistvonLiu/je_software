@@ -41,6 +41,20 @@ ros2 launch orbbec_camera 3_cameras.launch.py
 # 单个相机
 ros2 launch orbbec_camera gemini_330_series.launch.py   usb_port:=1-11   enable_color_auto_white_balance:=false   color_width:=1920 color_height:=1080 color_fps:=8
 
+ros2 launch orbbec_camera gemini_330_series.launch.py \
+  usb_port:=1-11 \
+  enable_color_auto_white_balance:=false \
+  color_width:=1280 color_height:=720 color_fps:=5 \
+  depth_width:=1280 depth_height:=720 depth_fps:=5 \
+  enable_point_cloud:=true \
+  enable_colored_point_cloud:=true \
+  depth_registration:=true \
+  align_mode:=SW \
+  align_target_stream:=COLOR \
+  enable_frame_sync:=true \
+  ordered_pc:=false
+
+
 # 设置串口低延迟模式
 sudo apt install setserial
 sudo setserial /dev/serial/by-path/pci-0000:00:14.0-usb-0:6:1.0-port0 low_latency

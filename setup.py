@@ -42,6 +42,7 @@ setup(
             'koch_leader_teleop = je_software.koch_leader_node:main',
             'dynamixel_init_joint_state = je_software.dynamixel_init_joint_state_node:main',
             'camera_node = je_software.camera_node:main',
+            'ros2bag_parser = je_software.ros2bag_parser.cli:main',
             'eye_in_hand_calibration = je_software.new_system_architecture.eye_in_hand_calibration_node:main',
             'eye_in_hand_validator = je_software.new_system_architecture.eye_in_hand_validator_node:main',
             'eye_to_hand_calibration = je_software.new_system_architecture.eye_to_hand_calibration_node:main',
